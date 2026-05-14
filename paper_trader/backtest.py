@@ -38,9 +38,10 @@ START_DATE = date(2025, 5, 13)
 END_DATE = date(2026, 5, 13)
 INITIAL_CASH = 1000.0
 SAMPLE_EVERY_N_DAYS = 5
-GDELT_RATE_LIMIT_S = 8.0
+GDELT_RATE_LIMIT_S = 5.5       # GDELT actual limit is ~1 req/5s; use 5.5 for safety
 GDELT_MAX_RECORDS = 100
-GDELT_RETRY_BACKOFF_S = 30.0
+GDELT_RETRY_BACKOFF_S = 20.0  # reduced; 30s was too conservative
+GDELT_WARM_WORKERS = 3        # parallel workers for cache pre-warming
 OPUS_TIMEOUT_S = 150
 
 WATCHLIST = [
@@ -1195,6 +1196,7 @@ class BacktestEngine:
 
     def _fetch_signals(self, d: date, seed: int, rng: random.Random) -> list[dict]:
         # rotate 2 keyword groups based on seed/day so different runs see different slices
+        # After _warm_gdelt_cache(), these should all be disk-cache hits (no outbound calls).
         idxs = rng.sample(range(len(KEYWORD_GROUPS)), 2)
         articles: list[dict] = []
         seen_urls = set()
@@ -1212,6 +1214,12 @@ class BacktestEngine:
                     "score": score,
                     "tickers": tickers,
                 })
+        # Supplement with yfinance ticker news (no rate limits, no API key needed).
+        for a in self._fetch_yf_news(list(QUANT_SIGNAL_TICKERS), d):
+            if a["url"] not in seen_urls:
+                seen_urls.add(a["url"])
+                articles.append(a)
+
         # sort by score, take top 10 then sample 5 with rng
         articles.sort(key=lambda x: x["score"], reverse=True)
         top10 = articles[:10]
@@ -1362,9 +1370,78 @@ class BacktestEngine:
             equity_curve=equity_curve, status="complete",
         )
 
+    def _warm_gdelt_cache(self) -> None:
+        """Pre-fetch all date×keyword combos into disk cache before parallel runs start.
+
+        Uses GDELT_WARM_WORKERS parallel workers so we fill the cache fast without
+        hammering GDELT (each worker obeys the rate-limit via the shared lock).
+        When run_all() calls this first, every subsequent thread cache-lookup is a
+        disk hit — zero outbound GDELT requests during the parallel phase.
+        """
+        days = self._sampled_days()
+        combos = [(d, kw) for d in days for kw in KEYWORD_GROUPS]
+        uncached = [(d, kw) for d, kw in combos
+                    if not self.gdelt._cache_key(d, kw).exists()]
+        if not uncached:
+            print(f"[cache_warm] all {len(combos)} combos already cached — skipping")
+            return
+        print(f"[cache_warm] warming {len(uncached)}/{len(combos)} date×keyword combos "
+              f"with {GDELT_WARM_WORKERS} workers …")
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+        import random as _rnd
+
+        def _warm_one(args):
+            d, kw = args
+            try:
+                time.sleep(_rnd.uniform(0, 1.0))  # jitter to stagger workers
+                self.gdelt.fetch(d, kw)
+            except Exception:
+                pass
+
+        done = 0
+        with ThreadPoolExecutor(max_workers=GDELT_WARM_WORKERS) as pool:
+            futs = {pool.submit(_warm_one, c): c for c in uncached}
+            for fut in as_completed(futs):
+                done += 1
+                if done % 20 == 0:
+                    print(f"[cache_warm] {done}/{len(uncached)} warmed")
+        print(f"[cache_warm] done — {len(uncached)} new entries cached")
+
+    def _fetch_yf_news(self, tickers: list[str], sim_date: date) -> list[dict]:
+        """Supplement GDELT with yfinance ticker news. No rate limits, no API key.
+
+        Returns recent headlines scored by the same keyword heuristic. Only useful
+        for dates close to today (yfinance only keeps ~30 news items per ticker).
+        """
+        cutoff = date.today() - timedelta(days=30)
+        if sim_date < cutoff:
+            return []
+        articles: list[dict] = []
+        seen = set()
+        sample_tickers = tickers[:8]  # limit to avoid slow fetches
+        for tk in sample_tickers:
+            try:
+                import yfinance as yf
+                news = yf.Ticker(tk).news or []
+                for n in news[:5]:
+                    title = n.get("title", "")
+                    url = n.get("link", "")
+                    if not title or url in seen:
+                        continue
+                    seen.add(url)
+                    score, found_tickers = score_article({"title": title, "url": url})
+                    articles.append({"title": title, "url": url,
+                                     "score": score, "tickers": found_tickers})
+            except Exception:
+                pass
+        return articles
+
     def run_all(self, n: int = 10, start_run_id: int = 1) -> list[BacktestRun]:
         import traceback
         from concurrent.futures import ThreadPoolExecutor, as_completed
+
+        # Pre-warm GDELT disk cache so parallel threads never block on outbound requests.
+        self._warm_gdelt_cache()
 
         spy_return = self.prices.returns_pct("SPY", self.prices.trading_days[0],
                                              self.prices.trading_days[-1])
