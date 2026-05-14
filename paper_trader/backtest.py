@@ -45,6 +45,9 @@ GDELT_MAX_RECORDS = 100
 GDELT_RETRY_BACKOFF_S = 20.0  # reduced; 30s was too conservative
 GDELT_WARM_WORKERS = 3        # parallel workers for cache pre-warming
 OPUS_TIMEOUT_S = 150
+# Global semaphore: caps concurrent claude CLI subprocesses to prevent OOM kills.
+# 10 parallel runs × ~1.5 GB/process = OOM on 14 GB RAM. Cap at 3 concurrent.
+_CLAUDE_SEM = threading.Semaphore(3)
 
 WATCHLIST = [
     # Core US large-cap + semis (kept from v1 watchlist)
@@ -1095,24 +1098,25 @@ def _claude_call(prompt: str, retries: int = 1) -> str | None:
     if not shutil.which("claude"):
         print("[backtest] claude CLI not found")
         return None
-    for attempt in range(retries + 1):
-        try:
-            r = subprocess.run(
-                ["claude", "--model", MODEL, "--print",
-                 "--permission-mode", "bypassPermissions"],
-                input=prompt, capture_output=True, text=True,
-                timeout=OPUS_TIMEOUT_S,
-            )
-            if r.returncode == 0 and r.stdout.strip():
-                return r.stdout.strip()
-            print(f"[backtest] claude attempt {attempt+1} returncode={r.returncode} "
-                  f"err={r.stderr.strip()[:200]!r}")
-        except subprocess.TimeoutExpired:
-            print(f"[backtest] claude timeout attempt {attempt+1}")
-        except Exception as e:
-            print(f"[backtest] claude exception attempt {attempt+1}: {e}")
-        if attempt < retries:
-            time.sleep(2)
+    with _CLAUDE_SEM:  # max 3 concurrent claude processes to avoid OOM
+        for attempt in range(retries + 1):
+            try:
+                r = subprocess.run(
+                    ["claude", "--model", MODEL, "--print",
+                     "--permission-mode", "bypassPermissions"],
+                    input=prompt, capture_output=True, text=True,
+                    timeout=OPUS_TIMEOUT_S,
+                )
+                if r.returncode == 0 and r.stdout.strip():
+                    return r.stdout.strip()
+                print(f"[backtest] claude attempt {attempt+1} returncode={r.returncode} "
+                      f"err={r.stderr.strip()[:200]!r}")
+            except subprocess.TimeoutExpired:
+                print(f"[backtest] claude timeout attempt {attempt+1}")
+            except Exception as e:
+                print(f"[backtest] claude exception attempt {attempt+1}: {e}")
+            if attempt < retries:
+                time.sleep(2)
     return None
 
 

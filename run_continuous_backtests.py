@@ -33,7 +33,7 @@ from paper_trader.backtest import (
     ROOT,
 )
 
-RUNS_PER_CYCLE = 10
+RUNS_PER_CYCLE = 5  # reduced from 10 — 5 runs × 3 max-concurrent claude = safe on 14 GB RAM
 KEEP_LAST_RUNS = 100
 COOLDOWN_SECONDS = 60
 DISCORD_CHANNEL = "channel:1496099475838603324"
