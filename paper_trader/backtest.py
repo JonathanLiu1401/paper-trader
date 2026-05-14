@@ -36,10 +36,10 @@ CACHE_DIR = ROOT / "data" / "backtest_cache"
 GDELT_CACHE = CACHE_DIR / "gdelt"
 PRICE_CACHE_PATH = CACHE_DIR / "prices.json"
 
-START_DATE = date(2025, 5, 13)
+START_DATE = date(2026, 2, 1)   # 3-month window — fast enough to complete, recent enough for ML
 END_DATE = date(2026, 5, 13)
 INITIAL_CASH = 1000.0
-SAMPLE_EVERY_N_DAYS = 5
+SAMPLE_EVERY_N_DAYS = 1         # daily decisions — 1 per trading day
 GDELT_RATE_LIMIT_S = 5.5       # GDELT actual limit is ~1 req/5s; use 5.5 for safety
 GDELT_MAX_RECORDS = 100
 GDELT_RETRY_BACKOFF_S = 20.0  # reduced; 30s was too conservative
