@@ -4,6 +4,8 @@
 # Agent 4: feature development, brainstorming, user-perspective testing.
 set -euo pipefail
 
+export PATH="/home/zeph/.local/bin:/home/zeph/.nvm/versions/node/v24.15.0/bin:/usr/local/bin:/usr/bin:/bin:$PATH"
+
 DISCORD_TARGET="channel:1496099475838603324"
 LOG_DIR="/tmp/review_logs"
 mkdir -p "$LOG_DIR"
