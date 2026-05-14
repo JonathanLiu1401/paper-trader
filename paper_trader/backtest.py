@@ -2036,29 +2036,10 @@ class BacktestEngine:
 
     def _send_progress(self, done: int, total: int, results: list[BacktestRun],
                        spy: float) -> None:
-        if not results:
-            return
-        last = results[-1]
-        msg = (f"[Backtest] Run {done}/{total} complete. "
-               f"Final: ${last.final_value:.2f} "
-               f"({last.total_return_pct:+.2f}% vs SPY {spy:+.2f}%)")
-        self._discord(msg)
+        pass  # silent — check dashboard at :8090/backtests
 
     def _send_final(self, results: list[BacktestRun], spy: float) -> None:
-        if not results:
-            self._discord("[Backtest Complete] all runs failed")
-            return
-        avg_return = sum(r.total_return_pct for r in results) / len(results)
-        avg_final = sum(r.final_value for r in results) / len(results)
-        best = max(results, key=lambda r: r.final_value)
-        worst = min(results, key=lambda r: r.final_value)
-        msg = (f"[Backtest Complete] {len(results)}/10 runs done. "
-               f"avg ${avg_final:.2f} ({avg_return:+.2f}%), "
-               f"best ${best.final_value:.2f} ({best.total_return_pct:+.2f}%), "
-               f"worst ${worst.final_value:.2f} ({worst.total_return_pct:+.2f}%). "
-               f"SPY baseline {spy:+.2f}%. "
-               f"Dashboard: http://10.19.203.44:8090/backtests")
-        self._discord(msg)
+        pass  # silent — check dashboard at :8090/backtests
 
     def _discord(self, message: str) -> bool:
         if not shutil.which("openclaw"):
