@@ -12,7 +12,7 @@ from . import market, reporter, strategy
 from .store import get_store
 
 NY = ZoneInfo("America/New_York")
-OPEN_INTERVAL_S = 60        # decide every 1 min when market is open
+OPEN_INTERVAL_S = 1800      # decide every 30 min when market is open
 CLOSED_INTERVAL_S = 3600    # every 1 hour when closed
 HOURLY_REPORT_S = 3600      # send hourly summary every hour
 DAILY_CLOSE_HOUR_NY = 16    # report after 16:00 NY
