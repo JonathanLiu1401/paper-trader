@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import json
-from flask import Flask, jsonify, render_template_string
+from flask import Flask, jsonify, render_template_string, request
 
 from .store import get_store
 
@@ -212,7 +212,9 @@ TEMPLATE = r"""
         <table id="pos-tbl">
           <thead><tr>
             <th>ticker</th><th>type</th><th class="num">qty</th>
-            <th class="num">avg</th><th class="num">now</th><th class="num">P/L</th>
+            <th class="num">avg</th><th class="num">now</th>
+            <th class="num">total $</th><th class="num">% port</th>
+            <th class="num">P/L</th>
           </tr></thead><tbody></tbody>
         </table>
       </div>
@@ -331,6 +333,7 @@ const dollar = n => (n == null ? "—" : "$" + fmt(n));
 const dt = s => s ? s.replace("T", " ").slice(0,16) : "";
 
 const INITIAL_TAB = "{{ initial_tab }}";
+const API_PREFIX = "{{ api_prefix }}";
 const RUN_COLORS = [
   "#00d4ff","#ff6b35","#7fff00","#ff3cac","#ffd700",
   "#00ff9f","#ff1744","#e040fb","#40c4ff","#ff9100"
@@ -350,7 +353,7 @@ function showTab(name) {
 // ───────── Trader pane ─────────
 let chart;
 async function refresh() {
-  const r = await fetch("/api/state").then(r => r.json());
+  const r = await fetch(API_PREFIX + "/api/state").then(r => r.json());
   document.getElementById("hb").textContent = "updated " + (r.now || "");
   document.getElementById("tv").textContent = dollar(r.portfolio.total_value);
   document.getElementById("cash").textContent = dollar(r.portfolio.cash);
@@ -361,16 +364,22 @@ async function refresh() {
   document.getElementById("sp").textContent = r.sp500 ? fmt(r.sp500) : "—";
 
   const posBody = document.querySelector("#pos-tbl tbody");
+  const portTotal = r.portfolio.total_value || 0;
   posBody.innerHTML = r.positions.map(p => {
     const cls = (p.unrealized_pl || 0) >= 0 ? "pos" : "neg";
     const label = p.type === "stock" ? p.type :
                   `${p.type.toUpperCase()} ${p.strike}/${p.expiry}`;
+    const mult = (p.type === "call" || p.type === "put") ? 100 : 1;
+    const totalVal = (p.current_price || 0) * (p.qty || 0) * mult;
+    const pctPort = portTotal > 0 ? (totalVal / portTotal * 100) : 0;
     return `<tr><td>${p.ticker}</td><td>${label}</td>
       <td class="num">${fmt(p.qty,4)}</td>
       <td class="num">${fmt(p.avg_cost)}</td>
       <td class="num">${fmt(p.current_price)}</td>
+      <td class="num">${dollar(totalVal)}</td>
+      <td class="num">${fmt(pctPort,1)}%</td>
       <td class="num ${cls}">${fmt(p.unrealized_pl)}</td></tr>`;
-  }).join("") || `<tr><td colspan="6" class="muted">no positions</td></tr>`;
+  }).join("") || `<tr><td colspan="8" class="muted">no positions</td></tr>`;
 
   const trBody = document.querySelector("#trades-tbl tbody");
   trBody.innerHTML = r.trades.map(t => {
@@ -448,7 +457,7 @@ function hexToRgba(hex, a) {
 
 async function loadBacktests() {
   try {
-    const r = await fetch("/api/backtests").then(r => r.json());
+    const r = await fetch(API_PREFIX + "/api/backtests").then(r => r.json());
     btRuns = r.runs || [];
     btLastUpdated = Date.now();
     btLoaded = true;
@@ -706,7 +715,7 @@ async function loadRunDetail(runId) {
   const wrap = document.getElementById("bt-detail");
   document.getElementById("bt-detail-id").textContent = "#" + runId;
   wrap.style.display = "block";
-  const r = await fetch(`/api/backtests/${runId}`).then(r => r.json());
+  const r = await fetch(API_PREFIX + `/api/backtests/${runId}`).then(r => r.json());
   const meta = [];
   if (r.seed != null) meta.push(`seed ${r.seed}`);
   if (r.start_date) meta.push(`${r.start_date} → ${r.end_date || '…'}`);
@@ -790,14 +799,18 @@ showTab(INITIAL_TAB || "trader");
 """
 
 
+def _api_prefix() -> str:
+    return request.headers.get("X-Forwarded-Prefix", "").rstrip("/")
+
+
 @app.route("/")
 def index():
-    return render_template_string(TEMPLATE, initial_tab="trader")
+    return render_template_string(TEMPLATE, initial_tab="trader", api_prefix=_api_prefix())
 
 
 @app.route("/backtests")
 def backtests_page():
-    return render_template_string(TEMPLATE, initial_tab="backtests")
+    return render_template_string(TEMPLATE, initial_tab="backtests", api_prefix=_api_prefix())
 
 
 @app.route("/api/state")

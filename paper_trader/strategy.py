@@ -18,6 +18,13 @@ WATCHLIST = [
     "LITE", "LNOK", "MUU", "DRAM", "SNDU",  # current real-account interests
     "NVDA", "AMD", "MU", "AMAT", "LRCX", "KLAC", "TSM", "ASML", "MRVL",  # semis
     "SMH", "SOXX", "SPY", "QQQ",  # ETFs
+    "TQQQ", "SOXL", "UPRO", "LABU", "FNGU", "NVDU",  # leveraged ETFs
+]
+
+# Subset used for live quant indicator computation. Mix of mega-caps + leveraged.
+QUANT_TICKERS_LIVE = [
+    "SPY", "QQQ", "NVDA", "AMD", "MU", "TSM", "AAPL", "MSFT", "META",
+    "TQQQ", "SOXL", "LITE",
 ]
 
 FUTURES = ["ES=F", "NQ=F", "CL=F", "GC=F"]
@@ -30,6 +37,18 @@ risk, leverage, and timing. There are NO enforced limits. You can:
 - Go all-in on a single ticker
 - Let losers run if you expect reversal
 - Take leveraged ETF positions (MUU, LNOK, etc.)
+
+LEVERAGE INSTRUMENTS AVAILABLE:
+- Leveraged ETFs: TQQQ (3x QQQ), SOXL (3x semis), UPRO (3x SPY), LABU (3x biotech), FNGU (3x tech), NVDU (2x NVDA), LNOK (2x Nokia)
+- For high-conviction directional trades, consider 2-3x leveraged ETFs instead of the underlying
+- For options-equivalent exposure: buy deep ITM LEAPS calls (delta >0.80) to simulate leveraged long
+- Risk: leveraged ETFs decay in sideways markets; best for strong trending moves only
+
+POSITION SIZING GUIDANCE:
+- High conviction (RSI+MACD+MA all aligned): up to 40% portfolio
+- Medium conviction (2/3 signals aligned): 15-25%
+- Low conviction / leveraged ETF: max 10%
+- Never go 100% into one leveraged ETF (decay risk)
 
 THINK LIKE A HEDGE FUND MANAGER WHO WANTS ASYMMETRIC RETURNS.
 Small, safe trades will not outperform. Take calculated risks.
@@ -52,6 +71,129 @@ For SELL/SELL_CALL/SELL_PUT, ticker must match an open position (and strike/expi
 
 Return JSON ONLY.
 """
+
+
+def _ema_live(values: list[float], period: int) -> list[float]:
+    if len(values) < period:
+        return []
+    k = 2.0 / (period + 1)
+    out = [sum(values[:period]) / period]
+    for v in values[period:]:
+        out.append(v * k + out[-1] * (1 - k))
+    return out
+
+
+def _rsi_live(closes: list[float], period: int = 14) -> float | None:
+    if len(closes) <= period:
+        return None
+    gains = losses = 0.0
+    for i in range(1, period + 1):
+        diff = closes[i] - closes[i - 1]
+        if diff >= 0:
+            gains += diff
+        else:
+            losses -= diff
+    avg_g = gains / period
+    avg_l = losses / period
+    for i in range(period + 1, len(closes)):
+        diff = closes[i] - closes[i - 1]
+        g = diff if diff > 0 else 0.0
+        l = -diff if diff < 0 else 0.0
+        avg_g = (avg_g * (period - 1) + g) / period
+        avg_l = (avg_l * (period - 1) + l) / period
+    if avg_l == 0:
+        return 100.0
+    rs = avg_g / avg_l
+    return 100.0 - (100.0 / (1.0 + rs))
+
+
+def _macd_live(closes: list[float]) -> str | None:
+    if len(closes) < 35:
+        return None
+    ema12 = _ema_live(closes, 12)
+    ema26 = _ema_live(closes, 26)
+    if not ema12 or not ema26:
+        return None
+    offset = len(ema12) - len(ema26)
+    macd_line = [ema12[i + offset] - ema26[i] for i in range(len(ema26))]
+    if len(macd_line) < 9:
+        return None
+    signal = _ema_live(macd_line, 9)
+    if not signal:
+        return None
+    return "bullish" if macd_line[-1] > signal[-1] else "bearish"
+
+
+_QUANT_CACHE: dict[str, tuple[dict, float]] = {}
+_QUANT_TTL = 300.0  # 5 min — indicators change slowly intraday
+
+
+def get_quant_signals_live(tickers: list[str]) -> dict[str, dict]:
+    """Fetch ~1y of daily closes from yfinance for each ticker and compute
+    RSI(14), MACD bullish/bearish, 50/200 MA cross. Cached 5 minutes per ticker."""
+    import time as _time
+    import yfinance as yf
+    out: dict[str, dict] = {}
+    for t in tickers:
+        cached = _QUANT_CACHE.get(t)
+        if cached and _time.time() - cached[1] < _QUANT_TTL:
+            out[t] = cached[0]
+            continue
+        try:
+            hist = yf.Ticker(t).history(period="1y", auto_adjust=False)
+            if hist is None or hist.empty:
+                continue
+            closes = [float(c) for c in hist["Close"].tolist() if c == c]
+            if len(closes) < 60:
+                continue
+            last = closes[-1]
+            rsi = _rsi_live(closes, 14)
+            macd_label = _macd_live(closes)
+            if len(closes) >= 200:
+                ma50 = sum(closes[-50:]) / 50
+                ma200 = sum(closes[-200:]) / 200
+                ma_cross = "golden" if ma50 > ma200 else "death"
+            elif len(closes) >= 50:
+                ma50 = sum(closes[-50:]) / 50
+                ma_cross = "above50" if last > ma50 else "below50"
+            else:
+                ma_cross = None
+            hi_52 = max(closes[-252:]) if len(closes) >= 252 else max(closes)
+            lo_52 = min(closes[-252:]) if len(closes) >= 252 else min(closes)
+            pct_h = (last - hi_52) / hi_52 * 100 if hi_52 else 0.0
+            pct_l = (last - lo_52) / lo_52 * 100 if lo_52 else 0.0
+            vol_ratio = None
+            try:
+                vols = [float(v) for v in hist["Volume"].tolist() if v == v]
+                if len(vols) >= 21 and vols[-1] > 0:
+                    avg20 = sum(vols[-21:-1]) / 20
+                    if avg20 > 0:
+                        vol_ratio = round(vols[-1] / avg20, 2)
+            except Exception:
+                pass
+            rec = {
+                "RSI": round(rsi, 1) if rsi is not None else None,
+                "MACD": macd_label,
+                "MA_cross": ma_cross,
+                "vol_ratio": vol_ratio,
+                "pct_from_52h": round(pct_h, 1),
+                "pct_from_52l": round(pct_l, 1),
+            }
+            _QUANT_CACHE[t] = (rec, _time.time())
+            out[t] = rec
+        except Exception as e:
+            print(f"[strategy] quant signal fetch failed {t}: {e}")
+    return out
+
+
+def _format_quant_signals(sigs: dict[str, dict]) -> str:
+    if not sigs:
+        return "  (no quant signals available)"
+    return "\n".join(
+        f"  {tk}: RSI={q.get('RSI')}  MACD={q.get('MACD')}  MA={q.get('MA_cross')}  "
+        f"vol_ratio={q.get('vol_ratio')}  52h={q.get('pct_from_52h')}%  52l={q.get('pct_from_52l')}%"
+        for tk, q in sorted(sigs.items())
+    )
 
 
 def _claude_call(prompt: str) -> str | None:
@@ -141,7 +283,8 @@ def _portfolio_snapshot(store: Store) -> dict:
 def _build_payload(snapshot: dict, top_signals: list[dict], sentiments: list[dict],
                    watch_prices: dict[str, float | None],
                    futures_prices: dict[str, float | None],
-                   sp500: float | None, market_open: bool) -> str:
+                   sp500: float | None, market_open: bool,
+                   quant_signals: dict[str, dict] | None = None) -> str:
     now = datetime.now(timezone.utc).isoformat()
     pos_lines = []
     for p in snapshot["positions"]:
@@ -190,6 +333,9 @@ WATCHLIST PRICES:
 
 FUTURES:
 {chr(10).join(fut_lines)}
+
+TECHNICAL SIGNALS (RSI/MACD/MA cross/vol ratio/52w proximity):
+{_format_quant_signals(quant_signals or {})}
 
 TICKER SENTIMENT (last 4h, from scored news):
 {chr(10).join(sent_lines) if sent_lines else '  (no scored mentions)'}
@@ -319,11 +465,21 @@ def decide() -> dict:
     fut_px = {f: market.get_futures_price(f) for f in FUTURES}
     sp500 = market.benchmark_sp500()
 
+    # Quant signals (RSI/MACD/MA cross) — include held positions + curated subset.
+    held_tickers = sorted({p["ticker"] for p in snap["positions"]})
+    quant_tickers = sorted(set(QUANT_TICKERS_LIVE) | set(held_tickers))
+    try:
+        quant_sigs = get_quant_signals_live(quant_tickers)
+    except Exception as e:
+        print(f"[strategy] quant signals failed: {e}")
+        quant_sigs = {}
+
     # include urgent items at the top
     seen_ids = {s["id"] for s in top}
     merged = [a for a in urgent if a["id"] not in seen_ids] + top
 
-    payload = _build_payload(snap, merged, sents, watch_px, fut_px, sp500, market_open)
+    payload = _build_payload(snap, merged, sents, watch_px, fut_px, sp500, market_open,
+                             quant_signals=quant_sigs)
     prompt = f"{SYSTEM_PROMPT}\n\n---\nCONTEXT:\n{payload}"
 
     raw = _claude_call(prompt)

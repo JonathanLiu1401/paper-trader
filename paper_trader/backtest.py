@@ -58,6 +58,17 @@ WATCHLIST = [
     "SHOP", "SQ", "COIN", "MSTR", "PLTR", "RIVN", "NIO", "ARKK",
     # Macro / commodity ETFs
     "TLT", "GLD", "SLV", "USO", "UNG",
+    # Leveraged ETFs for directional / asymmetric expression
+    "TQQQ", "SOXL", "UPRO", "LABU", "FNGU", "NVDU", "LNOK",
+    # Market structure / sector rotation gauges
+    "^VIX", "XLK", "XLE", "XLF", "XLV", "XLI",
+]
+
+# Subset of the watchlist for which we compute heavier technical indicators
+# (RSI/MACD/MA crossover/volume/52w proximity). Top 10 most-traded large caps
+# plus the index proxies.
+QUANT_SIGNAL_TICKERS = [
+    "SPY", "QQQ", "NVDA", "AMD", "MU", "TSM", "AAPL", "MSFT", "META", "TQQQ",
 ]
 # LNOK is a thin OTC name and yfinance often returns nothing → omitted from default fetch.
 
@@ -493,6 +504,248 @@ class PriceCache:
         return (e - s) / s * 100
 
 
+# ─────────────────────────── technical indicators ───────────────────────────
+
+# Volume series cache: ticker -> {iso_date: volume}. Filled lazily on first
+# call to _get_quant_signals so existing close-only price cache stays compatible.
+_VOLUME_CACHE: dict[str, dict[str, float]] = {}
+_VOLUME_CACHE_PATH = CACHE_DIR / "volumes.json"
+_VOLUME_CACHE_LOCK = threading.Lock()
+_VOLUME_CACHE_LOADED = False
+
+
+def _load_volume_cache_from_disk() -> None:
+    global _VOLUME_CACHE, _VOLUME_CACHE_LOADED
+    with _VOLUME_CACHE_LOCK:
+        if _VOLUME_CACHE_LOADED:
+            return
+        if _VOLUME_CACHE_PATH.exists():
+            try:
+                _VOLUME_CACHE = json.loads(_VOLUME_CACHE_PATH.read_text())
+            except Exception:
+                _VOLUME_CACHE = {}
+        _VOLUME_CACHE_LOADED = True
+
+
+def _persist_volume_cache() -> None:
+    try:
+        _VOLUME_CACHE_PATH.parent.mkdir(parents=True, exist_ok=True)
+        _VOLUME_CACHE_PATH.write_text(json.dumps(_VOLUME_CACHE))
+    except Exception as e:
+        print(f"[volume_cache] persist failed: {e}")
+
+
+def _ensure_volume_for(ticker: str, start: date, end: date) -> dict[str, float]:
+    """Lazily fetch a volume series for `ticker` covering [start, end]. Cached on disk."""
+    _load_volume_cache_from_disk()
+    existing = _VOLUME_CACHE.get(ticker)
+    if existing:
+        return existing
+    try:
+        end_pad = (end + timedelta(days=2)).isoformat()
+        hist = yf.Ticker(ticker).history(start=start.isoformat(),
+                                         end=end_pad, auto_adjust=False)
+        series: dict[str, float] = {}
+        if hist is not None and not hist.empty:
+            for ts, row in hist.iterrows():
+                vol = row.get("Volume")
+                if vol is None or vol != vol:
+                    continue
+                series[ts.date().isoformat()] = float(vol)
+        with _VOLUME_CACHE_LOCK:
+            _VOLUME_CACHE[ticker] = series
+            _persist_volume_cache()
+        return series
+    except Exception as e:
+        print(f"[volume_cache] {ticker} fetch failed: {e}")
+        with _VOLUME_CACHE_LOCK:
+            _VOLUME_CACHE[ticker] = {}
+        return {}
+
+
+def _series_up_to(prices: "PriceCache", ticker: str, sim_date: date,
+                  max_points: int = 260) -> list[tuple[date, float]]:
+    """Return (date, close) tuples for `ticker` <= sim_date, oldest first, capped at max_points."""
+    series = prices.prices.get(ticker) or {}
+    if not series:
+        return []
+    iso = sim_date.isoformat()
+    pairs = [(date.fromisoformat(d), v) for d, v in series.items() if d <= iso]
+    pairs.sort(key=lambda x: x[0])
+    return pairs[-max_points:]
+
+
+def _ema(values: list[float], period: int) -> list[float]:
+    if len(values) < period:
+        return []
+    k = 2.0 / (period + 1)
+    out: list[float] = []
+    seed = sum(values[:period]) / period
+    out.append(seed)
+    for v in values[period:]:
+        out.append(v * k + out[-1] * (1 - k))
+    return out
+
+
+def _rsi(closes: list[float], period: int = 14) -> float | None:
+    if len(closes) <= period:
+        return None
+    gains, losses = 0.0, 0.0
+    # initial averages over first `period` deltas
+    for i in range(1, period + 1):
+        diff = closes[i] - closes[i - 1]
+        if diff >= 0:
+            gains += diff
+        else:
+            losses -= diff
+    avg_g = gains / period
+    avg_l = losses / period
+    # Wilder smoothing for the rest
+    for i in range(period + 1, len(closes)):
+        diff = closes[i] - closes[i - 1]
+        g = diff if diff > 0 else 0.0
+        l = -diff if diff < 0 else 0.0
+        avg_g = (avg_g * (period - 1) + g) / period
+        avg_l = (avg_l * (period - 1) + l) / period
+    if avg_l == 0:
+        return 100.0
+    rs = avg_g / avg_l
+    return 100.0 - (100.0 / (1.0 + rs))
+
+
+def _macd(closes: list[float]) -> tuple[str, float, float] | None:
+    """Return (label, macd, signal). label is 'bullish'/'bearish'/'flat'."""
+    if len(closes) < 35:
+        return None
+    ema12 = _ema(closes, 12)
+    ema26 = _ema(closes, 26)
+    if not ema12 or not ema26:
+        return None
+    # align: ema26 starts 14 points later than ema12 (offset of 26-12=14)
+    offset = len(ema12) - len(ema26)
+    macd_line = [ema12[i + offset] - ema26[i] for i in range(len(ema26))]
+    if len(macd_line) < 9:
+        return None
+    signal_line = _ema(macd_line, 9)
+    if not signal_line:
+        return None
+    m = macd_line[-1]
+    s = signal_line[-1]
+    label = "bullish" if m > s else "bearish" if m < s else "flat"
+    return (label, m, s)
+
+
+def _compute_technical_indicators(ticker: str, sim_date: date,
+                                  prices: "PriceCache") -> dict | None:
+    """RSI/MACD/MA crossover/volume ratio/52w proximity computed from cached closes.
+
+    Returns None if there isn't enough history for the ticker at sim_date."""
+    pairs = _series_up_to(prices, ticker, sim_date, max_points=260)
+    if len(pairs) < 60:
+        return None
+    closes = [p[1] for p in pairs]
+    last = closes[-1]
+
+    rsi = _rsi(closes, 14)
+    macd_res = _macd(closes)
+    macd_label = macd_res[0] if macd_res else None
+
+    ma_cross = None
+    if len(closes) >= 200:
+        ma50 = sum(closes[-50:]) / 50
+        ma200 = sum(closes[-200:]) / 200
+        ma_cross = "golden" if ma50 > ma200 else "death"
+    elif len(closes) >= 50:
+        ma50 = sum(closes[-50:]) / 50
+        ma_cross = "above50" if last > ma50 else "below50"
+
+    hi_52 = max(closes[-252:]) if len(closes) >= 252 else max(closes)
+    lo_52 = min(closes[-252:]) if len(closes) >= 252 else min(closes)
+    pct_from_52h = (last - hi_52) / hi_52 * 100 if hi_52 else 0.0
+    pct_from_52l = (last - lo_52) / lo_52 * 100 if lo_52 else 0.0
+
+    vol_ratio: float | None = None
+    try:
+        # volumes cover [start, end] for the ticker
+        vols = _ensure_volume_for(ticker, START_DATE - timedelta(days=400), END_DATE)
+        if vols:
+            iso = sim_date.isoformat()
+            # find sim_date volume + last 20 trading-day window
+            vdates = sorted(d for d in vols.keys() if d <= iso)
+            if len(vdates) >= 21:
+                today_v = vols[vdates[-1]]
+                prior20 = [vols[d] for d in vdates[-21:-1]]
+                avg20 = sum(prior20) / len(prior20)
+                if avg20 > 0:
+                    vol_ratio = today_v / avg20
+    except Exception:
+        vol_ratio = None
+
+    return {
+        "RSI": round(rsi, 1) if rsi is not None else None,
+        "MACD": macd_label,
+        "MA_cross": ma_cross,
+        "vol_ratio": round(vol_ratio, 2) if vol_ratio is not None else None,
+        "pct_from_52h": round(pct_from_52h, 1),
+        "pct_from_52l": round(pct_from_52l, 1),
+    }
+
+
+def _get_quant_signals(sim_date: date, tickers: list[str],
+                       prices: "PriceCache") -> dict[str, dict]:
+    """Compute technical indicators for each ticker at sim_date.
+
+    Returns a dict {ticker: {RSI, MACD, MA_cross, vol_ratio, pct_from_52h, pct_from_52l}}.
+    Tickers with insufficient history are omitted."""
+    out: dict[str, dict] = {}
+    for t in tickers:
+        try:
+            ind = _compute_technical_indicators(t, sim_date, prices)
+            if ind is not None:
+                out[t] = ind
+        except Exception as e:
+            print(f"[quant] {t} indicator compute failed: {e}")
+    return out
+
+
+def _market_regime(sim_date: date, prices: "PriceCache") -> str:
+    """Bull/bear/sideways via SPY 50/200 MA + slope."""
+    pairs = _series_up_to(prices, "SPY", sim_date, max_points=260)
+    if len(pairs) < 200:
+        return "unknown"
+    closes = [p[1] for p in pairs]
+    last = closes[-1]
+    ma50 = sum(closes[-50:]) / 50
+    ma200 = sum(closes[-200:]) / 200
+    if last > ma50 > ma200:
+        return "bull"
+    if last < ma50 < ma200:
+        return "bear"
+    return "sideways"
+
+
+def _sector_rotation(sim_date: date, prices: "PriceCache",
+                     lookback_days: int = 21) -> list[tuple[str, float]]:
+    """Trailing ~1 month total return for sector ETFs, sorted descending."""
+    sectors = ["XLK", "XLE", "XLF", "XLV", "XLI"]
+    results: list[tuple[str, float]] = []
+    for s in sectors:
+        pairs = _series_up_to(prices, s, sim_date, max_points=lookback_days + 5)
+        if len(pairs) < 2:
+            continue
+        start = pairs[0][1]
+        end = pairs[-1][1]
+        if start <= 0:
+            continue
+        results.append((s, (end - start) / start * 100))
+    results.sort(key=lambda x: x[1], reverse=True)
+    return results
+
+
+def _vix_level(sim_date: date, prices: "PriceCache") -> float | None:
+    return prices.price_on("^VIX", sim_date)
+
+
 # ─────────────────────────── GDELT fetcher ───────────────────────────
 
 class GDELTFetcher:
@@ -708,6 +961,18 @@ High conviction = large size. Low conviction = stay cash.
 
 Trade US stocks ONLY (no options or futures in this backtest).
 
+LEVERAGE INSTRUMENTS AVAILABLE:
+- Leveraged ETFs: TQQQ (3x QQQ), SOXL (3x semis), UPRO (3x SPY), LABU (3x biotech), FNGU (3x tech), NVDU (2x NVDA), LNOK (2x Nokia)
+- For high-conviction directional trades, consider 2-3x leveraged ETFs instead of the underlying
+- For options-equivalent exposure: buy deep ITM LEAPS calls (delta >0.80) to simulate leveraged long
+- Risk: leveraged ETFs decay in sideways markets; best for strong trending moves only
+
+POSITION SIZING GUIDANCE (committee should consider):
+- High conviction (RSI+MACD+MA all aligned): up to 40% portfolio
+- Medium conviction (2/3 signals aligned): 15-25%
+- Low conviction / leveraged ETF: max 10%
+- Never go 100% into one leveraged ETF (decay risk)
+
 Respond with a SINGLE JSON object — no prose, no markdown fences. Schema:
 
 {
@@ -815,8 +1080,28 @@ def _build_prompt(run_id: int, seed: int, sim_date: date, portfolio: SimPortfoli
 
     px_lines = []
     for t in WATCHLIST:
+        if t.startswith("^"):
+            continue  # index gauges shown elsewhere
         p = prices.price_on(t, sim_date)
         px_lines.append(f"  {t}: ${p:.2f}" if p else f"  {t}: N/A")
+
+    # Technical signals for held positions + top watchlist names.
+    quant_tickers = sorted(set(QUANT_SIGNAL_TICKERS) | set(portfolio.positions.keys()))
+    quant_sigs = _get_quant_signals(sim_date, quant_tickers, prices)
+    quant_lines = []
+    for tk in sorted(quant_sigs.keys()):
+        q = quant_sigs[tk]
+        quant_lines.append(
+            f"  {tk}: RSI={q.get('RSI')}  MACD={q.get('MACD')}  "
+            f"MA={q.get('MA_cross')}  vol_ratio={q.get('vol_ratio')}  "
+            f"52h={q.get('pct_from_52h')}%  52l={q.get('pct_from_52l')}%"
+        )
+
+    vix = _vix_level(sim_date, prices)
+    regime = _market_regime(sim_date, prices)
+    rotation = _sector_rotation(sim_date, prices)
+    rot_str = ", ".join(f"{t} {p:+.1f}%" for t, p in rotation) if rotation else "n/a"
+    vix_str = f"{vix:.2f}" if vix is not None else "N/A"
 
     total = portfolio.total_value(prices, sim_date)
 
@@ -840,6 +1125,14 @@ PORTFOLIO:
 
 WATCHLIST CLOSES on {sim_date.isoformat()}:
 {chr(10).join(px_lines)}
+
+MARKET STRUCTURE on {sim_date.isoformat()}:
+  VIX: {vix_str}
+  Market regime: {regime} (SPY vs 50/200 MA)
+  Sector rotation (~21d return): {rot_str}
+
+TECHNICAL SIGNALS (positions + top watchlist):
+{chr(10).join(quant_lines) if quant_lines else '  (no quant signals — insufficient history)'}
 
 TOP NEWS SIGNALS for {sim_date.isoformat()} (score 0..5 from keyword heuristic):
 {chr(10).join(art_lines) if art_lines else '  (no signals)'}
