@@ -20,6 +20,8 @@ import threading
 import time
 import urllib.parse
 import urllib.request
+
+import requests
 from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
@@ -1258,42 +1260,110 @@ class BacktestRun:
     equity_curve: list[dict] = field(default_factory=list)
 
 
+LOCAL_ARTICLES_DB = Path(__file__).resolve().parent.parent.parent / "digital-intern" / "data" / "articles.db"
+# How many days back from today to use local DB vs skip news entirely for pure-quant mode.
+LOCAL_NEWS_LOOKBACK_DAYS = 60
+
+
 class BacktestEngine:
     def __init__(self):
         self.store = BacktestStore()
         self.prices = PriceCache(WATCHLIST, START_DATE, END_DATE)
         self.gdelt = GDELTFetcher()
         self.av_news = AlphaVantageNewsFetcher()
+        # Pre-load local articles DB into memory keyed by ISO date string.
+        # This is instant for all subsequent lookups — no network, no disk per-date.
+        self._local_news: dict[str, list[dict]] = self._load_local_articles()
         if not self.prices.trading_days:
             raise RuntimeError("PriceCache has no trading days — yfinance fetch failed")
+
+    def _load_local_articles(self) -> dict[str, list[dict]]:
+        """Load entire articles.db into memory, keyed by published/first_seen date (YYYY-MM-DD).
+
+        Returns empty dict if DB is unavailable — callers fall back gracefully.
+        """
+        result: dict[str, list[dict]] = {}
+        try:
+            import sqlite3 as _sqlite3, zlib as _zlib
+            if not LOCAL_ARTICLES_DB.exists():
+                return result
+            conn = _sqlite3.connect(f"file:{LOCAL_ARTICLES_DB}?mode=ro", uri=True, timeout=5.0)
+            rows = conn.execute(
+                "SELECT title, url, source, published, ai_score, kw_score, full_text "
+                "FROM articles WHERE title IS NOT NULL AND title != ''"
+            ).fetchall()
+            conn.close()
+            for title, url, source, published, ai_score, kw_score, full_text in rows:
+                # Use published date if available, else skip (not useful for historical sim)
+                day_str = None
+                if published:
+                    try:
+                        from email.utils import parsedate_to_datetime
+                        dt = parsedate_to_datetime(published)
+                        day_str = dt.date().isoformat()
+                    except Exception:
+                        if len(published) >= 10:
+                            day_str = published[:10]
+                if not day_str:
+                    continue
+                # Decode full text for richer scoring
+                snippet = ""
+                if full_text:
+                    try:
+                        snippet = _zlib.decompress(full_text).decode("utf-8", errors="replace")[:300]
+                    except Exception:
+                        pass
+                score = float(ai_score or kw_score or 0)
+                result.setdefault(day_str, []).append({
+                    "title": title, "url": url or "",
+                    "source": source or "", "score": score, "snippet": snippet,
+                })
+            print(f"[local_news] loaded {sum(len(v) for v in result.values())} articles "
+                  f"across {len(result)} days from local DB")
+        except Exception as e:
+            print(f"[local_news] DB load failed (using quant-only mode): {e}")
+        return result
 
     def _sampled_days(self) -> list[date]:
         days = self.prices.trading_days
         return days[::SAMPLE_EVERY_N_DAYS]
 
-    def _fetch_signals(self, d: date, seed: int, rng: random.Random) -> list[dict]:
-        # rotate 2 keyword groups based on seed/day so different runs see different slices
-        # After _warm_gdelt_cache(), these should all be disk-cache hits (no outbound calls).
-        idxs = rng.sample(range(len(KEYWORD_GROUPS)), 2)
+    def _fetch_signals(self, d: date, seed: int, rng: random.Random,
+                       portfolio: "SimPortfolio | None" = None) -> list[dict]:
+        """Three-tier news fetch — fast local DB first, network only as fallback.
+
+        Tier 1 (instant):  local articles.db pre-loaded into memory at engine init.
+        Tier 2 (fast):     yfinance ticker.news — no key, no rate limit, recent only.
+        Tier 3 (slow/opt): GDELT disk cache — only if local DB returned 0 articles
+                           AND the cache file already exists (no outbound call).
+        Alpha Vantage:     quota-guarded, disk-cached, fetched only when quota allows.
+        """
         articles: list[dict] = []
-        seen_urls = set()
-        for i in idxs:
-            kw = KEYWORD_GROUPS[i]
-            for a in self.gdelt.fetch(d, kw):
-                url = a.get("url", "")
-                if url in seen_urls or not a.get("title"):
-                    continue
-                seen_urls.add(url)
-                score, tickers = score_article(a)
-                articles.append({
-                    "title": a["title"],
-                    "url": url,
-                    "score": score,
-                    "tickers": tickers,
-                })
-        # Alpha Vantage NEWS_SENTIMENT — disk-cached, quota-guarded (22 req/day max).
-        # Fetches for the 3 most relevant tickers based on current portfolio + top watchlist.
-        av_tickers = list(portfolio.positions.keys())[:2] + ["NVDA", "SPY"]
+        seen_urls: set[str] = set()
+
+        # ── Tier 1: local articles DB (in-memory, zero latency) ──────────────
+        day_str = d.isoformat()
+        for a in self._local_news.get(day_str, []):
+            url = a.get("url", "")
+            if url in seen_urls:
+                continue
+            seen_urls.add(url)
+            _, tickers = score_article({"title": a["title"], "url": url})
+            articles.append({"title": a["title"], "url": url,
+                             "score": a["score"], "tickers": tickers})
+
+        # ── Tier 2: yfinance recent news (no rate limit, no API key) ─────────
+        if d >= date.today() - timedelta(days=30):
+            for a in self._fetch_yf_news(list(QUANT_SIGNAL_TICKERS), d):
+                if a["url"] not in seen_urls:
+                    seen_urls.add(a["url"])
+                    articles.append(a)
+
+        # ── Alpha Vantage (quota-guarded, disk-cached) ────────────────────────
+        if portfolio is not None:
+            av_tickers = list(portfolio.positions.keys())[:2] + ["NVDA", "SPY"]
+        else:
+            av_tickers = ["NVDA", "SPY"]
         for a in self.av_news.fetch(list(dict.fromkeys(av_tickers))[:4], d):
             url = a.get("url", "")
             if url and url not in seen_urls:
@@ -1302,13 +1372,25 @@ class BacktestEngine:
                 articles.append({"title": a["title"], "url": url,
                                  "score": score, "tickers": tickers})
 
-        # Supplement with yfinance ticker news (no rate limits, no API key needed).
-        for a in self._fetch_yf_news(list(QUANT_SIGNAL_TICKERS), d):
-            if a["url"] not in seen_urls:
-                seen_urls.add(a["url"])
-                articles.append(a)
+        # ── Tier 3: GDELT — only from existing disk cache, no outbound calls ──
+        # Skip entirely if local DB already gave us articles (fast path).
+        if not articles:
+            idxs = rng.sample(range(len(KEYWORD_GROUPS)), 2)
+            for i in idxs:
+                kw = KEYWORD_GROUPS[i]
+                cache_path = self.gdelt._cache_key(d, kw)
+                if not cache_path.exists():
+                    continue  # skip — no cache, no network call
+                for a in self.gdelt.fetch(d, kw):
+                    url = a.get("url", "")
+                    if url in seen_urls or not a.get("title"):
+                        continue
+                    seen_urls.add(url)
+                    score, tickers = score_article(a)
+                    articles.append({"title": a["title"], "url": url,
+                                     "score": score, "tickers": tickers})
 
-        # sort by score, take top 10 then sample 5 with rng
+        # ── Rank and sample ───────────────────────────────────────────────────
         articles.sort(key=lambda x: x["score"], reverse=True)
         top10 = articles[:10]
         if len(top10) <= 5:
@@ -1387,7 +1469,7 @@ class BacktestEngine:
             prev_sample = sim_date
 
             # fetch & score
-            signals = self._fetch_signals(sim_date, seed, rng)
+            signals = self._fetch_signals(sim_date, seed, rng, portfolio)
 
             # build prompt + call Opus
             prompt = _build_prompt(run_id, seed, sim_date, portfolio, signals, self.prices)
@@ -1528,8 +1610,10 @@ class BacktestEngine:
         import traceback
         from concurrent.futures import ThreadPoolExecutor, as_completed
 
-        # Pre-warm GDELT disk cache so parallel threads never block on outbound requests.
-        self._warm_gdelt_cache()
+        # Warm GDELT cache in background — doesn't block parallel runs.
+        # Runs use local DB (tier 1) immediately; GDELT cache fills in over time.
+        threading.Thread(target=self._warm_gdelt_cache, daemon=True,
+                         name="gdelt-cache-warm").start()
 
         spy_return = self.prices.returns_pct("SPY", self.prices.trading_days[0],
                                              self.prices.trading_days[-1])
