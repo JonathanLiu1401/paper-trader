@@ -58,8 +58,24 @@ WATCHLIST = [
     "SHOP", "SQ", "COIN", "MSTR", "PLTR", "RIVN", "NIO", "ARKK",
     # Macro / commodity ETFs
     "TLT", "GLD", "SLV", "USO", "UNG",
-    # Leveraged ETFs for directional / asymmetric expression
-    "TQQQ", "SOXL", "UPRO", "LABU", "FNGU", "NVDU", "LNOK",
+    # Leveraged ETFs — 3x Bull
+    "TQQQ", "UPRO", "SPXL", "UDOW", "URTY",        # index 3x
+    "SOXL", "TECL", "FNGU", "CURE", "LABU",         # sector 3x (semis/tech/health/bio)
+    "NAIL", "WANT", "DFEN", "MIDU", "TNA",           # housing/China/defense/mid/small 3x
+    "DPST", "FAS", "HIBL", "UTSL",                   # banks/financials/high-beta/utilities 3x
+    # Leveraged ETFs — 2x Bull
+    "QLD", "SSO", "MVV", "SAA", "UWM",               # index 2x
+    "NVDU", "MSFU", "AMZU", "GOOGU", "METAU",        # single-stock 2x (NVDA/MSFT/AMZN/GOOG/META)
+    "TSLT", "AAPLU", "CONL", "TSLL",                 # Tesla/Apple/Coinbase 2x
+    "LNOK", "SMCI2X", "PLTU",                        # Nokia/SMCI/Palantir 2x
+    "USD", "ROM", "UXI", "UYG",                      # tech/industrial/financial 2x
+    # Leveraged ETFs — Bear / Inverse (for hedging)
+    "SQQQ", "SPXS", "SDOW", "SRTY",                  # index 3x inverse
+    "SOXS", "TECS", "FNGD",                          # sector 3x inverse
+    "TZA", "FAZ", "HIBS",                            # small/financial/high-beta inverse
+    # Crypto/commodity leveraged
+    "BITX", "BITU", "ETHU",                          # crypto 2x
+    "BOIL", "UNG", "UCO", "AGQ",                     # nat gas/oil/silver 2x
     # Market structure / sector rotation gauges
     "^VIX", "XLK", "XLE", "XLF", "XLV", "XLI",
 ]
@@ -962,7 +978,10 @@ High conviction = large size. Low conviction = stay cash.
 Trade US stocks ONLY (no options or futures in this backtest).
 
 LEVERAGE INSTRUMENTS AVAILABLE:
-- Leveraged ETFs: TQQQ (3x QQQ), SOXL (3x semis), UPRO (3x SPY), LABU (3x biotech), FNGU (3x tech), NVDU (2x NVDA), LNOK (2x Nokia)
+- Leveraged ETFs 3x Bull: TQQQ (QQQ), UPRO/SPXL (SPY), UDOW (Dow), URTY (Russell), SOXL (semis), TECL (tech), FNGU (tech FANGs), CURE (healthcare), LABU (biotech), NAIL (homebuilders), DPST (banks), FAS (financials), DFEN (defense), TNA (small-cap), UTSL (utilities)
+- Leveraged ETFs 2x Bull: QLD (QQQ 2x), SSO (SPY 2x), NVDU (NVDA), MSFU (MSFT), AMZU (AMZN), GOOGU (GOOG), METAU (META), TSLL (TSLA), CONL (COIN), LNOK (Nokia), BITU (BTC), ETHU (ETH)
+- Leveraged ETFs Bear/Hedge: SQQQ/SPXS (3x short index), SOXS (3x short semis), TECS (3x short tech), FNGD (3x short FANGs)
+- Crypto leveraged: BITX (2x BTC), BITU (2x BTC), ETHU (2x ETH)
 - For high-conviction directional trades, consider 2-3x leveraged ETFs instead of the underlying
 - For options-equivalent exposure: buy deep ITM LEAPS calls (delta >0.80) to simulate leveraged long
 - Risk: leveraged ETFs decay in sideways markets; best for strong trending moves only

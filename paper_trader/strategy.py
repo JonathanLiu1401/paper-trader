@@ -18,7 +18,15 @@ WATCHLIST = [
     "LITE", "LNOK", "MUU", "DRAM", "SNDU",  # current real-account interests
     "NVDA", "AMD", "MU", "AMAT", "LRCX", "KLAC", "TSM", "ASML", "MRVL",  # semis
     "SMH", "SOXX", "SPY", "QQQ",  # ETFs
-    "TQQQ", "SOXL", "UPRO", "LABU", "FNGU", "NVDU",  # leveraged ETFs
+    # Leveraged ETFs — 3x Bull
+    "TQQQ", "UPRO", "SPXL", "UDOW", "URTY",
+    "SOXL", "TECL", "FNGU", "CURE", "LABU",
+    "NAIL", "DFEN", "DPST", "FAS", "TNA", "UTSL",
+    # Leveraged ETFs — 2x Bull
+    "QLD", "SSO", "NVDU", "MSFU", "AMZU", "GOOGU", "METAU",
+    "TSLL", "CONL", "LNOK", "BITU", "ETHU",
+    # Leveraged Bear / Hedge
+    "SQQQ", "SPXS", "SOXS", "TECS", "FNGD",
 ]
 
 # Subset used for live quant indicator computation. Mix of mega-caps + leveraged.
@@ -39,7 +47,9 @@ risk, leverage, and timing. There are NO enforced limits. You can:
 - Take leveraged ETF positions (MUU, LNOK, etc.)
 
 LEVERAGE INSTRUMENTS AVAILABLE:
-- Leveraged ETFs: TQQQ (3x QQQ), SOXL (3x semis), UPRO (3x SPY), LABU (3x biotech), FNGU (3x tech), NVDU (2x NVDA), LNOK (2x Nokia)
+- Leveraged ETFs 3x Bull: TQQQ (QQQ), UPRO/SPXL (SPY), UDOW (Dow), URTY (Russell), SOXL (semis), TECL (tech), FNGU (FANGs), CURE (healthcare), LABU (biotech), NAIL (homebuilders), DPST (banks), FAS (financials), DFEN (defense), TNA (small-cap), UTSL (utilities)
+- Leveraged ETFs 2x Bull: QLD (QQQ 2x), SSO (SPY 2x), NVDU (NVDA), MSFU (MSFT), AMZU (AMZN), GOOGU (GOOG), METAU (META), TSLL (TSLA), CONL (COIN), LNOK (Nokia), BITU (BTC), ETHU (ETH)
+- Leveraged Bear/Hedge: SQQQ/SPXS (3x short index), SOXS (3x short semis), TECS (3x short tech), FNGD (3x short FANGs)
 - For high-conviction directional trades, consider 2-3x leveraged ETFs instead of the underlying
 - For options-equivalent exposure: buy deep ITM LEAPS calls (delta >0.80) to simulate leveraged long
 - Risk: leveraged ETFs decay in sideways markets; best for strong trending moves only
