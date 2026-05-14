@@ -279,6 +279,12 @@ TEMPLATE = r"""
         </div>
 
         <div class="card" style="margin-bottom:14px;">
+          <h2 style="margin:0 0 4px;">Model progress — return by cycle</h2>
+          <div style="color:#78909c;font-size:12px;margin-bottom:10px;">Best / avg / worst return per cycle of 5 runs. Upward trend = model improving.</div>
+          <div style="position:relative;height:220px;"><canvas id="mp-chart"></canvas></div>
+        </div>
+
+        <div class="card" style="margin-bottom:14px;">
           <h2>Runs table — click a row to highlight</h2>
           <table id="bt-tbl" class="sortable">
             <thead><tr>
@@ -455,6 +461,41 @@ function hexToRgba(hex, a) {
   return `rgba(${r},${g},${b},${a})`;
 }
 
+let mpChart;
+async function loadModelProgress() {
+  try {
+    const d = await fetch(API_PREFIX + "/api/model-progress").then(r => r.json());
+    const cycles = d.cycles || [];
+    if (!cycles.length) return;
+    const labels = cycles.map(c => "C" + c.cycle);
+    const best  = cycles.map(c => c.best);
+    const avg   = cycles.map(c => c.avg);
+    const worst = cycles.map(c => c.worst);
+    const ctx = document.getElementById("mp-chart");
+    if (!ctx) return;
+    if (mpChart) mpChart.destroy();
+    mpChart = new Chart(ctx, {
+      type: "line",
+      data: {
+        labels,
+        datasets: [
+          { label: "Best %",  data: best,  borderColor: "#4caf50", backgroundColor: "rgba(76,175,80,0.08)",  tension: 0.3, pointRadius: 3, fill: false },
+          { label: "Avg %",   data: avg,   borderColor: "#42a5f5", backgroundColor: "rgba(66,165,245,0.08)", tension: 0.3, pointRadius: 3, fill: false },
+          { label: "Worst %", data: worst, borderColor: "#ef5350", backgroundColor: "rgba(239,83,80,0.08)",  tension: 0.3, pointRadius: 3, fill: false },
+        ]
+      },
+      options: {
+        responsive: true, maintainAspectRatio: false,
+        plugins: { legend: { labels: { color: "#cfd8dc", font: { size: 11 } } }, tooltip: { callbacks: { label: ctx => ctx.dataset.label + ": " + ctx.raw.toFixed(1) + "%" } } },
+        scales: {
+          x: { ticks: { color: "#78909c" }, grid: { color: "rgba(255,255,255,0.05)" } },
+          y: { ticks: { color: "#78909c", callback: v => v.toFixed(0) + "%" }, grid: { color: "rgba(255,255,255,0.05)" } }
+        }
+      }
+    });
+  } catch(e) { console.error("model-progress:", e); }
+}
+
 async function loadBacktests() {
   try {
     const r = await fetch(API_PREFIX + "/api/backtests").then(r => r.json());
@@ -462,6 +503,7 @@ async function loadBacktests() {
     btLastUpdated = Date.now();
     btLoaded = true;
     renderBacktests();
+    loadModelProgress();
   } catch (e) {
     console.error(e);
   } finally {
@@ -901,6 +943,48 @@ def backtest_decisions(run_id: int):
         return jsonify({"run_id": run_id, "decisions": detail.get("decisions", [])})
     except Exception as e:
         return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/model-progress")
+def model_progress():
+    """Per-cycle aggregated returns for the Model Progress chart.
+
+    Groups completed runs into cycles of RUNS_PER_CYCLE=5 by run_id order,
+    returning best/avg/worst return per cycle so the chart shows improvement.
+    """
+    try:
+        from .backtest import BacktestStore, RUNS_PER_CYCLE
+        store = BacktestStore()
+        rows = store.conn.execute(
+            "SELECT run_id, total_return_pct, completed_at FROM backtest_runs "
+            "WHERE status='complete' ORDER BY run_id"
+        ).fetchall()
+        if not rows:
+            return jsonify({"cycles": []})
+
+        # Group into cycles of RUNS_PER_CYCLE
+        cycle_size = RUNS_PER_CYCLE if hasattr(RUNS_PER_CYCLE, '__int__') else 5
+        try:
+            cycle_size = int(cycle_size)
+        except Exception:
+            cycle_size = 5
+
+        cycles = []
+        for i in range(0, len(rows), cycle_size):
+            chunk = rows[i:i + cycle_size]
+            returns = [r["total_return_pct"] for r in chunk]
+            cycle_num = i // cycle_size + 1
+            cycles.append({
+                "cycle": cycle_num,
+                "best": round(max(returns), 2),
+                "avg": round(sum(returns) / len(returns), 2),
+                "worst": round(min(returns), 2),
+                "n": len(returns),
+                "completed_at": chunk[-1]["completed_at"],
+            })
+        return jsonify({"cycles": cycles})
+    except Exception as e:
+        return jsonify({"cycles": [], "error": str(e)})
 
 
 def run(host: str = "0.0.0.0", port: int = 8090):
