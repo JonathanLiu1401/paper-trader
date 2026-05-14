@@ -833,6 +833,82 @@ class GDELTFetcher:
         return articles
 
 
+# ─────────────────────────── Alpha Vantage news fetcher ───────────────────────────
+
+AV_CACHE_DIR = CACHE_DIR / "alphavantage"
+AV_QUOTA_PATH = CACHE_DIR / "av_quota.json"
+AV_MAX_DAILY = 22  # stay under 25/day limit with margin
+
+
+class AlphaVantageNewsFetcher:
+    """Disk-cached Alpha Vantage NEWS_SENTIMENT fetcher.
+
+    Extremely conservative: max 22 calls/day tracked across restarts, skip
+    when quota is exhausted. All results persisted to disk so backtest reruns
+    are free. Gracefully disabled when ALPHA_VANTAGE_KEY is unset.
+    """
+    _lock = threading.Lock()
+
+    def __init__(self):
+        AV_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+        self._key = os.environ.get("ALPHA_VANTAGE_KEY", "").strip()
+
+    def _quota(self) -> dict:
+        try:
+            if AV_QUOTA_PATH.exists():
+                q = json.loads(AV_QUOTA_PATH.read_text())
+                if q.get("date") == date.today().isoformat():
+                    return q
+        except Exception:
+            pass
+        return {"date": date.today().isoformat(), "calls": 0}
+
+    def _inc_quota(self):
+        with self._lock:
+            q = self._quota()
+            q["calls"] += 1
+            AV_QUOTA_PATH.write_text(json.dumps(q))
+
+    def _cache_path(self, ticker: str, d: date) -> Path:
+        return AV_CACHE_DIR / f"{d.isoformat()}_{ticker}.json"
+
+    def fetch(self, tickers: list[str], d: date) -> list[dict]:
+        if not self._key:
+            return []
+        articles: list[dict] = []
+        for tk in tickers:
+            path = self._cache_path(tk, d)
+            if path.exists():
+                try:
+                    articles.extend(json.loads(path.read_text()))
+                    continue
+                except Exception:
+                    pass
+            with self._lock:
+                q = self._quota()
+                if q["calls"] >= AV_MAX_DAILY:
+                    continue
+            try:
+                resp = requests.get(
+                    "https://www.alphavantage.co/query",
+                    params={"function": "NEWS_SENTIMENT", "tickers": tk,
+                            "limit": 50, "apikey": self._key},
+                    timeout=12,
+                )
+                data = resp.json()
+                feed = data.get("feed", [])
+                items = [{"title": a.get("title", ""), "url": a.get("url", ""),
+                          "source": a.get("source", "")}
+                         for a in feed if a.get("title")]
+                path.write_text(json.dumps(items))
+                articles.extend(items)
+                self._inc_quota()
+                time.sleep(1.2)  # AV rate-limit buffer
+            except Exception as e:
+                print(f"[av_news] {tk} {d}: {e}")
+        return articles
+
+
 # ─────────────────────────── heuristic scorer ───────────────────────────
 
 _TICKER_RE = re.compile(r"\b([A-Z]{2,5})\b")
@@ -1187,6 +1263,7 @@ class BacktestEngine:
         self.store = BacktestStore()
         self.prices = PriceCache(WATCHLIST, START_DATE, END_DATE)
         self.gdelt = GDELTFetcher()
+        self.av_news = AlphaVantageNewsFetcher()
         if not self.prices.trading_days:
             raise RuntimeError("PriceCache has no trading days — yfinance fetch failed")
 
@@ -1214,6 +1291,17 @@ class BacktestEngine:
                     "score": score,
                     "tickers": tickers,
                 })
+        # Alpha Vantage NEWS_SENTIMENT — disk-cached, quota-guarded (22 req/day max).
+        # Fetches for the 3 most relevant tickers based on current portfolio + top watchlist.
+        av_tickers = list(portfolio.positions.keys())[:2] + ["NVDA", "SPY"]
+        for a in self.av_news.fetch(list(dict.fromkeys(av_tickers))[:4], d):
+            url = a.get("url", "")
+            if url and url not in seen_urls:
+                seen_urls.add(url)
+                score, tickers = score_article(a)
+                articles.append({"title": a["title"], "url": url,
+                                 "score": score, "tickers": tickers})
+
         # Supplement with yfinance ticker news (no rate limits, no API key needed).
         for a in self._fetch_yf_news(list(QUANT_SIGNAL_TICKERS), d):
             if a["url"] not in seen_urls:
