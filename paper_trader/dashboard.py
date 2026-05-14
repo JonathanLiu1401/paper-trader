@@ -953,7 +953,7 @@ def model_progress():
     returning best/avg/worst return per cycle so the chart shows improvement.
     """
     try:
-        from .backtest import BacktestStore, RUNS_PER_CYCLE
+        from .backtest import BacktestStore
         store = BacktestStore()
         rows = store.conn.execute(
             "SELECT run_id, total_return_pct, completed_at FROM backtest_runs "
@@ -962,12 +962,7 @@ def model_progress():
         if not rows:
             return jsonify({"cycles": []})
 
-        # Group into cycles of RUNS_PER_CYCLE
-        cycle_size = RUNS_PER_CYCLE if hasattr(RUNS_PER_CYCLE, '__int__') else 5
-        try:
-            cycle_size = int(cycle_size)
-        except Exception:
-            cycle_size = 5
+        cycle_size = 5  # RUNS_PER_CYCLE
 
         cycles = []
         for i in range(0, len(rows), cycle_size):
