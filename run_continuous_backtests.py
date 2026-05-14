@@ -217,15 +217,7 @@ def main() -> None:
         ml_status = _try_train_ml() if winner else "no winner"
         print(f"[continuous] ml: {ml_status}")
 
-        # Only post to Discord every 5 cycles to avoid chat spam
-        if cycle % 5 == 0:
-            if winner:
-                returns_str = " / ".join(f"{r.total_return_pct:+.1f}%" for r in top_runs)
-                msg = (f"[cycles {cycle-4}–{cycle}] Top runs: [{returns_str}] "
-                       f"vs SPY {spy_pct:+.1f}%. ML trained.")
-            else:
-                msg = f"[cycles {cycle-4}–{cycle}] No results produced."
-            _discord(msg)
+        # Backtest results are silent — check the dashboard at :8090
 
         try:
             deleted = _trim_history(engine, keep=KEEP_LAST_RUNS)
