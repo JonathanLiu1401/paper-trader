@@ -18,18 +18,14 @@ HOURLY_REPORT_S = 3600      # send hourly summary every hour
 DAILY_CLOSE_HOUR_NY = 16    # report after 16:00 NY
 
 
-_last_hourly = 0.0
+_last_hourly = time.time()
 _daily_close_sent_for: str | None = None
 
 
 def _maybe_hourly(now_ts: float):
     global _last_hourly
     if now_ts - _last_hourly >= HOURLY_REPORT_S:
-        try:
-            reporter.send_hourly_summary()
-        except Exception as e:
-            print(f"[runner] hourly send failed: {e}")
-        _last_hourly = now_ts
+        _last_hourly = now_ts  # hourly Discord summary disabled
 
 
 def _maybe_daily_close():
@@ -68,7 +64,8 @@ def _cycle():
                 reporter.send_trade_alert(trades[0])
             for ax in summary.get("auto_exits") or []:
                 reporter._send(f"**AUTO RISK EXIT** `{ax}`")
-        reporter.send_decision_log(summary)
+        if summary.get("status") == "FILLED":
+            reporter.send_decision_log(summary)
     except Exception as e:
         print(f"[runner] report failed: {e}")
 
