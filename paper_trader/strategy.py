@@ -79,6 +79,19 @@ Respond with a SINGLE JSON object — no prose, no markdown fences. Schema:
 Return JSON with your decision. No limits on qty, strike, or cash used.
 For SELL/SELL_CALL/SELL_PUT, ticker must match an open position (and strike/expiry for options).
 
+TECHNICAL SIGNAL INTERPRETATION (use alongside news, not in isolation):
+- RSI > 70 = overbought — avoid new longs, consider reducing; RSI < 30 = oversold — potential
+  long opportunity if news/thesis supports it.
+- MACD signal crossovers confirm momentum: positive macd_signal with rising price is bullish
+  confirmation; negative macd_signal with falling price is bearish confirmation.
+- Bollinger Band squeezes (bb_position near 0 after a tight range) often precede breakouts;
+  bb_position approaching +2 or -2 signals stretched conditions and elevated reversal risk.
+- Require volume confirmation for breakout trades: only trust a breakout when vol_ratio > 1.2.
+  Low-volume breakouts often fail.
+- Weight technical signals alongside news — neither alone is sufficient. A strong news catalyst
+  with confirming technicals is high-conviction; a news catalyst that contradicts technicals
+  (e.g. "beat earnings" on a stock at RSI 80 with bb_position +2) is a lower-conviction setup.
+
 Return JSON ONLY.
 """
 
@@ -138,9 +151,19 @@ _QUANT_CACHE: dict[str, tuple[dict, float]] = {}
 _QUANT_TTL = 300.0  # 5 min — indicators change slowly intraday
 
 
+def _stdev_live(values: list[float]) -> float:
+    n = len(values)
+    if n < 2:
+        return 0.0
+    mean = sum(values) / n
+    return (sum((v - mean) ** 2 for v in values) / n) ** 0.5
+
+
 def get_quant_signals_live(tickers: list[str]) -> dict[str, dict]:
     """Fetch ~1y of daily closes from yfinance for each ticker and compute
-    RSI(14), MACD bullish/bearish, 50/200 MA cross. Cached 5 minutes per ticker."""
+    RSI(14), MACD bullish/bearish, 50/200 MA cross, plus expanded signals:
+    rsi, macd_signal, bb_position, mom_5d, mom_20d, vol_ratio, wk52_pos.
+    Cached 5 minutes per ticker."""
     import time as _time
     import yfinance as yf
     out: dict[str, dict] = {}
@@ -181,6 +204,55 @@ def get_quant_signals_live(tickers: list[str]) -> dict[str, dict]:
                         vol_ratio = round(vols[-1] / avg20, 2)
             except Exception:
                 pass
+
+            # Expanded signals (lowercase keys per spec)
+            macd_signal_val = None
+            try:
+                if len(closes) >= 35:
+                    e12 = _ema_live(closes, 12)
+                    e26 = _ema_live(closes, 26)
+                    if e12 and e26:
+                        offset = len(e12) - len(e26)
+                        macd_line = [e12[i + offset] - e26[i] for i in range(len(e26))]
+                        if len(macd_line) >= 9:
+                            sig = _ema_live(macd_line, 9)
+                            if sig:
+                                macd_signal_val = round(sig[-1], 2)
+            except Exception:
+                macd_signal_val = None
+
+            bb_position = None
+            try:
+                if len(closes) >= 20:
+                    window20 = closes[-20:]
+                    sma20 = sum(window20) / 20
+                    sd20 = _stdev_live(window20)
+                    if sd20 > 0:
+                        raw = (last - sma20) / (2 * sd20)
+                        bb_position = round(max(-2.0, min(2.0, raw)), 2)
+            except Exception:
+                bb_position = None
+
+            mom_5d = None
+            try:
+                if len(closes) >= 6 and closes[-6] > 0:
+                    mom_5d = round((last - closes[-6]) / closes[-6] * 100, 2)
+            except Exception:
+                mom_5d = None
+            mom_20d = None
+            try:
+                if len(closes) >= 21 and closes[-21] > 0:
+                    mom_20d = round((last - closes[-21]) / closes[-21] * 100, 2)
+            except Exception:
+                mom_20d = None
+
+            wk52_pos = None
+            try:
+                if hi_52 > lo_52:
+                    wk52_pos = round((last - lo_52) / (hi_52 - lo_52), 2)
+            except Exception:
+                wk52_pos = None
+
             rec = {
                 "RSI": round(rsi, 1) if rsi is not None else None,
                 "MACD": macd_label,
@@ -188,6 +260,13 @@ def get_quant_signals_live(tickers: list[str]) -> dict[str, dict]:
                 "vol_ratio": vol_ratio,
                 "pct_from_52h": round(pct_h, 1),
                 "pct_from_52l": round(pct_l, 1),
+                # Expanded fields per spec
+                "rsi": round(rsi, 2) if rsi is not None else None,
+                "macd_signal": macd_signal_val,
+                "bb_position": bb_position,
+                "mom_5d": mom_5d,
+                "mom_20d": mom_20d,
+                "wk52_pos": wk52_pos,
             }
             _QUANT_CACHE[t] = (rec, _time.time())
             out[t] = rec

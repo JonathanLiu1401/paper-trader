@@ -730,6 +730,40 @@ def _get_quant_signals(sim_date: date, tickers: list[str],
     return out
 
 
+def _stdev(values: list[float]) -> float:
+    n = len(values)
+    if n < 2:
+        return 0.0
+    mean = sum(values) / n
+    return (sum((v - mean) ** 2 for v in values) / n) ** 0.5
+
+
+def _format_quant_signals_block(quant: dict[str, dict]) -> str:
+    """Render the per-spec QUANTITATIVE SIGNALS table for the Claude prompt."""
+    if not quant:
+        return ""
+    header = ("=== QUANTITATIVE SIGNALS ===\n"
+              "Ticker | RSI | MACD | BB-pos | Mom-5d% | Mom-20d% | Vol-ratio | 52wk-pos")
+    lines = [header]
+    for tk in sorted(quant.keys()):
+        q = quant[tk]
+        def _f(key, default="N/A"):
+            v = q.get(key)
+            return default if v is None else v
+        rsi = _f("rsi")
+        macd = _f("macd_signal")
+        bbp = _f("bb_position")
+        m5 = q.get("mom_5d")
+        m20 = q.get("mom_20d")
+        vr = q.get("vol_ratio")
+        w52 = _f("wk52_pos")
+        m5_s = f"{m5:+.1f}%" if isinstance(m5, (int, float)) else "N/A"
+        m20_s = f"{m20:+.1f}%" if isinstance(m20, (int, float)) else "N/A"
+        vr_s = f"{vr:.2f}x" if isinstance(vr, (int, float)) else "N/A"
+        lines.append(f"{tk:<6} | {rsi} | {macd} | {bbp} | {m5_s} | {m20_s} | {vr_s} | {w52}")
+    return "\n".join(lines)
+
+
 def _market_regime(sim_date: date, prices: "PriceCache") -> str:
     """Bull/bear/sideways via SPY 50/200 MA + slope."""
     pairs = _series_up_to(prices, "SPY", sim_date, max_points=260)
@@ -949,6 +983,166 @@ def score_article(article: dict) -> tuple[float, list[str]]:
     return max(0.0, min(5.0, score)), sorted(tickers)
 
 
+# ─────────────────────────── ML/quant decision engine ─────────────────
+_BULLISH_WORDS = {
+    "beat", "beats", "surge", "surges", "rally", "rallies", "upgrade", "upgraded",
+    "record", "breakout", "buy", "outperform", "strong", "growth", "profit",
+    "dividend", "acqui", "bullish", "higher", "raise", "raised", "exceed",
+}
+_BEARISH_WORDS = {
+    "miss", "misses", "plunge", "plunges", "downgrade", "downgraded", "cut",
+    "cuts", "layoff", "layoffs", "loss", "losses", "warning", "shortfall",
+    "selloff", "sell", "underperform", "weak", "decline", "declines", "crash",
+    "lower", "reduce", "reduced", "concern", "concerns", "risk",
+}
+_WORD_TO_TICKER: dict[str, str] = {
+    "nvidia": "NVDA", "amd": "AMD", "apple": "AAPL", "microsoft": "MSFT",
+    "amazon": "AMZN", "google": "GOOGL", "alphabet": "GOOGL", "meta": "META",
+    "tesla": "TSLA", "intel": "INTC", "micron": "MU", "broadcom": "AVGO",
+    "qualcomm": "QCOM", "spy": "SPY", "qqq": "QQQ", "nasdaq": "QQQ",
+}
+
+
+def _article_sentiment(title: str) -> float:
+    """Return -1..+1 based on bullish/bearish keyword count in title."""
+    words = set(title.lower().split())
+    bull = sum(1 for w in words if any(w.startswith(b) for b in _BULLISH_WORDS))
+    bear = sum(1 for w in words if any(w.startswith(b) for b in _BEARISH_WORDS))
+    total = bull + bear
+    if total == 0:
+        return 0.0
+    return (bull - bear) / total
+
+
+def _ml_decide(
+    sim_date: date,
+    portfolio: "SimPortfolio",
+    articles: list[dict],
+    prices: "PriceCache",
+    run_id: int,
+    rng: random.Random,
+) -> dict:
+    """Pure ML + quant decision — no Claude call.
+
+    Scores every watchlist ticker via ML article scores weighted by sentiment,
+    then adjusts with RSI/MACD/momentum. Returns action/ticker/qty dict.
+    """
+    # 1. Build ticker sentiment scores from articles
+    ticker_scores: dict[str, float] = {}
+    for a in articles:
+        raw_score = float(a.get("score", 0.0))
+        if raw_score < 1.0:
+            continue
+        sentiment = _article_sentiment(a.get("title", ""))
+        tickers = list(a.get("tickers", []))
+        title_lower = (a.get("title") or "").lower()
+        for word, sym in _WORD_TO_TICKER.items():
+            if word in title_lower and sym not in tickers:
+                tickers.append(sym)
+        for tk in tickers:
+            if tk not in WATCHLIST:
+                continue
+            ticker_scores[tk] = ticker_scores.get(tk, 0.0) + raw_score * sentiment
+
+    # 2. Quant signal adjustments
+    quant_tickers = sorted(set(QUANT_SIGNAL_TICKERS) | set(portfolio.positions.keys()))
+    quant = _get_quant_signals(sim_date, quant_tickers, prices)
+    for tk, q in quant.items():
+        adj = 0.0
+        rsi = q.get("rsi") or q.get("RSI")
+        macd = q.get("macd_signal") or q.get("MACD")
+        mom5 = q.get("mom_5d")
+        mom20 = q.get("mom_20d")
+        bb = q.get("bb_position")
+        if isinstance(rsi, (int, float)):
+            if rsi < 33:
+                adj += 1.5
+            elif rsi < 45:
+                adj += 0.5
+            elif rsi > 67:
+                adj -= 1.5
+            elif rsi > 55:
+                adj -= 0.5
+        if isinstance(macd, (int, float)):
+            adj += 0.5 if macd > 0 else -0.5
+        if isinstance(mom5, (int, float)):
+            adj += min(1.0, max(-1.0, mom5 / 3.0))
+        if isinstance(mom20, (int, float)):
+            adj += min(0.5, max(-0.5, mom20 / 10.0))
+        if isinstance(bb, (int, float)):
+            adj -= bb * 0.5  # mean-reversion nudge
+        ticker_scores[tk] = ticker_scores.get(tk, 0.0) + adj
+
+    # 3. Market regime dampener
+    regime = _market_regime(sim_date, prices)
+    regime_mult = 1.0 if regime == "bull" else (0.6 if regime == "sideways" else 0.3)
+
+    total_val = portfolio.total_value(prices, sim_date)
+
+    # 4. Sell: worst-scoring held position with negative signal
+    sell_ticker = None
+    worst_score = -0.8
+    for tk in portfolio.positions:
+        s = ticker_scores.get(tk, 0.0) * regime_mult
+        if s < worst_score:
+            worst_score = s
+            sell_ticker = tk
+
+    # 5. Buy: highest-scoring watchlist ticker above threshold
+    buy_ticker = None
+    best_score = 1.0
+    for tk, s in ticker_scores.items():
+        adj_s = s * regime_mult
+        if adj_s > best_score and prices.price_on(tk, sim_date):
+            best_score = adj_s
+            buy_ticker = tk
+
+    # 6. Persona-seeded bias (each run_id tilts toward a style without Claude)
+    persona_idx = ((run_id - 1) % 10) + 1
+    if persona_idx in (2, 10):   # MOMENTUM / SPECULATOR — lower buy bar
+        best_score *= 0.85
+    elif persona_idx in (1, 5):  # VALUE / GARP — higher bar
+        best_score *= 1.15
+    elif persona_idx == 3:       # CONTRARIAN — flip overbought buy to sell
+        q = quant.get(buy_ticker or "", {})
+        rsi_v = q.get("rsi") or q.get("RSI")
+        if buy_ticker and isinstance(rsi_v, (int, float)) and rsi_v > 65:
+            sell_ticker, buy_ticker = buy_ticker, None
+
+    if sell_ticker and portfolio.positions.get(sell_ticker):
+        pos = portfolio.positions[sell_ticker]
+        sell_qty = round(pos["qty"] * 0.5, 4)
+        return {
+            "action": "SELL", "ticker": sell_ticker, "qty": sell_qty,
+            "reasoning": (
+                f"ML+quant: {sell_ticker} score={worst_score:.2f} regime={regime} "
+                f"RSI={quant.get(sell_ticker, {}).get('rsi', 'N/A')} — reducing"
+            ),
+        }
+
+    if buy_ticker:
+        price = prices.price_on(buy_ticker, sim_date) or 1.0
+        conviction = min(0.25, best_score / 20.0)
+        buy_notional = min(total_val * conviction, portfolio.cash * 0.95)
+        qty = round(buy_notional / price, 4)
+        if qty < 0.01:
+            return {"action": "HOLD", "ticker": buy_ticker, "qty": 0,
+                    "reasoning": f"ML score={best_score:.2f} but notional too small"}
+        return {
+            "action": "BUY", "ticker": buy_ticker, "qty": qty,
+            "stop_loss": round(price * 0.92, 2),
+            "take_profit": round(price * 1.15, 2),
+            "reasoning": (
+                f"ML+quant: {buy_ticker} score={best_score:.2f} regime={regime} "
+                f"RSI={quant.get(buy_ticker, {}).get('rsi', 'N/A')} "
+                f"conviction={conviction:.0%}"
+            ),
+        }
+
+    return {"action": "HOLD", "ticker": "", "qty": 0,
+            "reasoning": f"ML+quant: no high-conviction signal {sim_date} regime={regime}"}
+
+
 # ─────────────────────────── portfolio sim ───────────────────────────
 
 @dataclass
@@ -1166,7 +1360,8 @@ Consensus: BUY NVDA (4 votes + highest conviction on AI compute catalyst)."
 
 
 def _build_prompt(run_id: int, seed: int, sim_date: date, portfolio: SimPortfolio,
-                  top_articles: list[dict], prices: PriceCache) -> str:
+                  top_articles: list[dict], prices: PriceCache,
+                  extra_quant_block: str = "") -> str:
     pos_lines = []
     for ticker, p in portfolio.positions.items():
         px = prices.price_on(ticker, sim_date) or p["avg_cost"]
@@ -1235,6 +1430,8 @@ MARKET STRUCTURE on {sim_date.isoformat()}:
 
 TECHNICAL SIGNALS (positions + top watchlist):
 {chr(10).join(quant_lines) if quant_lines else '  (no quant signals — insufficient history)'}
+
+{extra_quant_block or ''}
 
 TOP NEWS SIGNALS for {sim_date.isoformat()} (score 0..5 from keyword heuristic):
 {chr(10).join(art_lines) if art_lines else '  (no signals)'}
@@ -1394,6 +1591,16 @@ class BacktestEngine:
                     articles.append({"title": a["title"], "url": url,
                                      "score": score, "tickers": tickers})
 
+        # ── Compute QUANTITATIVE SIGNALS block (held positions + SPY/QQQ) ────
+        try:
+            held = list(portfolio.positions.keys()) if portfolio is not None else []
+            quant_targets = sorted(set(held) | {"SPY", "QQQ"})
+            quant_sigs = self._fetch_quant_signals(quant_targets, d)
+            self._last_quant_block = _format_quant_signals_block(quant_sigs)
+        except Exception as e:
+            print(f"[quant_v2] block build failed at {d}: {e}")
+            self._last_quant_block = ""
+
         # ── Rank and sample ───────────────────────────────────────────────────
         articles.sort(key=lambda x: x["score"], reverse=True)
         top10 = articles[:10]
@@ -1475,10 +1682,8 @@ class BacktestEngine:
             # fetch & score
             signals = self._fetch_signals(sim_date, seed, rng, portfolio)
 
-            # build prompt + call Opus
-            prompt = _build_prompt(run_id, seed, sim_date, portfolio, signals, self.prices)
-            raw = _claude_call(prompt)
-            decision = _parse_decision(raw)
+            # ML + quant decision (no Claude call — uses article scores + technicals)
+            decision = _ml_decide(sim_date, portfolio, signals, self.prices, run_id, rng)
             n_decisions += 1
 
             if decision:
@@ -1486,7 +1691,7 @@ class BacktestEngine:
                 if status == "FILLED":
                     n_trades += 1
             else:
-                status, detail = "NO_DECISION", "claude returned no parseable JSON"
+                status, detail = "NO_DECISION", "ml_decide returned None"
 
             total = portfolio.total_value(self.prices, sim_date)
             self.store.record_decision(run_id, sim_date.isoformat(), decision,
@@ -1609,6 +1814,96 @@ class BacktestEngine:
             except Exception:
                 pass
         return articles
+
+    def _fetch_quant_signals(self, tickers: list[str], d: date) -> dict[str, dict]:
+        """Compute per-spec quant signals (RSI, MACD, BB, momentum, volume, 52wk) at date `d`.
+
+        Reads daily closes from self.prices (PriceCache). Falls back to yfinance
+        for volume series. Each ticker is wrapped in try/except — a failure on
+        one ticker never aborts the loop. Returns a dict keyed by ticker with
+        rounded numeric fields:
+            rsi, macd_signal, bb_position, mom_5d, mom_20d, vol_ratio, wk52_pos
+        """
+        out: dict[str, dict] = {}
+        for t in tickers:
+            try:
+                pairs = _series_up_to(self.prices, t, d, max_points=300)
+                if len(pairs) < 30:
+                    continue
+                closes = [p[1] for p in pairs]
+                last = closes[-1]
+
+                # RSI-14
+                rsi_val = _rsi(closes, 14)
+
+                # MACD signal (signal line) — use signal line value, not the spread
+                macd_signal: float | None = None
+                if len(closes) >= 35:
+                    ema12 = _ema(closes, 12)
+                    ema26 = _ema(closes, 26)
+                    if ema12 and ema26:
+                        offset = len(ema12) - len(ema26)
+                        macd_line = [ema12[i + offset] - ema26[i] for i in range(len(ema26))]
+                        if len(macd_line) >= 9:
+                            sig = _ema(macd_line, 9)
+                            if sig:
+                                macd_signal = sig[-1]
+
+                # Bollinger Band position over 20 days
+                bb_position: float | None = None
+                if len(closes) >= 20:
+                    window = closes[-20:]
+                    sma20 = sum(window) / 20
+                    sd20 = _stdev(window)
+                    if sd20 > 0:
+                        raw = (last - sma20) / (2 * sd20)
+                        bb_position = max(-2.0, min(2.0, raw))
+
+                # 5- and 20-day momentum
+                mom_5d: float | None = None
+                if len(closes) >= 6 and closes[-6] > 0:
+                    mom_5d = (last - closes[-6]) / closes[-6] * 100
+                mom_20d: float | None = None
+                if len(closes) >= 21 and closes[-21] > 0:
+                    mom_20d = (last - closes[-21]) / closes[-21] * 100
+
+                # Volume ratio: today's vol / 20-day avg (excluding today)
+                vol_ratio: float | None = None
+                try:
+                    vols = _ensure_volume_for(t, START_DATE - timedelta(days=400), END_DATE)
+                    if vols:
+                        iso = d.isoformat()
+                        vdates = sorted(vd for vd in vols.keys() if vd <= iso)
+                        if len(vdates) >= 21:
+                            today_v = vols[vdates[-1]]
+                            prior20 = [vols[vd] for vd in vdates[-21:-1]]
+                            avg20 = sum(prior20) / len(prior20)
+                            if avg20 > 0:
+                                vol_ratio = today_v / avg20
+                except Exception:
+                    vol_ratio = None
+
+                # 52-week position: 0 (low) to 1 (high)
+                wk52_pos: float | None = None
+                window = closes[-252:] if len(closes) >= 252 else closes
+                hi = max(window)
+                lo = min(window)
+                if hi > lo:
+                    wk52_pos = (last - lo) / (hi - lo)
+
+                out[t] = {
+                    "rsi": round(rsi_val, 2) if rsi_val is not None else None,
+                    "macd_signal": round(macd_signal, 2) if macd_signal is not None else None,
+                    "bb_position": round(bb_position, 2) if bb_position is not None else None,
+                    "mom_5d": round(mom_5d, 2) if mom_5d is not None else None,
+                    "mom_20d": round(mom_20d, 2) if mom_20d is not None else None,
+                    "vol_ratio": round(vol_ratio, 2) if vol_ratio is not None else None,
+                    "wk52_pos": round(wk52_pos, 2) if wk52_pos is not None else None,
+                }
+            except Exception as e:
+                print(f"[quant_v2] {t} failed at {d}: {e}")
+                continue
+        return out
 
     def run_all(self, n: int = 10, start_run_id: int = 1) -> list[BacktestRun]:
         import traceback
