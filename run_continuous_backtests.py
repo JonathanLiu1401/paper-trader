@@ -34,6 +34,7 @@ from paper_trader.backtest import (
 )
 
 RUNS_PER_CYCLE = 5  # reduced from 10 — 5 runs × 3 max-concurrent claude = safe on 14 GB RAM
+TOP_RUNS_TO_TRAIN = 3  # aggregate top-N runs per cycle into training data
 KEEP_LAST_RUNS = 100
 COOLDOWN_SECONDS = 60
 DISCORD_CHANNEL = "channel:1496099475838603324"
@@ -73,45 +74,59 @@ def _trim_history(engine: BacktestEngine, keep: int = KEEP_LAST_RUNS) -> int:
         return cur.rowcount or 0
 
 
-def _append_winner_decisions(engine: BacktestEngine, winner: BacktestRun,
-                             cycle: int) -> int:
-    """Append the winner's BUY/SELL decisions to WINNER_JSONL tagged with cycle."""
+def _append_top_decisions(engine: BacktestEngine, top_runs: list[BacktestRun],
+                          cycle: int) -> int:
+    """Aggregate BUY/SELL decisions from top N runs into WINNER_JSONL.
+
+    Records are weighted by each run's return — higher-return runs contribute
+    decisions with higher ai_score so the ML trainer up-weights them.
+    """
     WINNER_JSONL.parent.mkdir(parents=True, exist_ok=True)
-    try:
-        rows = engine.store.conn.execute(
-            "SELECT action, ticker, sim_date, reasoning, qty, confidence "
-            "FROM backtest_decisions "
-            "WHERE run_id = ? AND action IS NOT NULL AND action != 'HOLD'",
-            (winner.run_id,),
-        ).fetchall()
-    except Exception as e:
-        print(f"[continuous] winner read failed: {e}")
-        return 0
+    # Normalise returns to [0.5, 1.0] weight range so even 2nd/3rd place matter
+    returns = [r.total_return_pct for r in top_runs]
+    max_ret = max(returns) if returns else 1.0
+    min_ret = min(returns) if returns else 0.0
+    span = max_ret - min_ret or 1.0
 
     written = 0
     with WINNER_JSONL.open("a") as fh:
-        for row in rows:
-            action = (row["action"] or "").upper()
-            if action not in ("BUY", "SELL"):
+        for run in top_runs:
+            weight = 0.5 + 0.5 * (run.total_return_pct - min_ret) / span
+            try:
+                rows = engine.store.conn.execute(
+                    "SELECT action, ticker, sim_date, reasoning, qty, confidence "
+                    "FROM backtest_decisions "
+                    "WHERE run_id = ? AND action IS NOT NULL AND action != 'HOLD'",
+                    (run.run_id,),
+                ).fetchall()
+            except Exception as e:
+                print(f"[continuous] run {run.run_id} read failed: {e}")
                 continue
-            rec = {
-                "cycle": cycle,
-                "run_id": winner.run_id,
-                "title": f"{action} {row['ticker']} on {row['sim_date']}",
-                "source": f"backtest_cycle_{cycle}_run_{winner.run_id}_winner",
-                "ai_score": 5.0 if action == "BUY" else 0.0,
-                "urgency": 1,
-                "label": action,
-                "ticker": row["ticker"] or "",
-                "sim_date": row["sim_date"] or "",
-                "qty": row["qty"],
-                "confidence": row["confidence"],
-                "reasoning": row["reasoning"] or "",
-                "return_pct": winner.total_return_pct,
-            }
-            fh.write(json.dumps(rec) + "\n")
-            written += 1
-    print(f"[continuous] appended {written} winner records → {WINNER_JSONL}")
+            rank = top_runs.index(run) + 1
+            for row in rows:
+                action = (row["action"] or "").upper()
+                if action not in ("BUY", "SELL"):
+                    continue
+                rec = {
+                    "cycle": cycle,
+                    "run_id": run.run_id,
+                    "rank": rank,
+                    "title": f"{action} {row['ticker']} on {row['sim_date']}",
+                    "source": f"backtest_cycle_{cycle}_rank{rank}",
+                    "ai_score": round(weight * (5.0 if action == "BUY" else 0.5), 2),
+                    "urgency": 1 if rank == 1 else 0,
+                    "label": action,
+                    "ticker": row["ticker"] or "",
+                    "sim_date": row["sim_date"] or "",
+                    "qty": row["qty"],
+                    "confidence": row["confidence"],
+                    "reasoning": row["reasoning"] or "",
+                    "return_pct": run.total_return_pct,
+                    "weight": round(weight, 3),
+                }
+                fh.write(json.dumps(rec) + "\n")
+                written += 1
+    print(f"[continuous] appended {written} records from top {len(top_runs)} runs → {WINNER_JSONL}")
     return written
 
 
@@ -184,21 +199,29 @@ def main() -> None:
 
         winner = None
         spy_pct = 0.0
+        top_runs: list[BacktestRun] = []
         if results:
-            winner = max(results, key=lambda r: r.total_return_pct)
+            sorted_results = sorted(results, key=lambda r: r.total_return_pct, reverse=True)
+            # Only include runs that beat a flat 0% return (filter out pure losers)
+            top_runs = [r for r in sorted_results[:TOP_RUNS_TO_TRAIN]
+                        if r.total_return_pct > 0]
+            if not top_runs:
+                top_runs = sorted_results[:1]  # always train on best even if negative
+            winner = top_runs[0]
             spy_pct = winner.spy_return_pct
             try:
-                _append_winner_decisions(engine, winner, cycle)
+                _append_top_decisions(engine, top_runs, cycle)
             except Exception as e:
-                print(f"[continuous] winner append failed: {e}")
+                print(f"[continuous] top-runs append failed: {e}")
 
         ml_status = _try_train_ml() if winner else "no winner"
         print(f"[continuous] ml: {ml_status}")
 
         if winner:
-            msg = (f"Cycle {cycle} done. Best: Run {winner.run_id} "
-                   f"{winner.total_return_pct:+.1f}% vs SPY {spy_pct:+.1f}%. "
-                   f"ML training triggered ({ml_status}). Next cycle starting...")
+            returns_str = " / ".join(f"{r.total_return_pct:+.1f}%" for r in top_runs)
+            msg = (f"Cycle {cycle} done. Top {len(top_runs)} runs: [{returns_str}] "
+                   f"vs SPY {spy_pct:+.1f}%. "
+                   f"ML trained on {len(top_runs)} runs. Next cycle starting...")
         else:
             msg = f"Cycle {cycle} done but produced no results. Next cycle starting..."
         _discord(msg)
