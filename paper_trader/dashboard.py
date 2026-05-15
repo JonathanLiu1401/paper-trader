@@ -457,14 +457,32 @@ TEMPLATE = r"""
 
     <!-- ─── Equity Curve (pinned top) ─── -->
     <div class="card" style="margin-bottom:18px;">
-      <h2>Equity curve</h2>
-      <div class="stat-row">
+      <div style="display:flex;justify-content:space-between;align-items:flex-start;flex-wrap:wrap;gap:8px;margin-bottom:10px;">
+        <h2 style="margin:0;">Live portfolio</h2>
+        <div style="display:flex;gap:3px;font-size:11px;">
+          <button class="bt-filter-chip active" id="eq-range-all" onclick="setEqRange('all')">All</button>
+          <button class="bt-filter-chip" id="eq-range-24h" onclick="setEqRange('24h')">24h</button>
+          <button class="bt-filter-chip" id="eq-range-7d" onclick="setEqRange('7d')">7d</button>
+        </div>
+      </div>
+      <div class="stat-row" style="margin-bottom:10px;">
         <div class="stat"><div class="l">total value</div><div class="v" id="tv">—</div></div>
         <div class="stat"><div class="l">cash</div><div class="v" id="cash">—</div></div>
-        <div class="stat"><div class="l">P/L vs $1000</div><div class="v" id="pl">—</div></div>
-        <div class="stat"><div class="l">S&amp;P 500</div><div class="v" id="sp">—</div></div>
+        <div class="stat"><div class="l">return vs start</div><div class="v" id="pl">—</div></div>
+        <div class="stat"><div class="l">vs SPY (same period)</div><div class="v" id="vs-spy-live">—</div></div>
+        <div class="stat"><div class="l">max drawdown</div><div class="v" id="live-maxdd">—</div></div>
+        <div class="stat"><div class="l">cash deployed</div><div class="v" id="live-deployed">—</div></div>
       </div>
-      <canvas id="eq"></canvas>
+      <div style="font-size:11px;color:var(--text-muted);margin-bottom:6px;">
+        <span style="color:#0acdff;">●</span> Portfolio (% from start) &nbsp;
+        <span style="border-top:2px dashed rgba(255,183,77,0.7);display:inline-block;width:16px;vertical-align:middle;"></span> SPY (% from same start) &nbsp;
+        <span style="color:var(--text-muted);">↑ buy &nbsp; ↓ sell</span>
+      </div>
+      <div style="position:relative;height:280px;"><canvas id="eq"></canvas></div>
+      <div style="margin-top:6px;">
+        <div style="font-size:10px;color:var(--text-muted);margin-bottom:3px;">Drawdown from peak (%)</div>
+        <div style="position:relative;height:80px;"><canvas id="eq-dd"></canvas></div>
+      </div>
     </div>
 
     <!-- ─── Daily Briefing (futures + market countdown + urgent news) ─── -->
@@ -1028,16 +1046,199 @@ function showTab(name) {
 
 // ───────── Trader pane ─────────
 let chart;
+let ddChart;
+let eqRange = "all";   // "all" | "24h" | "7d"
+let _lastEquity = [];  // cache for range filtering
+let _lastTrades = [];
+
+function setEqRange(r) {
+  eqRange = r;
+  ["all","24h","7d"].forEach(k => {
+    const el = document.getElementById("eq-range-"+k);
+    if (el) el.classList.toggle("active", k === r);
+  });
+  drawEquityChart(_lastEquity, _lastTrades);
+}
+
+function _filterEqByRange(eq) {
+  if (eqRange === "all" || !eq.length) return eq;
+  const cutMs = eqRange === "24h" ? 86400000 : 7*86400000;
+  const cutoff = new Date(Date.now() - cutMs).toISOString();
+  return eq.filter(p => p.timestamp >= cutoff);
+}
+
+function drawEquityChart(eq, trades) {
+  const filtered = _filterEqByRange(eq);
+  if (!filtered.length) return;
+
+  // Normalize: portfolio and SPY both as % from first point in filtered range
+  const baseVal = filtered[0].total_value || 1000;
+  const baseSpy = filtered[0].sp500_price || 1;
+  const labels = filtered.map(p => p.timestamp.replace("T"," ").slice(0,16));
+  const portPct = filtered.map(p => ((p.total_value / baseVal) - 1) * 100);
+  const spyPct  = filtered.map(p => p.sp500_price ? ((p.sp500_price / baseSpy) - 1) * 100 : null);
+  const cashPct = filtered.map(p => p.cash != null ? (p.cash / p.total_value) * 100 : null);
+
+  // Rolling drawdown from peak
+  let peak = 0;
+  const ddPct = portPct.map(v => {
+    if (v > peak) peak = v;
+    return peak > 0 ? v - peak : (v < 0 ? v : 0);
+  });
+
+  // Trade markers — find trades within the filtered time range
+  const t0 = filtered[0].timestamp;
+  const t1 = filtered[filtered.length-1].timestamp;
+  const visibleTrades = (trades||[]).filter(t => t.timestamp >= t0 && t.timestamp <= t1);
+
+  // Map each trade to nearest label index for scatter overlay
+  const buyX = [], sellX = [], buyY = [], sellY = [];
+  visibleTrades.forEach(tr => {
+    const ts = tr.timestamp.replace("T"," ").slice(0,16);
+    let idx = labels.indexOf(ts);
+    if (idx < 0) {
+      // Find closest label
+      idx = labels.reduce((best, lbl, i) => Math.abs(lbl.localeCompare(ts)) < Math.abs(labels[best].localeCompare(ts)) ? i : best, 0);
+    }
+    const isBuy = tr.action && tr.action.startsWith("BUY");
+    if (isBuy) { buyX.push(idx); buyY.push(portPct[idx] ?? 0); }
+    else { sellX.push(idx); sellY.push(portPct[idx] ?? 0); }
+  });
+
+  // Summary stats
+  const finalPct = portPct[portPct.length-1];
+  const spyFinalPct = spyPct[spyPct.length-1];
+  const maxDd = Math.min(...ddPct);
+  const deployed = 100 - (cashPct[cashPct.length-1] || 0);
+  const vsSpyEl = document.getElementById("vs-spy-live");
+  if (vsSpyEl && spyFinalPct != null) {
+    const vs = finalPct - spyFinalPct;
+    vsSpyEl.textContent = (vs>=0?"+":"")+vs.toFixed(2)+"% vs SPY";
+    vsSpyEl.className = "v " + (vs>=0?"pos":"neg");
+  }
+  const ddEl = document.getElementById("live-maxdd");
+  if (ddEl) { ddEl.textContent = maxDd.toFixed(2)+"%"; ddEl.className = "v " + (maxDd < -5 ? "neg" : ""); }
+  const depEl = document.getElementById("live-deployed");
+  if (depEl) depEl.textContent = deployed.toFixed(1)+"%";
+
+  const mkDataset = (xs, ys, color, label, offset) => ({
+    type: "scatter",
+    label,
+    data: xs.map((x,i) => ({ x, y: ys[i] + offset })),
+    backgroundColor: color,
+    borderColor: color,
+    pointRadius: 7,
+    pointStyle: label.includes("Buy") ? "triangle" : "triangle",
+    rotation: label.includes("Sell") ? 180 : 0,
+    showLine: false,
+    order: 0,
+  });
+
+  const datasets = [
+    {
+      label: "Portfolio %",
+      data: portPct,
+      borderColor: "#0acdff",
+      backgroundColor: "rgba(10,205,255,0.07)",
+      fill: true, tension: 0.15, borderWidth: 2,
+      pointRadius: 0, pointHoverRadius: 4, order: 2,
+    },
+    {
+      label: "SPY %",
+      data: spyPct,
+      borderColor: "rgba(255,183,77,0.7)",
+      backgroundColor: "transparent",
+      borderDash: [5,4], borderWidth: 1.5,
+      pointRadius: 0, fill: false, order: 3,
+    },
+  ];
+  if (buyX.length)  datasets.push(mkDataset(buyX,  buyY,  "#00c896", "Buy ↑", 0.5));
+  if (sellX.length) datasets.push(mkDataset(sellX, sellY, "#ff4455", "Sell ↓", -0.5));
+
+  if (!chart) {
+    chart = new Chart(document.getElementById("eq"), {
+      type: "line",
+      data: { labels, datasets },
+      options: {
+        animation: false,
+        responsive: true, maintainAspectRatio: false,
+        interaction: { mode: "index", intersect: false },
+        plugins: {
+          legend: { display: false },
+          tooltip: {
+            backgroundColor: "rgba(15,20,28,0.95)", borderColor: "#2a3a4f", borderWidth: 1,
+            titleColor: "#dde1e7", bodyColor: "#dde1e7", padding: 8, boxPadding: 3,
+            callbacks: {
+              label: ctx => {
+                if (ctx.dataset.type === "scatter") return null;
+                const v = ctx.parsed.y;
+                return `${ctx.dataset.label}: ${v>=0?"+":""}${v.toFixed(2)}%`;
+              },
+            },
+          },
+        },
+        scales: {
+          x: { ticks: { color: "#8b929d", maxTicksLimit: 8 }, grid: { color: "#1f2126" }},
+          y: {
+            ticks: { color: "#dde1e7", callback: v => (v>=0?"+":"")+v.toFixed(1)+"%" },
+            grid: { color: "#1f2126" },
+          },
+        },
+      },
+    });
+  } else {
+    chart.data.labels = labels;
+    chart.data.datasets = datasets;
+    chart.update("none");
+  }
+
+  // Drawdown sub-chart
+  if (!ddChart) {
+    ddChart = new Chart(document.getElementById("eq-dd"), {
+      type: "line",
+      data: { labels, datasets: [{
+        label: "Drawdown %",
+        data: ddPct,
+        borderColor: "rgba(239,83,80,0.7)",
+        backgroundColor: "rgba(239,83,80,0.12)",
+        fill: true, tension: 0.15, borderWidth: 1.5,
+        pointRadius: 0,
+      }]},
+      options: {
+        animation: false,
+        responsive: true, maintainAspectRatio: false,
+        plugins: { legend: { display: false }, tooltip: { enabled: false } },
+        scales: {
+          x: { display: false },
+          y: {
+            ticks: { color: "#8b929d", font: { size: 9 }, callback: v => v.toFixed(1)+"%" },
+            grid: { color: "#1f2126" }, max: 0,
+          },
+        },
+      },
+    });
+  } else {
+    ddChart.data.labels = labels;
+    ddChart.data.datasets[0].data = ddPct;
+    ddChart.update("none");
+  }
+}
+
 async function refresh() {
   const r = await fetch(API_PREFIX + "/api/state").then(r => r.json());
   document.getElementById("hb").textContent = "updated " + (r.now || "");
   document.getElementById("tv").textContent = dollar(r.portfolio.total_value);
   document.getElementById("cash").textContent = dollar(r.portfolio.cash);
-  const pl = r.portfolio.total_value - 1000;
+  const startVal = (r.equity && r.equity[0]) ? r.equity[0].total_value : 1000;
+  const pl = r.portfolio.total_value - startVal;
+  const plPct = (r.portfolio.total_value / startVal - 1) * 100;
   const plEl = document.getElementById("pl");
-  plEl.textContent = (pl >= 0 ? "+" : "") + dollar(pl);
-  plEl.className = "v " + (pl >= 0 ? "pos" : "neg");
+  plEl.textContent = (plPct >= 0 ? "+" : "") + plPct.toFixed(2) + "%";
+  plEl.className = "v " + (plPct >= 0 ? "pos" : "neg");
   document.getElementById("sp").textContent = r.sp500 ? fmt(r.sp500) : "—";
+  _lastEquity = r.equity || [];
+  _lastTrades = r.all_trades || r.trades || [];
+  drawEquityChart(_lastEquity, _lastTrades);
 
   const posBody = document.querySelector("#pos-tbl tbody");
   const portTotal = r.portfolio.total_value || 0;
@@ -1083,34 +1284,6 @@ async function refresh() {
       <td class="muted">${reason.slice(0,140)}</td></tr>`;
   }).join("") || `<tr><td colspan="6" class="muted">no decisions yet</td></tr>`;
 
-  const labels = r.equity.map(p => dt(p.timestamp));
-  const values = r.equity.map(p => p.total_value);
-  const sp     = r.equity.map(p => p.sp500_price);
-  if (!chart) {
-    chart = new Chart(document.getElementById("eq"), {
-      type: "line",
-      data: { labels, datasets: [
-        { label: "Equity", data: values, borderColor: "#0acdff",
-          backgroundColor: "rgba(66,165,245,0.08)", fill: true, tension: 0.18, borderWidth: 2, pointRadius: 0 },
-        { label: "S&P 500 (raw)", data: sp, borderColor: "#ffb74d",
-          backgroundColor: "rgba(255,183,77,0)", borderDash: [4,4], borderWidth: 1, pointRadius: 0, yAxisID: "y2" },
-      ]},
-      options: {
-        responsive: true, maintainAspectRatio: false,
-        plugins: { legend: { labels: { color: "#dde1e7" }}},
-        scales: {
-          x: { ticks: { color: "#8b929d", maxTicksLimit: 8 }, grid: { color: "#1f2126" }},
-          y: { ticks: { color: "#dde1e7" }, grid: { color: "#1f2126" }},
-          y2:{ position: "right", ticks: { color: "#8b929d" }, grid: { display: false }}
-        }
-      }
-    });
-  } else {
-    chart.data.labels = labels;
-    chart.data.datasets[0].data = values;
-    chart.data.datasets[1].data = sp;
-    chart.update("none");
-  }
 }
 
 // ───────── Backtests pane ─────────
@@ -3146,8 +3319,10 @@ def state():
     positions = store.open_positions()
     trades = store.recent_trades(40)
     decisions = store.recent_decisions(20)
-    eq = store.equity_curve(500)
+    eq = store.equity_curve(5000)  # full history for accurate chart
     sp = eq[-1]["sp500_price"] if eq else None
+    # Include all trades for chart markers (not just recent 40)
+    all_trades = store.recent_trades(500)
     return jsonify({
         "now": datetime.now(timezone.utc).isoformat(timespec="seconds"),
         "portfolio": pf,
@@ -3156,6 +3331,7 @@ def state():
         "decisions": decisions,
         "equity": eq,
         "sp500": sp,
+        "all_trades": all_trades,
     })
 
 
