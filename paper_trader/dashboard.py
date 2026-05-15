@@ -859,6 +859,35 @@ TEMPLATE = r"""
           <div style="position:relative;height:420px;"><canvas id="bt-chart"></canvas></div>
         </div>
 
+        <!-- ── Multi-dimensional analysis ── -->
+        <div class="card" style="margin-bottom:14px;">
+          <h2 style="margin:0 0 2px;">Multi-dimensional analysis</h2>
+          <div style="color:var(--text-secondary);font-size:12px;margin-bottom:14px;">
+            Duration × era × return — three ways to read the same 500+ runs simultaneously.
+          </div>
+
+          <!-- Row 1: Scatter (duration vs annualized, colored by era) -->
+          <div style="margin-bottom:20px;">
+            <div style="font-size:12px;font-weight:600;color:var(--text);margin-bottom:4px;letter-spacing:0.02em;">
+              Duration vs annualized return
+              <span style="font-weight:400;color:var(--text-muted);font-size:11px;margin-left:6px;">each dot = one run · click to drill in · color = market era</span>
+            </div>
+            <div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:8px;font-size:11px;" id="bt-era-legend"></div>
+            <div style="position:relative;height:320px;"><canvas id="bt-scatter"></canvas></div>
+          </div>
+
+          <!-- Row 2: Era × Duration heatmap -->
+          <div>
+            <div style="font-size:12px;font-weight:600;color:var(--text);margin-bottom:4px;letter-spacing:0.02em;">
+              Era × duration performance heatmap
+              <span style="font-weight:400;color:var(--text-muted);font-size:11px;margin-left:6px;">avg annualized return % per cell · (n = run count)</span>
+            </div>
+            <div style="overflow-x:auto;-webkit-overflow-scrolling:touch;">
+              <div id="bt-heatmap"></div>
+            </div>
+          </div>
+        </div>
+
         <div class="card" style="margin-bottom:14px;">
           <h2 style="margin:0 0 4px;">Model progress — return by cycle</h2>
           <div style="color:#8b929d;font-size:12px;margin-bottom:10px;">Best / avg / worst return per cycle of 5 runs. Upward trend = model improving.</div>
@@ -1062,6 +1091,7 @@ async function refresh() {
 // ───────── Backtests pane ─────────
 let btLoaded = false;
 let btChart;
+let btScatter;
 let btRuns = [];
 let btPollTimer = null;
 let btSelectedRunId = null;
@@ -1086,7 +1116,11 @@ function setBtWinFilter(el) {
   el.classList.add("active");
   btWinMinYears = parseFloat(el.dataset.min);
   btWinMaxYears = parseFloat(el.dataset.max);
-  renderBacktests();
+  // Scatter + heatmap always show all runs (for cross-dimension visibility),
+  // only the equity curve chart and table respect the filter.
+  renderLegend();
+  renderTable();
+  drawBacktestChart();
 }
 
 // Returns runs passing the current window-length filter
@@ -1229,6 +1263,8 @@ function renderBacktests() {
   renderLegend();
   renderTable();
   drawBacktestChart();
+  drawScatterChart();
+  renderEraHeatmap();
   tickLastUpdated();
 }
 
@@ -1519,6 +1555,205 @@ async function drawBacktestChart() {
       },
     },
   });
+}
+
+// ───────── Era definitions (shared for scatter + heatmap) ─────────
+const ERA_DEFS = [
+  { key: "Pre-GFC",       start: "1900-01-01", end: "2007-12-31", color: "#9a9ec0" },
+  { key: "GFC",           start: "2008-01-01", end: "2009-12-31", color: "#ff6b6b" },
+  { key: "Bull 2010s",    start: "2010-01-01", end: "2019-12-31", color: "#5dd9b3" },
+  { key: "COVID crash",   start: "2020-01-01", end: "2020-06-30", color: "#ff7676" },
+  { key: "Recovery",      start: "2020-07-01", end: "2021-12-31", color: "#00c896" },
+  { key: "Rate-hike bear",start: "2022-01-01", end: "2022-12-31", color: "#ffb74d" },
+  { key: "AI bull",       start: "2023-01-01", end: "2024-12-31", color: "#0acdff" },
+  { key: "Recent",        start: "2025-01-01", end: "2099-12-31", color: "#7fff00" },
+];
+
+// Assign an era to a run based on the midpoint of its window
+function runEra(r) {
+  if (!r.start_date || !r.duration_days) return null;
+  const startMs = new Date(r.start_date).getTime();
+  const midMs = startMs + (r.duration_days / 2) * 86400000;
+  const midStr = new Date(midMs).toISOString().slice(0, 10);
+  for (const e of ERA_DEFS) {
+    if (midStr >= e.start && midStr <= e.end) return e;
+  }
+  return { key: "Other", color: "#555" };
+}
+
+// ───────── Scatter: duration (X) vs annualized return (Y), colored by era ─────────
+let btScatter;
+function drawScatterChart() {
+  const completed = btRuns.filter(r => r.status === "complete" && r.duration_days && r.annualized_return_pct != null);
+  if (!completed.length) return;
+
+  // Group into era datasets
+  const byEra = {};
+  completed.forEach(r => {
+    const era = runEra(r) || { key: "Other", color: "#555" };
+    if (!byEra[era.key]) byEra[era.key] = { color: era.color, points: [] };
+    byEra[era.key].points.push({ x: r.duration_days / 365.25, y: r.annualized_return_pct, runId: r.run_id });
+  });
+
+  // Era legend
+  const legendEl = document.getElementById("bt-era-legend");
+  if (legendEl) {
+    legendEl.innerHTML = Object.entries(byEra).map(([key, v]) =>
+      `<span style="display:inline-flex;align-items:center;gap:4px;padding:2px 8px;border-radius:99px;background:${hexToRgba(v.color,0.15)};border:1px solid ${hexToRgba(v.color,0.4)};color:${v.color};font-size:10px;">
+        <span style="width:6px;height:6px;border-radius:50%;background:${v.color};display:inline-block;"></span>${key} (${v.points.length})
+      </span>`
+    ).join("");
+  }
+
+  const datasets = Object.entries(byEra).map(([key, v]) => ({
+    label: key,
+    data: v.points,
+    backgroundColor: hexToRgba(v.color, 0.7),
+    borderColor: v.color,
+    borderWidth: 1,
+    pointRadius: 5,
+    pointHoverRadius: 8,
+  }));
+
+  if (btScatter) { btScatter.destroy(); btScatter = null; }
+  const canvas = document.getElementById("bt-scatter");
+  if (!canvas) return;
+  btScatter = new Chart(canvas, {
+    type: "scatter",
+    data: { datasets },
+    options: {
+      animation: false,
+      responsive: true, maintainAspectRatio: false,
+      onClick: (evt, els) => {
+        if (els && els.length) {
+          const pt = els[0];
+          const ds = btScatter.data.datasets[pt.datasetIndex];
+          const runId = ds?.data[pt.index]?.runId;
+          if (runId != null) selectRun(runId);
+        }
+      },
+      plugins: {
+        legend: { display: false },
+        tooltip: {
+          backgroundColor: "rgba(15,20,28,0.95)", borderColor: "#2a3a4f", borderWidth: 1,
+          titleColor: "#dde1e7", bodyColor: "#dde1e7", padding: 10,
+          callbacks: {
+            title: (items) => {
+              const pt = items[0];
+              return `Run #${pt.raw.runId}`;
+            },
+            label: (ctx) => {
+              const pt = ctx.raw;
+              const r = btRuns.find(r => r.run_id === pt.runId);
+              const lines = [
+                `Duration: ${pt.x.toFixed(1)}yr`,
+                `Annualized: ${(pt.y>=0?"+":"")+pt.y.toFixed(1)}%/yr`,
+              ];
+              if (r) {
+                lines.push(`Total: ${(r.total_return_pct>=0?"+":"")+r.total_return_pct.toFixed(1)}%`);
+                lines.push(`${r.start_date} → ${r.end_date}`);
+              }
+              return lines;
+            },
+          },
+        },
+      },
+      scales: {
+        x: {
+          title: { display: true, text: "Window length (years)", color: "#50565f", font: { size: 10 } },
+          ticks: { color: "#8b929d", callback: v => v.toFixed(0)+"yr" },
+          grid: { color: "#1f2126" },
+        },
+        y: {
+          title: { display: true, text: "Annualized return (%/yr)", color: "#50565f", font: { size: 10 } },
+          ticks: { color: "#dde1e7", callback: v => (v>=0?"+":"") + v.toFixed(0) + "%" },
+          grid: { color: "#1f2126" },
+        },
+      },
+    },
+  });
+}
+
+// ───────── Era × Duration heatmap table ─────────
+const DUR_BUCKETS = [
+  { label: "1yr",   min: 0,   max: 1.5 },
+  { label: "2yr",   min: 1.5, max: 2.5 },
+  { label: "3yr",   min: 2.5, max: 3.5 },
+  { label: "4–5yr", min: 3.5, max: 5.5 },
+  { label: "6–10yr",min: 5.5, max: 99  },
+];
+
+function renderEraHeatmap() {
+  const el = document.getElementById("bt-heatmap");
+  if (!el) return;
+  const completed = btRuns.filter(r => r.status === "complete" && r.annualized_return_pct != null && r.duration_days);
+
+  // Build cell data: era × dur bucket → [annualized values]
+  const cells = {};
+  ERA_DEFS.forEach(e => { cells[e.key] = {}; DUR_BUCKETS.forEach(b => { cells[e.key][b.label] = []; }); });
+
+  completed.forEach(r => {
+    const era = runEra(r);
+    if (!era) return;
+    const yrs = r.duration_days / 365.25;
+    const bkt = DUR_BUCKETS.find(b => yrs >= b.min && yrs < b.max);
+    if (!bkt) return;
+    if (!cells[era.key]) cells[era.key] = {};
+    if (!cells[era.key][bkt.label]) cells[era.key][bkt.label] = [];
+    cells[era.key][bkt.label].push(r.annualized_return_pct);
+  });
+
+  // Find global min/max for color scaling
+  let gmin = Infinity, gmax = -Infinity;
+  ERA_DEFS.forEach(e => DUR_BUCKETS.forEach(b => {
+    const vals = cells[e.key]?.[b.label] || [];
+    if (vals.length) {
+      const avg = vals.reduce((a,v)=>a+v,0)/vals.length;
+      if (avg < gmin) gmin = avg;
+      if (avg > gmax) gmax = avg;
+    }
+  }));
+
+  // Color: negative → red, 0 → neutral, positive → green
+  function heatColor(avg, n) {
+    if (!n) return "rgba(255,255,255,0.03)";
+    const norm = avg / Math.max(Math.abs(gmin), Math.abs(gmax), 1);
+    if (avg >= 0) return `rgba(0,200,150,${Math.min(0.8, norm * 0.7 + 0.1)})`;
+    return `rgba(239,83,80,${Math.min(0.8, -norm * 0.7 + 0.1)})`;
+  }
+
+  // Filter out eras with zero data
+  const activeEras = ERA_DEFS.filter(e => DUR_BUCKETS.some(b => (cells[e.key]?.[b.label]||[]).length > 0));
+
+  let html = `<table style="border-collapse:collapse;width:100%;font-size:12px;min-width:500px;">
+    <thead><tr>
+      <th style="text-align:left;padding:6px 10px;color:var(--text-muted);font-weight:500;border-bottom:1px solid var(--border);">Era (midpoint)</th>`;
+  DUR_BUCKETS.forEach(b => {
+    html += `<th style="text-align:center;padding:6px 10px;color:var(--text-muted);font-weight:500;border-bottom:1px solid var(--border);">${b.label}</th>`;
+  });
+  html += `</tr></thead><tbody>`;
+
+  activeEras.forEach(e => {
+    html += `<tr><td style="padding:6px 10px;color:${e.color};font-weight:500;white-space:nowrap;">
+      <span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:${e.color};margin-right:5px;"></span>${e.key}
+    </td>`;
+    DUR_BUCKETS.forEach(b => {
+      const vals = cells[e.key]?.[b.label] || [];
+      const n = vals.length;
+      const avg = n ? vals.reduce((a,v)=>a+v,0)/n : null;
+      const bg = heatColor(avg, n);
+      const txt = avg != null ? `${avg>=0?"+":""}${avg.toFixed(1)}%` : "";
+      const sub = n ? `<div style="font-size:10px;opacity:0.6;">n=${n}</div>` : `<div style="color:var(--text-muted);font-size:11px;">—</div>`;
+      html += `<td style="text-align:center;padding:5px 8px;background:${bg};border:1px solid rgba(255,255,255,0.04);">
+        ${txt ? `<div style="font-weight:600;color:${avg>=0?"#b6f0d8":"#ffaaaa"};">${txt}</div>` : ""}
+        ${sub}
+      </td>`;
+    });
+    html += `</tr>`;
+  });
+
+  html += `</tbody></table>`;
+  el.innerHTML = html;
 }
 
 function selectRun(runId) {
