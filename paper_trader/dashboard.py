@@ -223,8 +223,11 @@ TEMPLATE = r"""
     <a href="/intern/" style="color:#00b4d8;text-decoration:none">Digital Intern</a>
     <a href="/trader/" style="color:#fff;border-bottom:2px solid #e94560;text-decoration:none">Paper Trader</a>
     <a href="/trader/backtests" style="color:#00b4d8;text-decoration:none">Backtests</a>
+    <a href="/backtests/compare" style="color:#00b4d8;text-decoration:none">Compare</a>
+    <a href="/journal" style="color:#00b4d8;text-decoration:none">Journal</a>
     <a href="/ops/" style="color:#00b4d8;text-decoration:none">Ops View</a>
     <a href="/intern/chat" style="color:#00b4d8;text-decoration:none">Chat</a>
+    <a href="/system/" style="color:#00b4d8;text-decoration:none">System</a>
   </nav>
 
   <h1>Paper Trader</h1>
