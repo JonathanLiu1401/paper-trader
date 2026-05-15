@@ -64,7 +64,7 @@ VALIDATION_RESULTS_KEEP = 50    # cap file growth
 EARLIEST_WINDOW_START = date(1996, 1, 1)
 WINDOW_END_BUFFER_DAYS = 180  # never end a window within 6 months of today
 MIN_WINDOW_YEARS = 1
-MAX_WINDOW_YEARS = 5
+MAX_WINDOW_YEARS = 10
 
 
 def _pick_window(seed: int) -> tuple[date, date]:
