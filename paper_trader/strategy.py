@@ -13,6 +13,12 @@ from .store import Store, get_store
 
 MODEL = "claude-opus-4-7"
 DECISION_TIMEOUT_S = 120
+# Retry uses a shorter budget so a parse-failure rescue can't blow past the
+# next 60s open-market cycle. Worst case adds DECISION_TIMEOUT_S + RETRY = 165s.
+RETRY_TIMEOUT_S = 45
+# Cap the raw-response excerpt we write back into decisions.reasoning. Long
+# enough to diagnose JSON / prose / truncation, short enough to keep the DB lean.
+RAW_CAPTURE_CHARS = 1000
 
 WATCHLIST = [
     "LITE", "LNOK", "MUU", "DRAM", "SNDU",  # current real-account interests
@@ -292,7 +298,7 @@ def _format_quant_signals(sigs: dict[str, dict]) -> str:
     )
 
 
-def _claude_call(prompt: str) -> str | None:
+def _claude_call(prompt: str, timeout_s: int = DECISION_TIMEOUT_S) -> str | None:
     if not shutil.which("claude"):
         print("[strategy] claude CLI not found")
         return None
@@ -303,18 +309,37 @@ def _claude_call(prompt: str) -> str | None:
             input=prompt,
             capture_output=True,
             text=True,
-            timeout=DECISION_TIMEOUT_S,
+            timeout=timeout_s,
         )
         if r.returncode != 0:
             print(f"[strategy] claude err: {r.stderr.strip()[:300]}")
             return None
         return r.stdout.strip() or None
     except subprocess.TimeoutExpired:
-        print(f"[strategy] claude timeout after {DECISION_TIMEOUT_S}s")
+        print(f"[strategy] claude timeout after {timeout_s}s")
         return None
     except Exception as e:
         print(f"[strategy] claude exception: {e}")
         return None
+
+
+_RETRY_SUFFIX = (
+    "\n\nYour previous response could not be parsed as JSON. "
+    "Reply with the JSON decision object ONLY — no prose, no markdown fences, "
+    "no commentary before or after. Start your response with `{` and end with `}`."
+)
+
+
+def _should_retry_parse(raw: str | None) -> bool:
+    """Retry only when Claude actually returned text we couldn't parse.
+
+    A None response means timeout / CLI error / empty stdout — retrying the
+    same prompt would just hit the same wall. A non-empty raw that fails to
+    parse suggests prose-wrapping or truncation, which a stronger JSON-only
+    nudge can often rescue."""
+    if not raw:
+        return False
+    return "{" not in raw or _parse_decision(raw) is None
 
 
 def _parse_decision(raw: str) -> dict | None:
@@ -537,12 +562,19 @@ def _execute(decision: dict, snapshot: dict, store: Store) -> tuple[str, str]:
         otype = "call" if action == "SELL_CALL" else "put"
         strike = decision.get("strike")
         expiry = decision.get("expiry")
-        match = next((p for p in snapshot["positions"]
+        candidates = [p for p in snapshot["positions"]
                       if p["ticker"] == ticker and p["type"] == otype
                       and (not strike or p["strike"] == float(strike))
-                      and (not expiry or p["expiry"] == expiry)), None)
-        if not match:
+                      and (not expiry or p["expiry"] == expiry)]
+        if not candidates:
             return "BLOCKED", f"no matching open {otype} for {ticker}"
+        # If strike/expiry are unspecified and multiple contracts match, refuse
+        # to pick — silently closing the "first" contract could exit the wrong
+        # leg and lose intended exposure.
+        if len(candidates) > 1 and (not strike or not expiry):
+            legs = ", ".join(f"{p['strike']}{otype[0].upper()} {p['expiry']}" for p in candidates)
+            return "BLOCKED", f"ambiguous {otype} close for {ticker}; specify strike+expiry (open: {legs})"
+        match = candidates[0]
         # Cash flow must be bounded by what's actually held in the matched
         # contract — pre-trade check sums across all strikes/expiries and
         # would otherwise let qty over-credit cash here.
@@ -597,6 +629,24 @@ def decide() -> dict:
 
     raw = _claude_call(prompt)
     decision = _parse_decision(raw) if raw else None
+    retried = False
+
+    # Conditional one-shot retry: Claude returned text but it wasn't parseable.
+    # A None response (timeout / empty stdout) won't be rescued by a retry —
+    # same prompt, same failure — so we skip retrying in that case.
+    if not decision and _should_retry_parse(raw):
+        retried = True
+        print("[strategy] parse failed; retrying with JSON-only nudge")
+        retry_raw = _claude_call(prompt + _RETRY_SUFFIX, timeout_s=RETRY_TIMEOUT_S)
+        retry_decision = _parse_decision(retry_raw) if retry_raw else None
+        if retry_decision:
+            raw, decision = retry_raw, retry_decision
+        else:
+            # Keep first raw for diagnostics if retry also failed but the first
+            # was actually empty; otherwise prefer the more recent attempt so
+            # operators see what the retry looked like.
+            if retry_raw:
+                raw = retry_raw
 
     summary = {
         "market_open": market_open,
@@ -607,11 +657,21 @@ def decide() -> dict:
         "snapshot": snap,
         "status": "NO_DECISION",
         "detail": "",
+        "retried": retried,
     }
 
     if not decision:
+        # Capture an excerpt of what Claude actually returned so we can
+        # diagnose parse failures from the dashboard / DB instead of staring
+        # at a generic "no parseable JSON" line.
+        if raw:
+            excerpt = raw[:RAW_CAPTURE_CHARS].replace("\x00", "")
+            tag = "retry_failed" if retried else "parse_failed"
+            reason_text = f"{tag}: {excerpt}"
+        else:
+            reason_text = "claude returned no response (timeout/empty)"
         store.record_decision(market_open, len(merged), "NO_DECISION",
-                              "claude returned no parseable JSON",
+                              reason_text,
                               snap["total_value"], snap["cash"])
         store.record_equity_point(snap["total_value"], snap["cash"], sp500)
         return summary

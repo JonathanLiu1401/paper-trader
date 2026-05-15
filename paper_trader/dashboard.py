@@ -410,6 +410,21 @@ TEMPLATE = r"""
   <h1>Paper Trader</h1>
   <div class="sub" id="hb">loading…</div>
 
+  <!-- ─── Live news data feed (Digital Intern collector pulse) ─── -->
+  <div id="data-feed-widget"
+       style="display:flex;flex-wrap:wrap;align-items:center;gap:14px;
+              background:#11141a;border:1px solid #1f2126;border-radius:6px;
+              padding:8px 12px;margin-bottom:14px;font-size:12px;color:#8b929d;">
+    <span style="display:inline-flex;align-items:center;gap:6px;color:#dde1e7;">
+      <span style="display:inline-block;width:7px;height:7px;border-radius:50%;background:#00c896;"></span>
+      <b style="font-weight:600;letter-spacing:0.04em;">DATA FEED</b>
+    </span>
+    <span>last 1h: <b id="df-1h" style="color:#dde1e7;">—</b></span>
+    <span>24h: <b id="df-24h" style="color:#dde1e7;">—</b></span>
+    <span id="df-sources" style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">—</span>
+    <span class="muted" id="df-asof" style="font-size:11px;">—</span>
+  </div>
+
   <div class="card" style="margin-bottom:18px;">
     <h2 style="display:flex;justify-content:space-between;align-items:center;">
       <span>Signal Feed — Digital Intern</span>
@@ -835,6 +850,7 @@ TEMPLATE = r"""
               <th data-k="final_value" class="num">current $</th>
               <th data-k="total_return_pct" class="num">return %</th>
               <th data-k="vs_spy_pct" class="num">vs SPY</th>
+              <th data-k="start_date">window</th>
               <th data-k="n_trades" class="num">trades</th>
               <th data-k="n_decisions" class="num">decisions</th>
               <th data-k="started_at">started</th>
@@ -1179,6 +1195,12 @@ function renderTable() {
       ? `<span class="${vsCls}">${(r.vs_spy_pct >= 0 ? "+" : "") + fmt(r.vs_spy_pct)}%</span>`
       : `<span class="muted">—</span>`;
     const startTxt = r.started_at ? r.started_at.replace("T"," ").slice(5,16) : "—";
+    const win = formatWindow(r.start_date, r.end_date);
+    const era = classifyEra(r.start_date, r.end_date);
+    const eraPill = era ? `<span class="pill" style="background:${era.bg};color:${era.fg};font-size:10px;margin-left:4px;">${era.tag}</span>` : "";
+    const winCell = win
+      ? `<div style="font-size:11px;line-height:1.3;">${win}${eraPill}</div>`
+      : `<span class="muted">—</span>`;
     return `<tr class="bt-row${selected ? ' selected' : ''}" onclick="selectRun(${r.run_id})">
       <td><span class="pill" style="background:${hexToRgba(color,0.18)};color:${color};">#${r.run_id}</span></td>
       <td class="num">${r.seed}</td>
@@ -1186,11 +1208,68 @@ function renderTable() {
       <td class="num">${equityCell}</td>
       <td class="num">${retCell}</td>
       <td class="num">${vsCell}</td>
+      <td>${winCell}</td>
       <td class="num">${r.n_trades || 0}</td>
       <td class="num">${r.n_decisions || 0}</td>
       <td class="muted" style="font-size:12px;">${startTxt}</td>
     </tr>`;
-  }).join("") || `<tr><td colspan="9" class="muted">no backtest runs yet — run paper_trader.backtest</td></tr>`;
+  }).join("") || `<tr><td colspan="10" class="muted">no backtest runs yet — run paper_trader.backtest</td></tr>`;
+}
+
+// ───────── Backtest era classification (frontend) ─────────
+// Classifies a date range into a market era for at-a-glance context.
+function classifyEra(startStr, endStr) {
+  if (!startStr) return null;
+  const s = startStr, e = endStr || startStr;
+  const sy = parseInt(s.slice(0,4),10), ey = parseInt(e.slice(0,4),10);
+  // Pre-2008
+  if (ey < 2008) return { tag: "Pre-GFC", bg: "rgba(96,96,128,0.18)", fg: "#9a9ec0" };
+  // GFC overlap
+  if (sy <= 2009 && ey >= 2008) return { tag: "GFC", bg: "rgba(239,83,80,0.22)", fg: "#ff6b6b" };
+  // COVID Q1 2020 inclusion (treat any range touching Jan–Apr 2020 as COVID crash)
+  if (s <= "2020-04-30" && e >= "2020-01-20") return { tag: "COVID crash", bg: "rgba(239,83,80,0.28)", fg: "#ff7676" };
+  // 2020–2021 recovery (only if start ≥ 2020-04 and end ≤ 2021-12)
+  if (s >= "2020-04-01" && e <= "2021-12-31") return { tag: "Recovery", bg: "rgba(0,200,150,0.18)", fg: "#00c896" };
+  // 2022 rate hike bear
+  if (sy === 2022 && ey === 2022) return { tag: "Rate hike bear", bg: "rgba(255,140,0,0.22)", fg: "#ffb74d" };
+  // 2023–2024 AI bull
+  if (sy >= 2023 && ey <= 2024) return { tag: "AI bull", bg: "rgba(10,205,255,0.18)", fg: "#0acdff" };
+  // 2025+
+  if (sy >= 2025) return { tag: "Recent", bg: "rgba(127,255,0,0.18)", fg: "#7fff00" };
+  // 2010–2019 fallback bull market
+  if (sy >= 2010 && ey <= 2019) return { tag: "Bull market", bg: "rgba(0,200,150,0.15)", fg: "#5dd9b3" };
+  // Spans multiple eras
+  return { tag: "Multi-era", bg: "rgba(155,155,155,0.18)", fg: "#cfd2da" };
+}
+
+function formatWindow(startStr, endStr) {
+  if (!startStr) return null;
+  const e = endStr || "…";
+  // Years span for the "(Nyr)" suffix
+  let yrs = "";
+  try {
+    const sd = new Date(startStr);
+    const ed = endStr ? new Date(endStr) : new Date();
+    const days = (ed - sd) / 86400000;
+    if (isFinite(days) && days > 0) {
+      const y = days / 365.25;
+      yrs = y >= 1 ? ` (${y.toFixed(y >= 5 ? 0 : 1)}yr)` : ` (${Math.round(days/30)}mo)`;
+    }
+  } catch (_) {}
+  return `${startStr} → ${e}${yrs}`;
+}
+
+function dataSourcesForWindow(startStr, endStr) {
+  if (!startStr) return [];
+  const s = startStr, e = endStr || startStr;
+  // GDELT public coverage starts 2015-02-19; SEC EDGAR full-text goes back to 1994.
+  const gdeltOk = e >= "2015-02-19";
+  return [
+    { label: "GDELT news", ok: gdeltOk, hint: gdeltOk ? "coverage since 2015-02-19" : "pre-2015 — not available" },
+    { label: "SEC EDGAR filings", ok: true, hint: "back to 1994" },
+    { label: "Price / quant signals", ok: true, hint: "yfinance OHLCV" },
+    { label: "Historical articles labeled by Claude", ok: true, hint: "Opus winner annotations + backtest injections" },
+  ];
 }
 
 function drawBacktestChart() {
@@ -1262,10 +1341,62 @@ function drawBacktestChart() {
   if (spyLine) datasets.push(spyLine);
   if (qqqLine) datasets.push(qqqLine);
 
+  // Era-shading plugin — draws translucent vertical bands for known market
+  // events (GFC, COVID crash, AI bull) when the window overlaps the chart.
+  const ERA_BANDS = [
+    { name: "GFC",          start: "2008-09-15", end: "2009-03-09", color: "rgba(239,83,80,0.10)" },
+    { name: "COVID crash",  start: "2020-01-20", end: "2020-03-23", color: "rgba(239,83,80,0.16)" },
+    { name: "Recovery '20", start: "2020-03-24", end: "2021-12-31", color: "rgba(0,200,150,0.05)" },
+    { name: "Rate-hike bear", start: "2022-01-03", end: "2022-12-30", color: "rgba(255,140,0,0.08)" },
+    { name: "AI bull",      start: "2023-01-03", end: "2024-12-31", color: "rgba(10,205,255,0.05)" },
+  ];
+  const eraShadingPlugin = {
+    id: "eraShading",
+    beforeDatasetsDraw(chart) {
+      try {
+        const { ctx, chartArea, scales } = chart;
+        const xScale = scales && scales.x;
+        const lbls = chart.data && chart.data.labels;
+        if (!ctx || !chartArea || !xScale || !lbls || !lbls.length) return;
+        const labelHasDate = d => lbls.indexOf(d) >= 0;
+        const findIdx = (date, dir) => {
+          // dir +1 = first label >= date; dir -1 = last label <= date
+          if (dir > 0) {
+            for (let i = 0; i < lbls.length; i++) if (lbls[i] >= date) return i;
+            return -1;
+          }
+          for (let i = lbls.length - 1; i >= 0; i--) if (lbls[i] <= date) return i;
+          return -1;
+        };
+        for (const b of ERA_BANDS) {
+          // Skip bands entirely outside the visible label range
+          if (lbls[lbls.length - 1] < b.start || lbls[0] > b.end) continue;
+          const i0 = findIdx(b.start, +1);
+          const i1 = findIdx(b.end,   -1);
+          if (i0 < 0 || i1 < 0 || i1 < i0) continue;
+          const x0 = xScale.getPixelForValue(lbls[i0]);
+          const x1 = xScale.getPixelForValue(lbls[i1]);
+          const left = Math.min(x0, x1);
+          const width = Math.max(2, Math.abs(x1 - x0));
+          ctx.save();
+          ctx.fillStyle = b.color;
+          ctx.fillRect(left, chartArea.top, width, chartArea.bottom - chartArea.top);
+          // Optional label at top of band
+          ctx.fillStyle = "rgba(221,225,231,0.55)";
+          ctx.font = "10px system-ui, sans-serif";
+          ctx.textBaseline = "top";
+          ctx.fillText(b.name, left + 4, chartArea.top + 3);
+          ctx.restore();
+        }
+      } catch (_) { /* never break the chart */ }
+    },
+  };
+
   if (btChart) btChart.destroy();
   btChart = new Chart(document.getElementById("bt-chart"), {
     type: "line",
     data: { labels, datasets },
+    plugins: [eraShadingPlugin],
     options: {
       responsive: true, maintainAspectRatio: false,
       interaction: { mode: "index", intersect: false },
@@ -1344,12 +1475,36 @@ async function loadRunDetail(runId) {
   const r = await fetch(API_PREFIX + `/api/backtests/${runId}`).then(r => r.json());
   const meta = [];
   if (r.seed != null) meta.push(`seed ${r.seed}`);
-  if (r.start_date) meta.push(`${r.start_date} → ${r.end_date || '…'}`);
+  const winStr = formatWindow(r.start_date, r.end_date);
+  if (winStr) meta.push(winStr);
   if (r.status) meta.push(r.status);
   if (r.n_trades != null) meta.push(`${r.n_trades} trades`);
   if (r.n_decisions != null) meta.push(`${r.n_decisions} decisions`);
   if (r.notes) meta.push(r.notes);
-  document.getElementById("bt-detail-meta").textContent = meta.join(" · ");
+  const metaEl = document.getElementById("bt-detail-meta");
+  metaEl.innerHTML = "";
+  metaEl.appendChild(document.createTextNode(meta.join(" · ")));
+  // Era pill + data-source pills
+  const era = classifyEra(r.start_date, r.end_date);
+  if (era) {
+    metaEl.insertAdjacentHTML(
+      "beforeend",
+      ` <span class="pill" style="background:${era.bg};color:${era.fg};margin-left:6px;">${era.tag}</span>`,
+    );
+  }
+  const srcs = dataSourcesForWindow(r.start_date, r.end_date);
+  if (srcs.length) {
+    const pillRow = srcs.map(s => {
+      const mark = s.ok ? "✓" : "✗";
+      const color = s.ok ? "#00c896" : "#ff4455";
+      const bg = s.ok ? "rgba(0,200,150,0.10)" : "rgba(255,68,85,0.10)";
+      return `<span class="pill" title="${s.hint}" style="background:${bg};color:${color};font-size:11px;">${mark} ${s.label}</span>`;
+    }).join(" ");
+    metaEl.insertAdjacentHTML(
+      "beforeend",
+      `<div style="margin-top:6px;display:flex;flex-wrap:wrap;gap:6px;">${pillRow}</div>`,
+    );
+  }
 
   const tBody = document.querySelector("#bt-trades-tbl tbody");
   tBody.innerHTML = (r.trades || []).map(t => {
@@ -1411,6 +1566,27 @@ async function refreshSignals() {
   } catch (e) {
     ul.innerHTML = `<li class="muted">digital intern unreachable</li>`;
   }
+}
+
+// ───────── Live Data Feed widget (collector pulse from Digital Intern) ─────────
+async function refreshDataFeed() {
+  try {
+    const r = await fetch(API_PREFIX + "/api/data-feed");
+    if (!r.ok) return;
+    const d = await r.json();
+    const set = (id, v) => { const el = document.getElementById(id); if (el) el.textContent = v; };
+    set("df-1h",  d.articles_1h  != null ? d.articles_1h  + " articles" : "—");
+    set("df-24h", d.articles_24h != null ? d.articles_24h + " articles" : "—");
+    const srcEl = document.getElementById("df-sources");
+    if (srcEl) {
+      const top = (d.top_sources || []).slice(0, 3);
+      srcEl.innerHTML = top.length
+        ? "top: " + top.map(s => `<b style="color:#dde1e7;">${(s.name||"?").replace(/</g,'&lt;')}</b> <span style="color:#8b929d;">${s.count}</span>`).join(" · ")
+        : '<span class="muted">no sources active</span>';
+    }
+    const asof = document.getElementById("df-asof");
+    if (asof) asof.textContent = new Date().toLocaleTimeString();
+  } catch (e) { /* silent */ }
 }
 
 // ───────── Portfolio Analytics ─────────
@@ -2284,6 +2460,7 @@ refreshDrawdown();
 refreshCalibration();
 refreshDecisionHealth();
 refreshScorerConfidence();
+refreshDataFeed();
 setInterval(refresh, 15_000);
 setInterval(refreshSignals, 30_000);
 setInterval(refreshAnalytics, 30_000);
@@ -2301,6 +2478,7 @@ setInterval(refreshDrawdown, 30_000);
 setInterval(refreshCalibration, 120_000);
 setInterval(refreshDecisionHealth, 60_000);
 setInterval(refreshScorerConfidence, 120_000);
+setInterval(refreshDataFeed, 60_000);
 showTab(INITIAL_TAB || "trader");
 </script>
 </div><!-- /.page-content -->
@@ -2391,38 +2569,99 @@ def state():
 @app.route("/api/portfolio")
 def portfolio_api():
     """Compact public read of the portfolio — consumed by Digital Intern's dashboard."""
+    from .store import INITIAL_CASH
     store = get_store()
     pf = store.get_portfolio()
     return jsonify({
         "total_value": pf.get("total_value"),
         "cash": pf.get("cash"),
-        "starting_value": 1000.0,
+        "starting_value": INITIAL_CASH,
     })
+
+
+@app.route("/api/data-feed")
+def data_feed_api():
+    """Live news collector pulse — proxies digital-intern's articles.db.
+
+    Returns articles-per-hour, per-24h, and top active sources, all filtered to
+    exclude backtest synthetic rows (per the live-only invariant — see CLAUDE.md
+    §5 in digital-intern). Returns zeros if the article DB isn't reachable so
+    the widget can render gracefully on the live trader page.
+    """
+    # Prefer the USB-mounted DB (canonical location per signals.py), fall back
+    # to the in-repo file.
+    candidates = [
+        Path("/media/zeph/projects/digital-intern/db/articles.db"),
+        Path("/home/zeph/digital-intern/data/articles.db"),
+    ]
+    db_path = next((p for p in candidates if p.exists()), None)
+    if db_path is None:
+        return jsonify({"articles_1h": 0, "articles_24h": 0, "top_sources": [],
+                        "error": "articles.db not found"})
+    try:
+        uri = f"file:{db_path}?mode=ro"
+        conn = sqlite3.connect(uri, uri=True, timeout=3.0)
+        try:
+            live_clause = (
+                "url NOT LIKE 'backtest://%' "
+                "AND source NOT LIKE 'backtest_%' "
+                "AND source NOT LIKE 'opus_annotation%'"
+            )
+            n1 = conn.execute(
+                f"SELECT COUNT(*) FROM articles WHERE first_seen >= datetime('now','-1 hour') AND {live_clause}"
+            ).fetchone()[0]
+            n24 = conn.execute(
+                f"SELECT COUNT(*) FROM articles WHERE first_seen >= datetime('now','-24 hours') AND {live_clause}"
+            ).fetchone()[0]
+            top = conn.execute(
+                f"SELECT source, COUNT(*) FROM articles "
+                f"WHERE first_seen >= datetime('now','-1 hour') AND {live_clause} "
+                f"GROUP BY source ORDER BY 2 DESC LIMIT 5"
+            ).fetchall()
+        finally:
+            conn.close()
+        return jsonify({
+            "articles_1h": int(n1 or 0),
+            "articles_24h": int(n24 or 0),
+            "top_sources": [{"name": r[0] or "?", "count": int(r[1] or 0)} for r in top],
+        })
+    except Exception as e:
+        return jsonify({"articles_1h": 0, "articles_24h": 0, "top_sources": [],
+                        "error": str(e)})
 
 
 @app.route("/api/backtests")
 def backtests_api():
     from datetime import datetime, timezone
     try:
-        from .backtest import BacktestStore, PRICE_CACHE_PATH, START_DATE, END_DATE
+        from .backtest import BacktestStore, CACHE_DIR, PRICE_CACHE_PATH
         import json as _json
         store = BacktestStore()
         runs = store.all_runs()
         completed = [r for r in runs if r.get("status") == "complete"]
         spy_baseline = completed[0].get("spy_return_pct") if completed else None
 
-        # Compute QQQ return from cached prices (no network call)
+        # QQQ baseline for the most-recent completed run. With variable windows
+        # there's no single "the" backtest range — each run carries its own dates.
         qqq_baseline = None
         try:
-            if PRICE_CACHE_PATH.exists():
-                px = _json.loads(PRICE_CACHE_PATH.read_text())
-                qqq_prices = px.get("QQQ", {})
-                start_str = START_DATE.isoformat()
-                end_str = END_DATE.isoformat()
-                # Find nearest cached prices to start and end dates
+            if completed:
+                latest = completed[-1]
+                start_str = latest.get("start_date")
+                end_str = latest.get("end_date")
+                qqq_prices: dict = {}
+                if start_str and end_str:
+                    win_path = CACHE_DIR / f"prices_{start_str}_{end_str}.json"
+                    if win_path.exists():
+                        try:
+                            qqq_prices = _json.loads(win_path.read_text()).get("QQQ", {})
+                        except Exception:
+                            qqq_prices = {}
+                if not qqq_prices and PRICE_CACHE_PATH.exists():
+                    qqq_prices = _json.loads(PRICE_CACHE_PATH.read_text()).get("QQQ", {})
                 dates = sorted(qqq_prices.keys())
-                starts = [d for d in dates if d >= start_str]
-                ends = [d for d in dates if d <= end_str]
+                starts = [d for d in dates if start_str and d >= start_str]
+                ends = [d for d in dates if end_str and d <= end_str]
                 if starts and ends:
                     p0 = qqq_prices[starts[0]]
                     p1 = qqq_prices[ends[-1]]
@@ -3072,6 +3311,19 @@ def _position_ages_from_trades(open_positions: list[dict], trades_oldest_first: 
     return ages
 
 
+def _concentration_severity(top1_pct: float, top3_pct: float) -> tuple[str, bool]:
+    """Bucket a portfolio's concentration into a severity label + boolean flag.
+
+    HIGH triggers a UI alert and indicates dangerous over-concentration.
+    Thresholds are deliberately strict — this is a $1000 paper book whose
+    edge is breadth + speed, not single-name conviction."""
+    if top1_pct >= 60 or top3_pct >= 90:
+        return "HIGH", True
+    if top1_pct >= 40 or top3_pct >= 75:
+        return "MEDIUM", True
+    return "LOW", False
+
+
 @app.route("/api/risk")
 def risk_api():
     """Risk-focused portfolio panel. Fields are intentionally disjoint from
@@ -3116,6 +3368,8 @@ def risk_api():
         rows.sort(key=lambda r: -r["market_value"])
         largest = rows[0] if rows else None
         top3_pct = round(sum(r["pct_port"] for r in rows[:3]), 2)
+        top1_pct = round(largest["pct_port"], 2) if largest else 0.0
+        conc_severity, conc_warning = _concentration_severity(top1_pct, top3_pct)
 
         # ── Position ages from trade history ──
         trades_oldest_first = list(reversed(store.recent_trades(2000)))
@@ -3159,9 +3413,11 @@ def risk_api():
             "cash_usd": round(cash, 2),
             "cash_pct": round((cash / total_value * 100) if total_value else 0.0, 2),
             "n_positions": len(positions),
-            "concentration_top1_pct": round(largest["pct_port"], 2) if largest else 0.0,
+            "concentration_top1_pct": top1_pct,
             "concentration_top1_ticker": largest["ticker"] if largest else None,
             "concentration_top3_pct": top3_pct,
+            "concentration_warning": conc_warning,
+            "concentration_severity": conc_severity,
             "leveraged_usd": round(leveraged_usd, 2),
             "leveraged_pct": round((leveraged_usd / total_value * 100) if total_value else 0.0, 2),
             "spy_shock_3pct_usd": round(shock_usd, 2),  # negative = loss
@@ -3953,6 +4209,119 @@ def scorer_confidence_api():
         return jsonify(conf)
     except Exception as e:
         return jsonify({"error": str(e), "buckets": [], "positions": []}), 500
+
+
+def _parse_action_ticker(action_taken: str) -> tuple[str, str | None]:
+    """Pull the (verb, ticker) out of a decisions.action_taken string.
+
+    The column is free-text in the form 'BUY NVDA → FILLED' / 'HOLD MU → HOLD'
+    / 'NO_DECISION'. Returns ('NO_DECISION', None) for malformed / sentinel
+    rows so callers don't have to special-case them."""
+    if not action_taken or action_taken in ("NO_DECISION", "BLOCKED"):
+        return action_taken or "", None
+    head = action_taken.split("→")[0].strip()
+    parts = head.split()
+    if not parts:
+        return "", None
+    verb = parts[0].upper()
+    ticker = parts[1].upper() if len(parts) >= 2 else None
+    if ticker in ("CASH", "NONE", ""):
+        ticker = None
+    return verb, ticker
+
+
+_BUY_VERBS = {"BUY", "BUY_CALL", "BUY_PUT", "REBALANCE"}
+_SELL_VERBS = {"SELL", "SELL_CALL", "SELL_PUT"}
+
+
+def _classify_disagreement(verdict: str, last_verb: str | None) -> tuple[str, str]:
+    """Map (scorer verdict, last Opus action verb on the same ticker) → (severity, label).
+
+    HIGH = scorer says EXIT/TRIM while Opus is still adding or holding —
+           the trader is fighting its own ML safety net.
+    MEDIUM = scorer says NEUTRAL but Opus is leaning bullish, or scorer says
+             STRONG_HOLD but Opus just sold.
+    ALIGNED = the two agree (either both bullish or both bearish)."""
+    verdict = (verdict or "").upper()
+    verb = (last_verb or "").upper()
+    bearish_scorer = verdict in ("EXIT", "TRIM")
+    bullish_scorer = verdict in ("STRONG_HOLD", "HOLD")
+    bullish_action = verb in _BUY_VERBS or verb == "HOLD"
+    bearish_action = verb in _SELL_VERBS
+    if bearish_scorer and bullish_action:
+        return "HIGH", "scorer says exit, Opus still long"
+    if bullish_scorer and bearish_action:
+        return "MEDIUM", "scorer says hold, Opus exited"
+    if verdict == "NEUTRAL" and verb in _BUY_VERBS:
+        return "MEDIUM", "scorer neutral, Opus added"
+    return "ALIGNED", "scorer and Opus agree"
+
+
+@app.route("/api/disagreement")
+def disagreement_api():
+    """Where the scorer and Opus diverge on currently-held positions.
+
+    For every open stock position, compare the scorer's verdict (drawn from
+    /api/scorer-confidence's empirical-band logic) against the most recent
+    parsed action that Opus took on the same ticker. A HIGH-severity row is
+    a red flag: the trader is overriding the ML safety net. Used by the
+    command-center and intended as a 'why is the portfolio losing money?'
+    diagnostic when scorer/Opus drift apart silently."""
+    try:
+        from .ml.decision_scorer import DecisionScorer
+        from .analytics.scorer_confidence import build_scorer_confidence, interval_for
+
+        scorer = DecisionScorer()
+        outcomes = _load_decision_outcomes()
+        conf = build_scorer_confidence(outcomes, scorer)
+        scorer_rows = _live_scorer_predictions(scorer) if conf.get("overall") else []
+
+        # Last action verb per ticker — walk recent decisions newest first so we
+        # capture the most recent Opus stance on each holding. Skip NO_DECISION
+        # rows so a parse-failure storm doesn't blank the panel.
+        store = get_store()
+        last_verb: dict[str, str] = {}
+        last_ts: dict[str, str] = {}
+        for d in store.recent_decisions(limit=500):
+            verb, tk = _parse_action_ticker(d.get("action_taken") or "")
+            if not tk or verb == "NO_DECISION":
+                continue
+            if tk in last_verb:
+                continue
+            last_verb[tk] = verb
+            last_ts[tk] = d.get("timestamp") or ""
+
+        rows = []
+        for p in scorer_rows:
+            tk = p["ticker"]
+            verb = last_verb.get(tk)
+            severity, label = _classify_disagreement(p.get("verdict", ""), verb)
+            iv = interval_for(p["pred_5d_return_pct"], conf) if conf.get("overall") else None
+            rows.append({
+                "ticker": tk,
+                "scorer_verdict": p.get("verdict"),
+                "scorer_pred_5d_pct": p.get("pred_5d_return_pct"),
+                "last_action": verb,
+                "last_action_ts": last_ts.get(tk),
+                "severity": severity,
+                "label": label,
+                "interval": iv,
+            })
+        severity_order = {"HIGH": 0, "MEDIUM": 1, "ALIGNED": 2}
+        rows.sort(key=lambda r: (severity_order.get(r["severity"], 9),
+                                 r["scorer_pred_5d_pct"] or 0))
+        counts = {"HIGH": 0, "MEDIUM": 0, "ALIGNED": 0}
+        for r in rows:
+            counts[r["severity"]] = counts.get(r["severity"], 0) + 1
+        return jsonify({
+            "as_of": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+            "scorer_trained": bool(conf.get("overall")),
+            "n_positions": len(rows),
+            "counts": counts,
+            "rows": rows,
+        })
+    except Exception as e:
+        return jsonify({"error": str(e), "rows": []}), 500
 
 
 @app.route("/api/decision-health")

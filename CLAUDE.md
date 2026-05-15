@@ -118,12 +118,12 @@ schema, but **are otherwise independent**: live signals come from the digital-in
 |------|----------------|
 | `__init__.py` | Marks the package |
 | `runner.py` | Main loop: `_cycle()` calls `strategy.decide()`, posts trade alerts, kicks hourly + daily Discord summaries, starts dashboard thread |
-| `strategy.py` | The live decision engine — builds a context payload from signals + technicals + portfolio + market data, calls Opus 4.7, parses JSON, executes via `_execute()`. Watchlist + system prompt live here |
+| `strategy.py` | The live decision engine — builds a context payload from signals + technicals + portfolio + market data, calls Opus 4.7, parses JSON, executes via `_execute()`. Watchlist + system prompt live here. On parse failure: conditional one-shot retry with a JSON-only suffix (`RETRY_TIMEOUT_S=45`, only when Claude returned non-empty unparseable text — see `_should_retry_parse`). When the final parse still fails, the raw response (capped at `RAW_CAPTURE_CHARS=1000`) is persisted to `decisions.reasoning` with a `parse_failed:` / `retry_failed:` tag so operators can diagnose silent failures from the dashboard |
 | `signals.py` | Read-only queries against digital-intern's `articles.db` (USB if mounted else local). `get_top_signals()`, `get_urgent_articles()`, `ticker_sentiments()`, `get_ml_predictions()` (delegates to digital-intern's `ml.inference`). **All live queries filter out `backtest://` URLs and `backtest_*` / `opus_annotation*` sources.** |
 | `market.py` | yfinance wrapper — `get_price`, `get_prices`, `get_option_price`, `get_options_chain`, `get_futures_price`, `is_market_open` (NYSE 2026 holiday calendar) |
 | `store.py` | SQLite store for the live portfolio (`paper_trader.db`): `portfolio`, `trades`, `positions`, `decisions`, `equity_curve`. Initial cash = `$1000` |
 | `reporter.py` | Discord output — `send_trade_alert`, `send_hourly_summary`, `send_decision_log`, `send_daily_close`. All routed via `openclaw message send` to `DISCORD_CHANNEL = "channel:1496099475838603324"` |
-| `dashboard.py` | Flask app on `:8090`. `/` = live trader, `/backtests` = backtest grid. API endpoints: `/api/state`, `/api/portfolio`, `/api/backtests`, `/api/backtests/<id>`, `/api/backtests/<id>/trades`, `/api/backtests/<id>/decisions`, `/api/model-progress` |
+| `dashboard.py` | Flask app on `:8090`. `/` = live trader, `/backtests` = backtest grid. API endpoints: `/api/state`, `/api/portfolio`, `/api/backtests`, `/api/backtests/<id>`, `/api/backtests/<id>/trades`, `/api/backtests/<id>/decisions`, `/api/model-progress`, `/api/risk` (includes `concentration_warning` + `concentration_severity` flags), `/api/disagreement` (scorer-vs-Opus disagreement panel — flags positions where the DecisionScorer says EXIT/TRIM while Opus is still long), `/api/decision-health` |
 | `backtest.py` | The backtesting engine. Contains `BacktestEngine`, `BacktestStore`, `PriceCache`, `GDELTFetcher`, `AlphaVantageNewsFetcher`, persona dict (`PERSONAS`), watchlist (`WATCHLIST`), heuristic scorer (`score_article`), `_ml_decide` (quant+sentiment decision function), `_market_regime`, `_get_quant_signals` (RSI/MACD/BB/momentum), `_train_ml_from_winners` (writes winner JSONL). `START_DATE = 2025-05-01`, `END_DATE = 2026-05-13` |
 | `ml/decision_scorer.py` | Tiny MLP (`MLPRegressor` 32→16 via sklearn, numpy-lstsq fallback) — features: `[ml_score, rsi, macd, mom5, mom20, regime_mult]` + 7-way sector one-hot → predicted 5-day forward return %. Pickle persisted at `data/ml/decision_scorer.pkl` |
 
@@ -341,7 +341,9 @@ loop or training data.
     `_append_top_decisions()`. Don't rely on the in-engine version.
 
 11. **The `decisions.action_taken` column in `paper_trader.db` is a free-text string** of the form
-    `"BUY NVDA → FILLED"`. Tools that parse it must tolerate `"NO_DECISION"` and `"BLOCKED"`.
+    `"BUY NVDA → FILLED"`. Tools that parse it must tolerate `"NO_DECISION"` and `"BLOCKED"`. See
+    `dashboard._parse_action_ticker()` for the canonical (verb, ticker) extractor — it nullifies
+    `CASH` / `NONE` pseudo-tickers so they don't pollute per-position panels.
 
 12. **Live trader's risk model is "no hard limits"** by design — the system prompt is explicit that
     Opus has full autonomy. `_enforce_risk_pre_trade` only checks that SELLs don't exceed held
