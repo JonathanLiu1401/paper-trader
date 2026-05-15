@@ -836,8 +836,8 @@ TEMPLATE = r"""
             <div class="stat"><div class="l">win rate</div><div class="v" id="bt-winrate">—</div></div>
             <div class="stat"><div class="l">filtered runs</div><div class="v" id="bt-filtered-count">—</div></div>
           </div>
-          <!-- Filter bar -->
-          <div style="display:flex;align-items:center;gap:8px;margin:10px 0 8px;flex-wrap:wrap;font-size:12px;">
+          <!-- Filter + mode bar -->
+          <div style="display:flex;align-items:center;gap:8px;margin:10px 0 6px;flex-wrap:wrap;font-size:12px;">
             <span style="color:var(--text-secondary);">Window:</span>
             <div id="bt-win-filter" style="display:flex;gap:4px;flex-wrap:wrap;">
               <button class="bt-filter-chip active" data-min="0" data-max="99" onclick="setBtWinFilter(this)">All</button>
@@ -847,16 +847,41 @@ TEMPLATE = r"""
               <button class="bt-filter-chip" data-min="3.5" data-max="5.5" onclick="setBtWinFilter(this)">4–5yr</button>
               <button class="bt-filter-chip" data-min="5.5" data-max="99" onclick="setBtWinFilter(this)">6–10yr</button>
             </div>
-            <span style="color:var(--text-secondary);margin-left:8px;">Show:</span>
+            <div style="display:flex;gap:3px;margin-left:auto;">
+              <button id="mode-agg" class="bt-filter-chip active" onclick="setChartMode('aggregate')">Distribution</button>
+              <button id="mode-ind" class="bt-filter-chip" onclick="setChartMode('individual')">Individual</button>
+            </div>
+          </div>
+          <!-- Aggregate mode legend / Individual mode limit control -->
+          <div id="agg-legend" style="font-size:11px;color:var(--text-secondary);margin-bottom:6px;">
+            <span style="display:inline-flex;align-items:center;gap:4px;margin-right:10px;">
+              <span style="display:inline-block;width:24px;height:3px;background:#0acdff;border-radius:2px;"></span>Median
+            </span>
+            <span style="display:inline-flex;align-items:center;gap:4px;margin-right:10px;">
+              <span style="display:inline-block;width:24px;height:8px;background:rgba(10,205,255,0.25);border-radius:2px;"></span>P25–P75
+            </span>
+            <span style="display:inline-flex;align-items:center;gap:4px;margin-right:10px;">
+              <span style="display:inline-block;width:24px;height:8px;background:rgba(10,205,255,0.08);border-radius:2px;"></span>P5–P95
+            </span>
+            <span style="display:inline-flex;align-items:center;gap:4px;margin-right:10px;">
+              <span style="display:inline-block;width:24px;height:2px;background:rgba(180,180,180,0.7);border-radius:2px;border-top:2px dashed rgba(180,180,180,0.7);"></span>Actual SPY median
+            </span>
+            <span id="agg-n-label" style="color:var(--text-muted);"></span>
+          </div>
+          <div id="ind-controls" style="display:none;font-size:12px;color:var(--text-secondary);margin-bottom:6px;">
+            Show last
             <input id="bt-chart-limit" type="range" min="5" max="50" step="5" value="20"
-              style="width:80px;cursor:pointer;accent-color:#0acdff;"
-              oninput="document.getElementById('bt-chart-limit-val').textContent=this.value; drawBacktestChart()">
-            <span id="bt-chart-limit-val">20</span> runs
+              style="width:80px;cursor:pointer;accent-color:#0acdff;vertical-align:middle;"
+              oninput="document.getElementById('bt-chart-limit-val').textContent=this.value; redrawChart()">
+            <span id="bt-chart-limit-val">20</span> runs · X = day offset · Y = % return from start
           </div>
-          <div style="font-size:11px;color:var(--text-muted);margin-bottom:8px;">
-            Chart: normalized % return from start (day 0 = 0%). All window lengths comparable on same axis. Hover for details.
+          <!-- Main equity chart -->
+          <div style="position:relative;height:380px;"><canvas id="bt-chart"></canvas></div>
+          <!-- Drawdown sub-chart (aggregate mode only) -->
+          <div id="bt-drawdown-wrap" style="position:relative;height:120px;margin-top:8px;">
+            <div style="font-size:10px;color:var(--text-muted);margin-bottom:4px;">Max drawdown distribution (% below peak, by day from start)</div>
+            <canvas id="bt-dd-chart"></canvas>
           </div>
-          <div style="position:relative;height:420px;"><canvas id="bt-chart"></canvas></div>
         </div>
 
         <!-- ── Multi-dimensional analysis ── -->
@@ -1120,7 +1145,7 @@ function setBtWinFilter(el) {
   // only the equity curve chart and table respect the filter.
   renderLegend();
   renderTable();
-  drawBacktestChart();
+  redrawChart();
 }
 
 // Returns runs passing the current window-length filter
@@ -1262,7 +1287,7 @@ function renderBacktests() {
 
   renderLegend();
   renderTable();
-  drawBacktestChart();
+  redrawChart();
   drawScatterChart();
   renderEraHeatmap();
   tickLastUpdated();
@@ -1557,6 +1582,188 @@ async function drawBacktestChart() {
   });
 }
 
+// ───────── Chart mode toggle ─────────
+let btChartMode = "aggregate";
+let btDdChart = null;
+
+function setChartMode(mode) {
+  btChartMode = mode;
+  document.getElementById("mode-agg").classList.toggle("active", mode === "aggregate");
+  document.getElementById("mode-ind").classList.toggle("active", mode === "individual");
+  document.getElementById("agg-legend").style.display = mode === "aggregate" ? "" : "none";
+  document.getElementById("ind-controls").style.display = mode === "individual" ? "" : "none";
+  document.getElementById("bt-drawdown-wrap").style.display = mode === "aggregate" ? "" : "none";
+  redrawChart();
+}
+
+function redrawChart() {
+  if (btChartMode === "aggregate") {
+    drawAggregateChart();
+  } else {
+    drawBacktestChart();
+    if (btDdChart) { btDdChart.destroy(); btDdChart = null; }
+  }
+}
+
+// ───────── Aggregate chart: percentile bands ─────────
+// X = day-offset, Y = % return. Shows median/P25-P75/P5-P95 across all completed
+// runs in the current window filter. SPY overlay uses actual per-run spy_return_pct.
+async function drawAggregateChart() {
+  const vis = filteredRuns().filter(r => r.status === "complete" && r.duration_days);
+  const MAX_RUNS = 300;
+  const sampleRuns = vis.slice(-MAX_RUNS);
+
+  // Fetch curves we don't have yet
+  await ensureCurves(sampleRuns.map(r => r.run_id), null);
+
+  const nLabel = document.getElementById("agg-n-label");
+  if (nLabel) nLabel.textContent = `(${sampleRuns.length} runs)`;
+
+  // Build day → [value_pct] map; every run contributes 0% at day 0
+  const byDay = { 0: sampleRuns.map(() => 0) };
+  sampleRuns.forEach(r => {
+    const curve = btCurvesCache[r.run_id] || [];
+    curve.forEach(p => {
+      if (p.day_index == null || p.day_index === 0) return;
+      if (!byDay[p.day_index]) byDay[p.day_index] = [];
+      byDay[p.day_index].push(p.value_pct);
+    });
+  });
+
+  // Build day → [drawdown_pct] map (from curve peaks)
+  const ddByDay = {};
+  sampleRuns.forEach(r => {
+    const curve = btCurvesCache[r.run_id] || [];
+    let peak = 0;
+    curve.forEach(p => {
+      if (p.day_index == null) return;
+      if (p.value_pct > peak) peak = p.value_pct;
+      const dd = peak > 0 ? (p.value_pct - peak) : (p.value_pct < 0 ? p.value_pct : 0);
+      if (!ddByDay[p.day_index]) ddByDay[p.day_index] = [];
+      ddByDay[p.day_index].push(dd);
+    });
+  });
+
+  const pct = (arr, p) => {
+    const s = [...arr].sort((a,b) => a-b);
+    const idx = (p/100) * (s.length - 1);
+    const lo = Math.floor(idx), hi = Math.ceil(idx);
+    return s[lo] + (s[hi] - s[lo]) * (idx - lo);
+  };
+
+  const MIN_N = 5;
+  const days = Object.keys(byDay).map(Number).sort((a,b) => a-b);
+  const labels = days.filter(d => byDay[d].length >= MIN_N);
+
+  const P5=[], P25=[], P50=[], P75=[], P95=[], DD_P50=[], DD_P75=[];
+  labels.forEach(d => {
+    const v = byDay[d];
+    P5.push({ x: d, y: pct(v, 5) });
+    P25.push({ x: d, y: pct(v, 25) });
+    P50.push({ x: d, y: pct(v, 50) });
+    P75.push({ x: d, y: pct(v, 75) });
+    P95.push({ x: d, y: pct(v, 95) });
+    const dd = ddByDay[d] || [0];
+    DD_P50.push({ x: d, y: pct(dd, 50) });
+    DD_P75.push({ x: d, y: pct(dd, 75) });
+  });
+
+  // Median actual SPY growth curve using per-run spy_return_pct annualized
+  const spyAnns = sampleRuns
+    .filter(r => r.spy_return_pct != null && r.duration_days > 30)
+    .map(r => Math.pow(1 + r.spy_return_pct / 100, 365.25 / r.duration_days) - 1);
+  spyAnns.sort((a,b) => a-b);
+  const medSpyAnn = spyAnns.length ? spyAnns[Math.floor(spyAnns.length/2)] : 0.107;
+  const spyLine = labels.map(d => ({ x: d, y: (Math.pow(1 + medSpyAnn, d/365.25) - 1) * 100 }));
+  const spyPctLabel = (medSpyAnn * 100).toFixed(1);
+
+  // Zero line
+  const zeroLine = labels.map(d => ({ x: d, y: 0 }));
+
+  const chartOpts = (yLabel, yFmt, minY) => ({
+    animation: false,
+    responsive: true, maintainAspectRatio: false,
+    plugins: {
+      legend: { display: false },
+      tooltip: {
+        mode: "index", intersect: false,
+        backgroundColor: "rgba(15,20,28,0.95)", borderColor: "#2a3a4f", borderWidth: 1,
+        titleColor: "#dde1e7", bodyColor: "#dde1e7", padding: 8, boxPadding: 3,
+        filter: item => item.dataset.showInTooltip !== false,
+        callbacks: {
+          title: items => {
+            const d = items[0]?.parsed?.x;
+            return d != null ? `Day ${d} (${(d/365.25).toFixed(1)} yr from start)` : "";
+          },
+          label: ctx => {
+            const v = ctx.parsed.y;
+            if (v == null) return null;
+            return `${ctx.dataset.label}: ${yFmt(v)}`;
+          },
+        },
+      },
+    },
+    scales: {
+      x: {
+        type: "linear",
+        ticks: { color: "#8b929d", maxTicksLimit: 10, callback: v => v>=365?(v/365).toFixed(1)+"yr":"d"+v },
+        grid: { color: "#1f2126" },
+      },
+      y: {
+        title: { display: true, text: yLabel, color: "#50565f", font: { size: 10 } },
+        min: minY,
+        ticks: { color: "#dde1e7", callback: yFmt },
+        grid: { color: "#1f2126" },
+      },
+    },
+  });
+
+  // ── Main equity chart ──
+  if (btChart) { btChart.destroy(); btChart = null; }
+  const canvas = document.getElementById("bt-chart");
+  if (canvas) {
+    btChart = new Chart(canvas, {
+      type: "scatter",
+      data: {
+        datasets: [
+          // Outer band (P5→P95): fill from P5 up to P95
+          { label: "P5",  data: P5,  borderColor:"transparent", backgroundColor:"transparent", pointRadius:0, showLine:true, fill:false, showInTooltip:false },
+          { label: "P95 outer", data: P95, borderColor:"rgba(10,205,255,0.08)", backgroundColor:"rgba(10,205,255,0.06)", pointRadius:0, showLine:true, fill:"-1", borderWidth:1, showInTooltip:false },
+          // Inner band (P25→P75)
+          { label: "P25", data: P25, borderColor:"transparent", backgroundColor:"transparent", pointRadius:0, showLine:true, fill:false, showInTooltip:false },
+          { label: "P75 inner", data: P75, borderColor:"rgba(10,205,255,0.22)", backgroundColor:"rgba(10,205,255,0.18)", pointRadius:0, showLine:true, fill:"-1", borderWidth:1, showInTooltip:false },
+          // Median
+          { label: "Median", data: P50, borderColor:"#0acdff", backgroundColor:"transparent", pointRadius:0, showLine:true, fill:false, borderWidth:2.5, tension:0.15 },
+          // SPY actual median
+          { label: `SPY (${spyPctLabel}%/yr actual median)`, data: spyLine, borderColor:"rgba(200,200,200,0.65)", backgroundColor:"transparent", pointRadius:0, showLine:true, fill:false, borderWidth:1.5, borderDash:[6,3], tension:0 },
+          // Zero reference
+          { label: "0%", data: zeroLine, borderColor:"rgba(255,255,255,0.08)", backgroundColor:"transparent", pointRadius:0, showLine:true, fill:false, borderWidth:1, borderDash:[2,4], showInTooltip:false },
+        ],
+      },
+      options: {
+        ...chartOpts("Return from start (%)", v => (v>=0?"+":"")+v.toFixed(0)+"%", null),
+        onClick: () => {},
+      },
+    });
+  }
+
+  // ── Drawdown sub-chart ──
+  if (btDdChart) { btDdChart.destroy(); btDdChart = null; }
+  const ddCanvas = document.getElementById("bt-dd-chart");
+  if (ddCanvas && DD_P50.length) {
+    btDdChart = new Chart(ddCanvas, {
+      type: "scatter",
+      data: {
+        datasets: [
+          { label: "DD P75", data: DD_P75, borderColor:"rgba(239,83,80,0.12)", backgroundColor:"rgba(239,83,80,0.10)", pointRadius:0, showLine:true, fill:"origin", borderWidth:1 },
+          { label: "Median DD", data: DD_P50, borderColor:"rgba(239,83,80,0.7)", backgroundColor:"transparent", pointRadius:0, showLine:true, fill:false, borderWidth:1.5 },
+        ],
+      },
+      options: chartOpts("Drawdown (%)", v => v.toFixed(0)+"%", null),
+    });
+  }
+}
+
 // ───────── Era definitions (shared for scatter + heatmap) ─────────
 const ERA_DEFS = [
   { key: "Pre-GFC",       start: "1900-01-01", end: "2007-12-31", color: "#9a9ec0" },
@@ -1760,7 +1967,12 @@ function selectRun(runId) {
   btSelectedRunId = (btSelectedRunId === runId) ? null : runId;
   renderLegend();
   renderTable();
-  drawBacktestChart();
+  // In aggregate mode, selecting a run switches to individual view for the specific run
+  if (btSelectedRunId != null && btChartMode === "aggregate") {
+    setChartMode("individual");
+  } else {
+    redrawChart();
+  }
   if (btSelectedRunId != null) loadRunDetail(btSelectedRunId);
   else closeDetail();
 }
@@ -1769,20 +1981,20 @@ function toggleRun(runId) {
   if (btHiddenRuns.has(runId)) btHiddenRuns.delete(runId);
   else btHiddenRuns.add(runId);
   renderLegend();
-  drawBacktestChart();
+  redrawChart();
 }
 
 function btToggleAll(show) {
   const vis = filteredRuns();
   btHiddenRuns = show ? new Set() : new Set(vis.map(r => r.run_id));
   renderLegend();
-  drawBacktestChart();
+  redrawChart();
 }
 
 function closeDetail() {
   document.getElementById("bt-detail").style.display = "none";
   btSelectedRunId = null;
-  renderLegend(); renderTable(); drawBacktestChart();
+  renderLegend(); renderTable(); redrawChart();
 }
 
 function showBtSubtab(name) {
