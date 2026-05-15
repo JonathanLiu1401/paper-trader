@@ -61,7 +61,7 @@ VALIDATION_PERMUTATIONS = 5     # background-thread budget — keep this low
 VALIDATION_RESULTS_PATH = ROOT / "data" / "validation_results.json"
 VALIDATION_RESULTS_KEEP = 50    # cap file growth
 
-EARLIEST_WINDOW_START = date(1996, 1, 1)
+EARLIEST_WINDOW_START = date(1993, 2, 1)  # SPY inception — ~30+ years of history
 WINDOW_END_BUFFER_DAYS = 180  # never end a window within 6 months of today
 MIN_WINDOW_YEARS = 1
 MAX_WINDOW_YEARS = 10
@@ -70,8 +70,8 @@ MAX_WINDOW_YEARS = 10
 def _pick_window(seed: int) -> tuple[date, date]:
     """Pick a deterministic random backtest window given a seed.
 
-    Duration is 1-5 years; start lies between 1996-01-01 and (today - duration - 180d)
-    so the window always ends at least 6 months before today.
+    Duration is 1–10 years; start lies between 1993-02-01 (~30yr history) and
+    (today - duration - 180d) so the window always ends at least 6 months before today.
     """
     rng = random.Random(seed)
     duration_years = rng.randint(MIN_WINDOW_YEARS, MAX_WINDOW_YEARS)
