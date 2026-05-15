@@ -228,11 +228,12 @@ class Store:
             self.conn.commit()
 
     def equity_curve(self, limit: int = 500) -> list[dict]:
+        # Most recent `limit` points, returned in ascending order.
         rows = self.conn.execute(
             "SELECT timestamp, total_value, cash, sp500_price FROM equity_curve "
-            "ORDER BY timestamp ASC LIMIT ?", (limit,)
+            "ORDER BY timestamp DESC LIMIT ?", (limit,)
         ).fetchall()
-        return [dict(r) for r in rows]
+        return [dict(r) for r in reversed(rows)]
 
     def close(self):
         self.conn.close()

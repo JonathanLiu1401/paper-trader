@@ -24,7 +24,7 @@ WATCHLIST = [
     "NAIL", "DFEN", "DPST", "FAS", "TNA", "UTSL",
     # Leveraged ETFs — 2x Bull
     "QLD", "SSO", "NVDU", "MSFU", "AMZU", "GOOGU", "METAU",
-    "TSLL", "CONL", "LNOK", "BITU", "ETHU",
+    "TSLL", "CONL", "BITU", "ETHU",
     # Leveraged Bear / Hedge
     "SQQQ", "SPXS", "SOXS", "TECS", "FNGD",
 ]
@@ -278,9 +278,16 @@ def get_quant_signals_live(tickers: list[str]) -> dict[str, dict]:
 def _format_quant_signals(sigs: dict[str, dict]) -> str:
     if not sigs:
         return "  (no quant signals available)"
+    def _v(x):
+        return "?" if x is None else x
+    def _pct(x):
+        return "?" if x is None else f"{x}%"
     return "\n".join(
-        f"  {tk}: RSI={q.get('RSI')}  MACD={q.get('MACD')}  MA={q.get('MA_cross')}  "
-        f"vol_ratio={q.get('vol_ratio')}  52h={q.get('pct_from_52h')}%  52l={q.get('pct_from_52l')}%"
+        f"  {tk}: rsi={_v(q.get('rsi'))}  macd={_v(q.get('MACD'))}/{_v(q.get('macd_signal'))}  "
+        f"ma_cross={_v(q.get('MA_cross'))}  bb_position={_v(q.get('bb_position'))}  "
+        f"vol_ratio={_v(q.get('vol_ratio'))}  mom_5d={_pct(q.get('mom_5d'))}  "
+        f"mom_20d={_pct(q.get('mom_20d'))}  "
+        f"wk52_pos={_v(q.get('wk52_pos'))}  52h={_pct(q.get('pct_from_52h'))}  52l={_pct(q.get('pct_from_52l'))}"
         for tk, q in sorted(sigs.items())
     )
 
@@ -318,15 +325,20 @@ def _parse_decision(raw: str) -> dict | None:
     if text.startswith("```"):
         text = re.sub(r"^```(?:json)?\s*", "", text)
         text = re.sub(r"\s*```$", "", text)
-    # find the first JSON object
-    m = re.search(r"\{[\s\S]*\}", text)
-    if not m:
-        return None
-    try:
-        return json.loads(m.group(0))
-    except Exception as e:
-        print(f"[strategy] JSON parse failed: {e}\nraw: {text[:300]}")
-        return None
+    # Walk to the first '{' and use raw_decode so trailing text after the
+    # JSON object doesn't break parsing (greedy regex was over-matching).
+    decoder = json.JSONDecoder()
+    for i, ch in enumerate(text):
+        if ch != "{":
+            continue
+        try:
+            obj, _ = decoder.raw_decode(text[i:])
+        except json.JSONDecodeError:
+            continue
+        if isinstance(obj, dict):
+            return obj
+    print(f"[strategy] JSON parse failed; raw: {text[:300]}")
+    return None
 
 
 def _portfolio_snapshot(store: Store) -> dict:
@@ -519,15 +531,21 @@ def _execute(decision: dict, snapshot: dict, store: Store) -> tuple[str, str]:
         otype = "call" if action == "SELL_CALL" else "put"
         strike = decision.get("strike")
         expiry = decision.get("expiry")
-        opt_px = market.get_option_price(ticker, expiry, float(strike), otype) if strike and expiry else None
-        # fallback to opening cost if no live quote
         match = next((p for p in snapshot["positions"]
                       if p["ticker"] == ticker and p["type"] == otype
                       and (not strike or p["strike"] == float(strike))
                       and (not expiry or p["expiry"] == expiry)), None)
         if not match:
             return "BLOCKED", f"no matching open {otype} for {ticker}"
-        opt_px = opt_px or match["avg_cost"]
+        # Cash flow must be bounded by what's actually held in the matched
+        # contract — pre-trade check sums across all strikes/expiries and
+        # would otherwise let qty over-credit cash here.
+        if qty > match["qty"] + 1e-6:
+            return "BLOCKED", (
+                f"sell qty {qty} exceeds held {match['qty']} for "
+                f"{ticker} {match['strike']}{otype[0].upper()} {match['expiry']}"
+            )
+        opt_px = market.get_option_price(ticker, match["expiry"], match["strike"], otype) or match["avg_cost"]
         notional = opt_px * qty * 100
         store.record_trade(ticker, action, qty, opt_px, reason,
                            expiry=match["expiry"], strike=match["strike"], option_type=otype)

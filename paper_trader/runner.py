@@ -14,18 +14,10 @@ from .store import get_store
 NY = ZoneInfo("America/New_York")
 OPEN_INTERVAL_S = 1800      # decide every 30 min when market is open
 CLOSED_INTERVAL_S = 3600    # every 1 hour when closed
-HOURLY_REPORT_S = 3600      # send hourly summary every hour
 DAILY_CLOSE_HOUR_NY = 16    # report after 16:00 NY
 
 
-_last_hourly = time.time()
 _daily_close_sent_for: str | None = None
-
-
-def _maybe_hourly(now_ts: float):
-    global _last_hourly
-    if now_ts - _last_hourly >= HOURLY_REPORT_S:
-        _last_hourly = now_ts  # hourly Discord summary disabled
 
 
 def _maybe_daily_close():
@@ -39,8 +31,13 @@ def _maybe_daily_close():
     if _daily_close_sent_for == today:
         return
     try:
-        reporter.send_daily_close()
-        _daily_close_sent_for = today
+        # Only mark as sent on actual success — _send returns False (no exception)
+        # when openclaw is missing or fails; otherwise a transient failure would
+        # permanently suppress today's close.
+        if reporter.send_daily_close():
+            _daily_close_sent_for = today
+        else:
+            print("[runner] daily close: send returned False, will retry next cycle")
     except Exception as e:
         print(f"[runner] daily close failed: {e}")
 
@@ -88,12 +85,11 @@ def main():
             print("[runner] cycle exception:")
             traceback.print_exc()
 
-        now_ts = time.time()
-        _maybe_hourly(now_ts)
         _maybe_daily_close()
 
-        sleep_s = OPEN_INTERVAL_S if market.is_market_open() else CLOSED_INTERVAL_S
-        print(f"[runner] sleeping {sleep_s}s (market_open={market.is_market_open()})")
+        market_open = market.is_market_open()
+        sleep_s = OPEN_INTERVAL_S if market_open else CLOSED_INTERVAL_S
+        print(f"[runner] sleeping {sleep_s}s (market_open={market_open})")
         time.sleep(sleep_s)
 
 

@@ -1,13 +1,12 @@
 """Discord reporter — pushes trades, hourly summaries, and daily close to the channel."""
 from __future__ import annotations
 
-import json
 import shutil
 import subprocess
 from datetime import datetime, timezone
 
 from . import market
-from .store import Store, get_store
+from .store import get_store
 
 DISCORD_CHANNEL = "channel:1496099475838603324"
 _INITIAL_EQUITY = 1000.0
@@ -60,14 +59,16 @@ def send_decision_log(summary: dict) -> bool:
     status = summary.get("status", "?")
     detail = summary.get("detail", "")
     auto = summary.get("auto_exits") or []
-    pf = summary["snapshot"]
-    pl = pf["total_value"] - _INITIAL_EQUITY
+    pf = summary.get("snapshot") or {}
+    total_value = float(pf.get("total_value") or 0.0)
+    cash = float(pf.get("cash") or 0.0)
+    pl = total_value - _INITIAL_EQUITY
     pl_pct = pl / _INITIAL_EQUITY * 100
 
     parts = [
         f"**Δ DECISION** `{action} {ticker}` → `{status}`",
-        f"conf=`{conf}` value=`${pf['total_value']:.2f}` "
-        f"P/L=`${pl:+.2f}` (`{pl_pct:+.2f}%`) cash=`${pf['cash']:.2f}`",
+        f"conf=`{conf}` value=`${total_value:.2f}` "
+        f"P/L=`${pl:+.2f}` (`{pl_pct:+.2f}%`) cash=`${cash:.2f}`",
     ]
     if auto:
         parts.append("auto: " + "; ".join(f"`{a}`" for a in auto))

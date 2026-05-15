@@ -36,10 +36,11 @@ CACHE_DIR = ROOT / "data" / "backtest_cache"
 GDELT_CACHE = CACHE_DIR / "gdelt"
 PRICE_CACHE_PATH = CACHE_DIR / "prices.json"
 
-START_DATE = date(2026, 2, 1)   # 3-month window — fast enough to complete, recent enough for ML
+START_DATE = date(2025, 5, 1)   # 1-year window — full market cycle, rich ML training signal
 END_DATE = date(2026, 5, 13)
 INITIAL_CASH = 1000.0
 SAMPLE_EVERY_N_DAYS = 1         # daily decisions — 1 per trading day
+MAX_DECISIONS_PER_DAY = 10     # intraday loop: up to N ml_decide calls per trading day
 GDELT_RATE_LIMIT_S = 5.5       # GDELT actual limit is ~1 req/5s; use 5.5 for safety
 GDELT_MAX_RECORDS = 100
 GDELT_RETRY_BACKOFF_S = 20.0  # reduced; 30s was too conservative
@@ -90,8 +91,31 @@ WATCHLIST = [
 # (RSI/MACD/MA crossover/volume/52w proximity). Top 10 most-traded large caps
 # plus the index proxies.
 QUANT_SIGNAL_TICKERS = [
+    # Tech / semis
     "SPY", "QQQ", "NVDA", "AMD", "MU", "TSM", "AAPL", "MSFT", "META", "TQQQ",
+    # Leveraged index / sector ETFs — RSI/MACD computed so they score as buy candidates
+    "SOXL", "UPRO", "SPXL", "TECL", "UDOW", "FNGU", "LABU", "FAS",
+    # Energy
+    "XLE", "XOM", "CVX", "USO", "UNG",
+    # Financials
+    "XLF", "GS", "JPM", "BAC",
+    # Healthcare
+    "XLV", "LLY", "UNH",
+    # Commodities / macro
+    "GLD", "TLT", "SLV",
+    # Industrials / defense
+    "XLI", "DFEN",
+    # Consumer / retail
+    "AMZN", "SHOP",
 ]
+
+# Leveraged ETFs that can receive elevated conviction when signals are very strong.
+_LEVERAGED_ETFS = {
+    "SOXL", "TQQQ", "UPRO", "SPXL", "UDOW", "URTY", "TECL", "FNGU", "CURE", "LABU",
+    "NAIL", "DFEN", "DPST", "FAS", "HIBL",
+    "QLD", "SSO", "MVV", "NVDU", "MSFU", "AMZU", "TSLT", "TSLL",
+    "LNOK", "BOIL", "UCO", "AGQ", "BITU",
+}
 # LNOK is a thin OTC name and yfinance often returns nothing → omitted from default fetch.
 
 # ─────────────────────────── trading personas ───────────────────────────
@@ -211,22 +235,55 @@ def persona_for(run_id: int) -> dict[str, str]:
     key = ((int(run_id) - 1) % len(PERSONAS)) + 1
     return PERSONAS[key]
 
+
+# Per-persona sector boosts applied to ticker_scores before final pick.
+# Leveraged ETFs get strong boosts in aggressive personas — they amplify gains
+# and are the primary vehicle for outperformance in high-conviction setups.
+_PERSONA_BOOSTS: dict[int, dict[str, float]] = {
+    1: {"GLD": 2.0, "TLT": 1.5, "XLV": 1.5, "JPM": 1.0, "UNH": 1.0},      # Value
+    2: {"SOXL": 4.0, "TQQQ": 3.5, "UPRO": 3.0, "SPXL": 2.5,
+        "TECL": 2.0, "FNGU": 2.0, "QQQ": 1.5},                              # Momentum → 3x ETFs
+    3: {"GLD": 1.5, "TLT": 2.0, "XLV": 1.5, "SLV": 1.0, "USO": 1.0},      # Contrarian
+    4: {"GLD": 2.5, "TLT": 2.0, "USO": 2.0, "UNG": 1.5, "SLV": 1.5,
+        "XLE": 1.5, "BABA": 1.0, "NVO": 1.0},                               # Global Macro
+    5: {"LLY": 2.0, "UNH": 1.5, "AMZN": 1.5, "MSFT": 1.5,
+        "CURE": 1.5, "LABU": 1.0},                                           # GARP
+    6: {"SOXL": 2.0, "TQQQ": 2.0, "FAS": 2.0, "LABU": 1.5,
+        "XLF": 1.5, "XLV": 1.5},                                             # Quant/Event → lev ETFs
+    7: {"FAS": 2.5, "DFEN": 2.0, "LABU": 2.0, "BOIL": 1.5,
+        "XLE": 2.0, "XLF": 2.0, "XLI": 1.5},                               # Sector Rotator
+    8: {"COIN": 1.5, "PLTR": 1.5, "SHOP": 1.5, "SQ": 1.5,
+        "MSTR": 1.5, "BITU": 1.0},                                           # Small/Mid Cap
+    9: {"SOXL": 2.5, "TQQQ": 2.0, "LLY": 2.0, "DFEN": 1.5,
+        "NVO": 1.5, "CURE": 1.5},                                            # ESG/Thematic
+    10: {"SOXL": 3.5, "TQQQ": 3.0, "UPRO": 2.5, "BTC-USD": 2.5,
+         "BITU": 2.0, "COIN": 2.0, "MSTR": 2.0},                            # Speculator → max leverage
+}
+
 KEYWORD_GROUPS = [
+    # Tech / semis — core signals
     "stock market earnings semiconductor",
     "NVDA AMD Micron earnings revenue",
-    "Federal Reserve interest rates inflation",
     "SP500 market rally selloff",
-    "Micron DRAM memory chip supply",
-    "Lumentum photonics optical",
-    # Global / multi-asset coverage for broader ML training signal
-    "global markets central bank interest rates",
+    "Federal Reserve interest rates inflation",
+    # Leveraged ETF catalysts
+    "SOXL TQQQ UPRO leveraged ETF rally",
+    "semiconductor chip AI earnings beat",
+    "Nasdaq tech rally surge breakout",
+    # Sector rotation signals
     "earnings revenue profit loss guidance",
     "commodity oil gold copper energy",
     "cryptocurrency bitcoin ethereum blockchain",
+    "bank earnings financial sector rate",
+    "healthcare pharma biotech FDA approval",
+    "defense spending military contract",
+    # Macro / global
+    "global markets central bank interest rates",
+    "currency forex dollar euro yen",
+    "inflation CPI jobs employment report",
+    "China trade tariff economic data",
     "European stocks DAX FTSE earnings",
     "Asian markets Nikkei Hang Seng",
-    "emerging markets China India Brazil",
-    "currency forex dollar euro yen",
 ]
 
 # Heuristic scorer lexicon
@@ -560,9 +617,11 @@ def _persist_volume_cache() -> None:
 def _ensure_volume_for(ticker: str, start: date, end: date) -> dict[str, float]:
     """Lazily fetch a volume series for `ticker` covering [start, end]. Cached on disk."""
     _load_volume_cache_from_disk()
-    existing = _VOLUME_CACHE.get(ticker)
-    if existing:
-        return existing
+    # Use `in` rather than truthiness: a previously-failed ticker is stored as
+    # {} which is falsy, so a truthiness check would retry the network call on
+    # every invocation. Across many decisions × runs this added measurable cost.
+    if ticker in _VOLUME_CACHE:
+        return _VOLUME_CACHE[ticker]
     try:
         end_pad = (end + timedelta(days=2)).isoformat()
         hist = yf.Ticker(ticker).history(start=start.isoformat(),
@@ -661,16 +720,37 @@ def _compute_technical_indicators(ticker: str, sim_date: date,
                                   prices: "PriceCache") -> dict | None:
     """RSI/MACD/MA crossover/volume ratio/52w proximity computed from cached closes.
 
-    Returns None if there isn't enough history for the ticker at sim_date."""
-    pairs = _series_up_to(prices, ticker, sim_date, max_points=260)
+    Returns None if there isn't enough history for the ticker at sim_date.
+
+    Returns both uppercase keys (RSI, MACD label, MA_cross) for the prompt-building
+    path and lowercase numeric keys (rsi, macd_signal, bb_position, mom_5d, mom_20d,
+    wk52_pos) that _ml_decide and the DecisionScorer consume. Prior versions only
+    emitted uppercase, so _ml_decide silently saw null momentum/BB and a string MACD
+    label that failed isinstance checks — most quant features no-op'd.
+    """
+    pairs = _series_up_to(prices, ticker, sim_date, max_points=300)
     if len(pairs) < 60:
         return None
     closes = [p[1] for p in pairs]
     last = closes[-1]
 
     rsi = _rsi(closes, 14)
+
     macd_res = _macd(closes)
     macd_label = macd_res[0] if macd_res else None
+
+    # MACD signal-line value (numeric) — used by _ml_decide and the scorer
+    macd_signal_val: float | None = None
+    if len(closes) >= 35:
+        ema12 = _ema(closes, 12)
+        ema26 = _ema(closes, 26)
+        if ema12 and ema26:
+            offset = len(ema12) - len(ema26)
+            macd_line = [ema12[i + offset] - ema26[i] for i in range(len(ema26))]
+            if len(macd_line) >= 9:
+                sig = _ema(macd_line, 9)
+                if sig:
+                    macd_signal_val = sig[-1]
 
     ma_cross = None
     if len(closes) >= 200:
@@ -681,10 +761,33 @@ def _compute_technical_indicators(ticker: str, sim_date: date,
         ma50 = sum(closes[-50:]) / 50
         ma_cross = "above50" if last > ma50 else "below50"
 
+    # Bollinger Band position over 20 days (clamped to ±2)
+    bb_position: float | None = None
+    if len(closes) >= 20:
+        window20 = closes[-20:]
+        sma20 = sum(window20) / 20
+        sd20 = _stdev(window20)
+        if sd20 > 0:
+            raw = (last - sma20) / (2 * sd20)
+            bb_position = max(-2.0, min(2.0, raw))
+
+    # 5- and 20-day momentum %
+    mom_5d: float | None = None
+    if len(closes) >= 6 and closes[-6] > 0:
+        mom_5d = (last - closes[-6]) / closes[-6] * 100
+    mom_20d: float | None = None
+    if len(closes) >= 21 and closes[-21] > 0:
+        mom_20d = (last - closes[-21]) / closes[-21] * 100
+
     hi_52 = max(closes[-252:]) if len(closes) >= 252 else max(closes)
     lo_52 = min(closes[-252:]) if len(closes) >= 252 else min(closes)
     pct_from_52h = (last - hi_52) / hi_52 * 100 if hi_52 else 0.0
     pct_from_52l = (last - lo_52) / lo_52 * 100 if lo_52 else 0.0
+
+    # 52-week position 0 (low) .. 1 (high)
+    wk52_pos: float | None = None
+    if hi_52 > lo_52:
+        wk52_pos = (last - lo_52) / (hi_52 - lo_52)
 
     vol_ratio: float | None = None
     try:
@@ -704,12 +807,21 @@ def _compute_technical_indicators(ticker: str, sim_date: date,
         vol_ratio = None
 
     return {
+        # Legacy uppercase keys — _build_prompt and any external readers rely on these.
         "RSI": round(rsi, 1) if rsi is not None else None,
         "MACD": macd_label,
         "MA_cross": ma_cross,
-        "vol_ratio": round(vol_ratio, 2) if vol_ratio is not None else None,
         "pct_from_52h": round(pct_from_52h, 1),
         "pct_from_52l": round(pct_from_52l, 1),
+        # Lowercase numeric keys consumed by _ml_decide, _compute_decision_outcomes,
+        # _format_quant_signals_block, and DecisionScorer features.
+        "rsi": round(rsi, 2) if rsi is not None else None,
+        "macd_signal": round(macd_signal_val, 4) if macd_signal_val is not None else None,
+        "bb_position": round(bb_position, 2) if bb_position is not None else None,
+        "mom_5d": round(mom_5d, 2) if mom_5d is not None else None,
+        "mom_20d": round(mom_20d, 2) if mom_20d is not None else None,
+        "wk52_pos": round(wk52_pos, 2) if wk52_pos is not None else None,
+        "vol_ratio": round(vol_ratio, 2) if vol_ratio is not None else None,
     }
 
 
@@ -914,7 +1026,13 @@ class AlphaVantageNewsFetcher:
     def fetch(self, tickers: list[str], d: date) -> list[dict]:
         if not self._key:
             return []
+        # AV NEWS_SENTIMENT without time_from/time_to returns the latest news for
+        # the ticker, not news as-of `d`. For historical backtest dates this is
+        # forward-leakage (training on news that didn't exist yet). Constrain the
+        # query window to a tight band around `d`.
         articles: list[dict] = []
+        time_from = d.strftime("%Y%m%dT0000")
+        time_to = (d + timedelta(days=1)).strftime("%Y%m%dT0000")
         for tk in tickers:
             path = self._cache_path(tk, d)
             if path.exists():
@@ -931,7 +1049,8 @@ class AlphaVantageNewsFetcher:
                 resp = requests.get(
                     "https://www.alphavantage.co/query",
                     params={"function": "NEWS_SENTIMENT", "tickers": tk,
-                            "limit": 50, "apikey": self._key},
+                            "limit": 50, "time_from": time_from,
+                            "time_to": time_to, "apikey": self._key},
                     timeout=12,
                 )
                 data = resp.json()
@@ -955,7 +1074,7 @@ _NOT_TICKERS = {
     "AI", "AND", "FOR", "THE", "WITH", "FROM", "AFTER", "INTO", "HAVE", "WILL",
     "MAY", "JUNE", "JULY", "AUG", "SEPT", "OCT", "NOV", "DEC", "CEO", "ETF",
     "USA", "USD", "GDP", "CPI", "OPEC", "FED", "FOMC", "PMI", "ISM", "WHO",
-    "NEW", "OLD", "ALL", "YES", "USA", "ITS", "OUR", "ONE", "TWO", "AND",
+    "NEW", "OLD", "ALL", "YES", "ITS", "OUR", "ONE", "TWO",
 }
 
 
@@ -996,10 +1115,42 @@ _BEARISH_WORDS = {
     "lower", "reduce", "reduced", "concern", "concerns", "risk",
 }
 _WORD_TO_TICKER: dict[str, str] = {
+    # Tech / semis — map bullish tech headlines straight to leveraged ETFs
     "nvidia": "NVDA", "amd": "AMD", "apple": "AAPL", "microsoft": "MSFT",
     "amazon": "AMZN", "google": "GOOGL", "alphabet": "GOOGL", "meta": "META",
     "tesla": "TSLA", "intel": "INTC", "micron": "MU", "broadcom": "AVGO",
-    "qualcomm": "QCOM", "spy": "SPY", "qqq": "QQQ", "nasdaq": "QQQ",
+    "qualcomm": "QCOM", "spy": "SPY", "qqq": "QQQ",
+    "semiconductor": "SOXL", "chip": "SOXL", "chips": "SOXL",
+    "nasdaq": "TQQQ",          # nasdaq headline → 3x Nasdaq
+    "nasdaq rally": "TQQQ", "tech rally": "TQQQ", "tech surge": "TQQQ",
+    "s&p rally": "UPRO", "sp500 rally": "UPRO", "bull market": "UPRO",
+    "ai": "TQQQ", "artificial intelligence": "TQQQ",
+    "semiconductor surge": "SOXL", "chip rally": "SOXL", "semi rally": "SOXL",
+    "nvidia surge": "SOXL", "nvidia rally": "SOXL",
+    # Energy
+    "exxon": "XOM", "chevron": "CVX", "oil": "USO", "crude": "USO",
+    "natural gas": "UNG", "energy": "XLE", "opec": "USO", "petroleum": "USO",
+    "lng": "UNG", "shale": "XOM",
+    # Financials / banks
+    "goldman": "GS", "jpmorgan": "JPM", "jp morgan": "JPM", "bank of america": "BAC",
+    "federal reserve": "TLT", "fed rate": "TLT", "interest rate": "TLT",
+    "treasury": "TLT", "yields": "TLT", "bonds": "TLT", "banking": "FAS",
+    "financials": "XLF",
+    # Healthcare / pharma
+    "eli lilly": "LLY", "lilly": "LLY", "ozempic": "LLY", "wegovy": "LLY",
+    "glp-1": "LLY", "unitedhealth": "UNH", "healthcare": "XLV",
+    "pharma": "XLV", "biotech": "LABU", "fda": "LABU",
+    # Commodities / macro
+    "gold": "GLD", "silver": "SLV", "inflation": "GLD", "copper": "XOM",
+    "commodities": "GLD", "precious metals": "GLD",
+    # Defense / industrials
+    "defense": "DFEN", "military": "DFEN", "lockheed": "DFEN", "boeing": "DFEN",
+    "raytheon": "DFEN", "industrial": "XLI",
+    # China / global
+    "alibaba": "BABA", "china": "BABA", "taiwan": "TSM", "asml": "ASML",
+    "novo nordisk": "NVO", "toyota": "TM",
+    # Crypto
+    "bitcoin": "BTC-USD", "crypto": "COIN", "coinbase": "COIN",
 }
 
 
@@ -1014,6 +1165,36 @@ def _article_sentiment(title: str) -> float:
     return (bull - bear) / total
 
 
+# ─────────────────────────── decision scorer singleton ───────────────────────────
+# Lazy-loaded so import errors or missing files never crash the backtest.
+
+_DECISION_SCORER = None
+_DECISION_SCORER_LOCK = threading.Lock()
+
+
+def _get_decision_scorer():
+    global _DECISION_SCORER
+    if _DECISION_SCORER is not None:
+        return _DECISION_SCORER
+    with _DECISION_SCORER_LOCK:
+        if _DECISION_SCORER is not None:
+            return _DECISION_SCORER
+        try:
+            from .ml.decision_scorer import DecisionScorer as _DS
+            _DECISION_SCORER = _DS()
+        except Exception as exc:
+            print(f"[decision_scorer] init failed ({exc}) — running without scorer")
+
+            class _Dummy:
+                is_trained = False
+
+                def predict(self, **kw):
+                    return 0.0
+
+            _DECISION_SCORER = _Dummy()
+    return _DECISION_SCORER
+
+
 def _ml_decide(
     sim_date: date,
     portfolio: "SimPortfolio",
@@ -1021,6 +1202,7 @@ def _ml_decide(
     prices: "PriceCache",
     run_id: int,
     rng: random.Random,
+    exclude_tickers: set | None = None,
 ) -> dict:
     """Pure ML + quant decision — no Claude call.
 
@@ -1049,8 +1231,12 @@ def _ml_decide(
     quant = _get_quant_signals(sim_date, quant_tickers, prices)
     for tk, q in quant.items():
         adj = 0.0
-        rsi = q.get("rsi") or q.get("RSI")
-        macd = q.get("macd_signal") or q.get("MACD")
+        # Use only numeric fields. The legacy "MACD" key is a string label
+        # ("bullish"/"bearish") used only for prompt display; falling through
+        # via `or` when macd_signal==0.0 would feed a string into
+        # `isinstance(macd, (int, float))` checks and silently no-op.
+        rsi = q.get("rsi")
+        macd = q.get("macd_signal")
         mom5 = q.get("mom_5d")
         mom20 = q.get("mom_20d")
         bb = q.get("bb_position")
@@ -1075,39 +1261,93 @@ def _ml_decide(
 
     # 3. Market regime dampener
     regime = _market_regime(sim_date, prices)
-    regime_mult = 1.0 if regime == "bull" else (0.6 if regime == "sideways" else 0.3)
+    # "unknown" (insufficient SPY history) gets a neutral 1.0 — early backtest
+    # days previously fell into the bear bucket (0.3), silently dampening every
+    # signal for the first ~200 trading days of each run.
+    if regime == "bull":
+        regime_mult = 1.0
+    elif regime == "sideways":
+        regime_mult = 0.6
+    elif regime == "bear":
+        regime_mult = 0.3
+    else:  # "unknown"
+        regime_mult = 1.0
 
     total_val = portfolio.total_value(prices, sim_date)
+
+    _excl = exclude_tickers or set()
 
     # 4. Sell: worst-scoring held position with negative signal
     sell_ticker = None
     worst_score = -0.8
     for tk in portfolio.positions:
+        if tk in _excl:
+            continue
         s = ticker_scores.get(tk, 0.0) * regime_mult
         if s < worst_score:
             worst_score = s
             sell_ticker = tk
 
-    # 5. Buy: highest-scoring watchlist ticker above threshold
+    # 5. Persona-seeded bias — each persona boosts its preferred sector tickers
+    # so runs explore different parts of the market, not just tech/semis.
+    persona_idx = ((run_id - 1) % len(PERSONAS)) + 1
+
+    for tk, boost in _PERSONA_BOOSTS.get(persona_idx, {}).items():
+        if tk in WATCHLIST and tk not in _excl:
+            ticker_scores[tk] = ticker_scores.get(tk, 0.0) + boost
+
+    # Per-persona buy threshold — applied BEFORE selection so it actually changes
+    # which tickers qualify as buys. Earlier versions adjusted best_score *after*
+    # the selection loop, which only shifted conviction (and in the wrong direction).
+    if persona_idx in (2, 10):
+        buy_threshold = 0.85   # MOMENTUM / SPECULATOR — lower bar
+    elif persona_idx in (1, 5):
+        buy_threshold = 1.15   # VALUE / GARP — higher bar
+    else:
+        buy_threshold = 1.0
+
+    # Buy pick: highest-scoring watchlist ticker above threshold (after persona boosts)
     buy_ticker = None
-    best_score = 1.0
+    best_score = buy_threshold
     for tk, s in ticker_scores.items():
+        if tk in _excl:
+            continue
         adj_s = s * regime_mult
         if adj_s > best_score and prices.price_on(tk, sim_date):
             best_score = adj_s
             buy_ticker = tk
 
-    # 6. Persona-seeded bias (each run_id tilts toward a style without Claude)
-    persona_idx = ((run_id - 1) % 10) + 1
-    if persona_idx in (2, 10):   # MOMENTUM / SPECULATOR — lower buy bar
-        best_score *= 0.85
-    elif persona_idx in (1, 5):  # VALUE / GARP — higher bar
-        best_score *= 1.15
-    elif persona_idx == 3:       # CONTRARIAN — flip overbought buy to sell
+    # Sector concentration guard: if portfolio is >60% single-stock tech, penalise those buys.
+    # Leveraged ETFs (SOXL, TQQQ, TECL, etc.) are excluded from this penalty — they are
+    # diversified within their sector and are the intended aggressive vehicles.
+    tech_tickers = {"NVDA", "AMD", "MU", "INTC", "QCOM", "AAPL", "MSFT", "META",
+                    "GOOGL", "SMH", "TSM", "QQQ"}
+    if total_val > 0:
+        tech_val = sum(
+            portfolio.positions[t]["qty"] * (prices.price_on(t, sim_date) or 0)
+            for t in portfolio.positions if t in tech_tickers
+        )
+        if tech_val / total_val > 0.60 and buy_ticker in tech_tickers:
+            # Penalise — try the next-best non-tech ticker
+            for tk, s in sorted(ticker_scores.items(), key=lambda x: x[1] * regime_mult, reverse=True):
+                if tk in _excl or tk in tech_tickers:
+                    continue
+                adj_s = s * regime_mult
+                if adj_s > 0.5 and prices.price_on(tk, sim_date):
+                    buy_ticker = tk
+                    best_score = adj_s
+                    break
+
+    # Track the score that actually triggered the sell. Default is the worst-held
+    # score from step 4; the CONTRARIAN swap (below) overrides with best_score
+    # because that's what tagged the ticker as overbought in the first place.
+    sell_score = worst_score
+    if persona_idx == 3:       # CONTRARIAN — flip overbought buy to sell
         q = quant.get(buy_ticker or "", {})
-        rsi_v = q.get("rsi") or q.get("RSI")
+        rsi_v = q.get("rsi")
         if buy_ticker and isinstance(rsi_v, (int, float)) and rsi_v > 65:
             sell_ticker, buy_ticker = buy_ticker, None
+            sell_score = best_score
 
     if sell_ticker and portfolio.positions.get(sell_ticker):
         pos = portfolio.positions[sell_ticker]
@@ -1115,27 +1355,57 @@ def _ml_decide(
         return {
             "action": "SELL", "ticker": sell_ticker, "qty": sell_qty,
             "reasoning": (
-                f"ML+quant: {sell_ticker} score={worst_score:.2f} regime={regime} "
+                f"ML+quant: {sell_ticker} score={sell_score:.2f} regime={regime} "
                 f"RSI={quant.get(sell_ticker, {}).get('rsi', 'N/A')} — reducing"
             ),
         }
 
     if buy_ticker:
         price = prices.price_on(buy_ticker, sim_date) or 1.0
-        conviction = min(0.25, best_score / 20.0)
+        # Leveraged ETFs get elevated max conviction in bull/sideways markets — they
+        # are the primary vehicle for aggressive outperformance. Cap is 40% of portfolio
+        # vs 25% for regular tickers.
+        if buy_ticker in _LEVERAGED_ETFS and regime in ("bull", "sideways"):
+            conviction = min(0.40, best_score / 15.0)
+        else:
+            conviction = min(0.25, best_score / 20.0)
+
+        # DecisionScorer nudge: only modulate conviction once the model has seen
+        # enough real outcomes (≥500 records). With fewer, it is too noisy to gate.
+        q_buy = quant.get(buy_ticker, {})
+        _scorer = _get_decision_scorer()
+        scorer_pred = _scorer.predict(
+            ml_score=best_score,
+            rsi=q_buy.get("rsi"),
+            macd=q_buy.get("macd_signal"),
+            mom5=q_buy.get("mom_5d"),
+            mom20=q_buy.get("mom_20d"),
+            regime_mult=regime_mult,
+            ticker=buy_ticker,
+        )
+        _scorer_n = getattr(_scorer, "_n_train", 0)
+        if _scorer.is_trained and _scorer_n >= 500:
+            if scorer_pred < -5.0:
+                # High-confidence loser per scorer — skip
+                return {"action": "HOLD", "ticker": buy_ticker, "qty": 0,
+                        "reasoning": f"ML score={best_score:.2f} scorer pred={scorer_pred:.1f}% — skip"}
+            elif scorer_pred < 0.0:
+                conviction *= 0.7  # mild penalty, not a hard block
+
         buy_notional = min(total_val * conviction, portfolio.cash * 0.95)
         qty = round(buy_notional / price, 4)
         if qty < 0.01:
             return {"action": "HOLD", "ticker": buy_ticker, "qty": 0,
                     "reasoning": f"ML score={best_score:.2f} but notional too small"}
+        scorer_note = f" scorer={scorer_pred:+.1f}%" if _get_decision_scorer().is_trained else ""
         return {
             "action": "BUY", "ticker": buy_ticker, "qty": qty,
             "stop_loss": round(price * 0.92, 2),
             "take_profit": round(price * 1.15, 2),
             "reasoning": (
                 f"ML+quant: {buy_ticker} score={best_score:.2f} regime={regime} "
-                f"RSI={quant.get(buy_ticker, {}).get('rsi', 'N/A')} "
-                f"conviction={conviction:.0%}"
+                f"RSI={q_buy.get('rsi', 'N/A')} "
+                f"conviction={conviction:.0%}{scorer_note}"
             ),
         }
 
@@ -1462,8 +1732,6 @@ class BacktestRun:
 
 
 LOCAL_ARTICLES_DB = Path(__file__).resolve().parent.parent.parent / "digital-intern" / "data" / "articles.db"
-# How many days back from today to use local DB vs skip news entirely for pure-quant mode.
-LOCAL_NEWS_LOOKBACK_DAYS = 60
 
 
 class BacktestEngine:
@@ -1489,9 +1757,15 @@ class BacktestEngine:
             if not LOCAL_ARTICLES_DB.exists():
                 return result
             conn = _sqlite3.connect(f"file:{LOCAL_ARTICLES_DB}?mode=ro", uri=True, timeout=5.0)
+            # Filter out backtest-injected rows so the engine doesn't read its own
+            # past decisions as future signals (training contamination). Mirrors
+            # the live-only clause used by paper_trader/signals.py.
             rows = conn.execute(
                 "SELECT title, url, source, published, ai_score, kw_score, full_text "
-                "FROM articles WHERE title IS NOT NULL AND title != ''"
+                "FROM articles WHERE title IS NOT NULL AND title != '' "
+                "AND (url IS NULL OR url NOT LIKE 'backtest://%') "
+                "AND (source IS NULL OR (source NOT LIKE 'backtest_%' "
+                "AND source NOT LIKE 'opus_annotation%'))"
             ).fetchall()
             conn.close()
             for title, url, source, published, ai_score, kw_score, full_text in rows:
@@ -1543,12 +1817,15 @@ class BacktestEngine:
         seen_urls: set[str] = set()
 
         # ── Tier 1: local articles DB (in-memory, zero latency) ──────────────
+        # Skip dedup for empty URLs — multiple URL-less articles must not all
+        # collapse to the same seen_urls bucket (only the first would survive).
         day_str = d.isoformat()
         for a in self._local_news.get(day_str, []):
             url = a.get("url", "")
-            if url in seen_urls:
+            if url and url in seen_urls:
                 continue
-            seen_urls.add(url)
+            if url:
+                seen_urls.add(url)
             _, tickers = score_article({"title": a["title"], "url": url})
             articles.append({"title": a["title"], "url": url,
                              "score": a["score"], "tickers": tickers})
@@ -1556,22 +1833,31 @@ class BacktestEngine:
         # ── Tier 2: yfinance recent news (no rate limit, no API key) ─────────
         if d >= date.today() - timedelta(days=30):
             for a in self._fetch_yf_news(list(QUANT_SIGNAL_TICKERS), d):
-                if a["url"] not in seen_urls:
-                    seen_urls.add(a["url"])
-                    articles.append(a)
+                url = a.get("url", "")
+                if url and url in seen_urls:
+                    continue
+                if url:
+                    seen_urls.add(url)
+                articles.append(a)
 
         # ── Alpha Vantage (quota-guarded, disk-cached) ────────────────────────
-        if portfolio is not None:
-            av_tickers = list(portfolio.positions.keys())[:2] + ["NVDA", "SPY"]
-        else:
-            av_tickers = ["NVDA", "SPY"]
-        for a in self.av_news.fetch(list(dict.fromkeys(av_tickers))[:4], d):
-            url = a.get("url", "")
-            if url and url not in seen_urls:
-                seen_urls.add(url)
-                score, tickers = score_article(a)
-                articles.append({"title": a["title"], "url": url,
-                                 "score": score, "tickers": tickers})
+        # Only fetch for recent dates. AV's NEWS_SENTIMENT historically returned
+        # latest news regardless of date (before the time_from/time_to fix), so
+        # cached files for old sim_dates may contain forward-leaking current news.
+        # Restrict to the last 14 days so any contamination is bounded to recent
+        # backtest windows that already overlap with live data.
+        if d >= date.today() - timedelta(days=14):
+            if portfolio is not None:
+                av_tickers = list(portfolio.positions.keys())[:2] + ["NVDA", "SPY"]
+            else:
+                av_tickers = ["NVDA", "SPY"]
+            for a in self.av_news.fetch(list(dict.fromkeys(av_tickers))[:4], d):
+                url = a.get("url", "")
+                if url and url not in seen_urls:
+                    seen_urls.add(url)
+                    score, tickers = score_article(a)
+                    articles.append({"title": a["title"], "url": url,
+                                     "score": score, "tickers": tickers})
 
         # ── Tier 3: GDELT — only from existing disk cache, no outbound calls ──
         # Skip entirely if local DB already gave us articles (fast path).
@@ -1584,22 +1870,15 @@ class BacktestEngine:
                     continue  # skip — no cache, no network call
                 for a in self.gdelt.fetch(d, kw):
                     url = a.get("url", "")
-                    if url in seen_urls or not a.get("title"):
+                    if not a.get("title"):
                         continue
-                    seen_urls.add(url)
+                    if url and url in seen_urls:
+                        continue
+                    if url:
+                        seen_urls.add(url)
                     score, tickers = score_article(a)
                     articles.append({"title": a["title"], "url": url,
                                      "score": score, "tickers": tickers})
-
-        # ── Compute QUANTITATIVE SIGNALS block (held positions + SPY/QQQ) ────
-        try:
-            held = list(portfolio.positions.keys()) if portfolio is not None else []
-            quant_targets = sorted(set(held) | {"SPY", "QQQ"})
-            quant_sigs = self._fetch_quant_signals(quant_targets, d)
-            self._last_quant_block = _format_quant_signals_block(quant_sigs)
-        except Exception as e:
-            print(f"[quant_v2] block build failed at {d}: {e}")
-            self._last_quant_block = ""
 
         # ── Rank and sample ───────────────────────────────────────────────────
         articles.sort(key=lambda x: x["score"], reverse=True)
@@ -1658,7 +1937,7 @@ class BacktestEngine:
             seed = int.from_bytes(os.urandom(4), "big") ^ (run_id * 1337)
         rng = random.Random(seed)
         self.store.upsert_run(run_id, seed, "running")
-        print(f"\n══════ RUN {run_id}/10  seed={seed} ══════")
+        print(f"\n══════ RUN {run_id}  seed={seed} ══════")
 
         portfolio = SimPortfolio()
         equity_curve: list[dict] = []
@@ -1679,24 +1958,44 @@ class BacktestEngine:
             n_trades += exits
             prev_sample = sim_date
 
-            # fetch & score
+            # fetch & score (once per day — signals don't change intraday)
             signals = self._fetch_signals(sim_date, seed, rng, portfolio)
 
-            # ML + quant decision (no Claude call — uses article scores + technicals)
-            decision = _ml_decide(sim_date, portfolio, signals, self.prices, run_id, rng)
-            n_decisions += 1
+            # Intraday loop: up to MAX_DECISIONS_PER_DAY ml_decide calls per day.
+            # Each filled trade excludes that ticker from subsequent calls today.
+            traded_today: set[str] = set()
+            day_filled = 0
+            status, detail = "NO_DECISION", "ml_decide returned None"
+            decision = None
+            for _intra in range(MAX_DECISIONS_PER_DAY):
+                decision = _ml_decide(sim_date, portfolio, signals, self.prices,
+                                      run_id, rng, exclude_tickers=traded_today)
+                n_decisions += 1
 
-            if decision:
+                if not decision:
+                    break
+                if decision.get("action", "HOLD") == "HOLD":
+                    status, detail = "HOLD", str(decision.get("reasoning", ""))[:200]
+                    break
+
                 status, detail = self._execute_decision(run_id, sim_date, decision, portfolio)
+                ticker_acted = decision.get("ticker") or ""
                 if status == "FILLED":
                     n_trades += 1
-            else:
-                status, detail = "NO_DECISION", "ml_decide returned None"
+                    day_filled += 1
+                    total = portfolio.total_value(self.prices, sim_date)
+                    self.store.record_decision(run_id, sim_date.isoformat(), decision,
+                                               status, detail, portfolio.cash, total,
+                                               len(signals))
+                if ticker_acted:
+                    traded_today.add(ticker_acted)
 
             total = portfolio.total_value(self.prices, sim_date)
-            self.store.record_decision(run_id, sim_date.isoformat(), decision,
-                                       status, detail, portfolio.cash, total,
-                                       len(signals))
+            # Record a terminal HOLD/NO_DECISION if nothing was filled or as end-of-day marker
+            if day_filled == 0:
+                self.store.record_decision(run_id, sim_date.isoformat(), decision,
+                                           status, detail, portfolio.cash, total,
+                                           len(signals))
 
             # Per-sample equity snapshot + every-5-samples DB persist so the
             # dashboard can render partial equity curves while the run executes.
@@ -1721,8 +2020,8 @@ class BacktestEngine:
         # final mark
         final_day = self.prices.trading_days[-1]
         # one more SL/TP sweep after last sample
-        _enforce_risk_exits(portfolio, self.prices, prev_sample, final_day,
-                            run_id, self.store)
+        n_trades += _enforce_risk_exits(portfolio, self.prices, prev_sample,
+                                        final_day, run_id, self.store)
         final_value = portfolio.total_value(self.prices, final_day)
         if not equity_curve or equity_curve[-1]["date"] != final_day.isoformat():
             equity_curve.append({
@@ -1789,24 +2088,34 @@ class BacktestEngine:
     def _fetch_yf_news(self, tickers: list[str], sim_date: date) -> list[dict]:
         """Supplement GDELT with yfinance ticker news. No rate limits, no API key.
 
-        Returns recent headlines scored by the same keyword heuristic. Only useful
-        for dates close to today (yfinance only keeps ~30 news items per ticker).
+        Returns headlines published on or before `sim_date` scored by the keyword
+        heuristic. Filters by `providerPublishTime` so a recent-but-still-historical
+        sim_date cannot pick up news published after it (avoiding forward leakage
+        that would contaminate the DecisionScorer training set).
+        Only fetched for dates within the last 30 days because yfinance keeps a
+        short retention window per ticker.
         """
         cutoff = date.today() - timedelta(days=30)
         if sim_date < cutoff:
             return []
+        # sim_date is a calendar day — accept news whose unix timestamp falls on
+        # or before that day's end. Use UTC end-of-day for the cutoff.
+        sim_end_ts = int(datetime(sim_date.year, sim_date.month, sim_date.day,
+                                  23, 59, 59, tzinfo=timezone.utc).timestamp())
         articles: list[dict] = []
         seen = set()
         sample_tickers = tickers[:8]  # limit to avoid slow fetches
         for tk in sample_tickers:
             try:
-                import yfinance as yf
                 news = yf.Ticker(tk).news or []
-                for n in news[:5]:
+                for n in news[:10]:
                     title = n.get("title", "")
                     url = n.get("link", "")
+                    pub_ts = n.get("providerPublishTime")
                     if not title or url in seen:
                         continue
+                    if isinstance(pub_ts, (int, float)) and pub_ts > sim_end_ts:
+                        continue  # future news — would leak forward into training
                     seen.add(url)
                     score, found_tickers = score_article({"title": title, "url": url})
                     articles.append({"title": title, "url": url,
@@ -1949,90 +2258,8 @@ class BacktestEngine:
                 if completed % 2 == 0:
                     self._send_progress(completed, n, results, spy_return)
 
-        # Feed the ML model with the winners' decisions before announcing completion.
-        try:
-            self._train_ml_from_winners(results)
-        except Exception as e:
-            print(f"[engine] _train_ml_from_winners failed: {e}")
-            traceback.print_exc()
-
         self._send_final(results, spy_return)
         return results
-
-    def _train_ml_from_winners(self, results: list[BacktestRun]) -> None:
-        """Write a JSONL training feed from the top 3 runs' decisions.
-
-        Each non-HOLD decision from a winning run becomes a training record. BUY
-        decisions get ai_score=5.0 (positive label); SELL decisions get 0.0
-        (negative label). The file is then offered to the digital-intern
-        trainer; that module does not currently support --from-file (it pulls
-        from its own SQLite store) so we just persist the JSONL for later use.
-        """
-        if not results:
-            print("[ml-feed] no results — skipping winner training feed")
-            return
-        # Top 3 by return; if fewer than 3 results, take whatever we have.
-        winners = sorted(results, key=lambda r: r.total_return_pct, reverse=True)[:3]
-        out_path = ROOT / "data" / "winner_training.jsonl"
-        out_path.parent.mkdir(parents=True, exist_ok=True)
-
-        records: list[dict] = []
-        for run in winners:
-            try:
-                rows = self.store.conn.execute(
-                    "SELECT action, ticker, sim_date, reasoning FROM backtest_decisions "
-                    "WHERE run_id = ? AND action IS NOT NULL AND action != 'HOLD'",
-                    (run.run_id,),
-                ).fetchall()
-            except Exception as e:
-                print(f"[ml-feed] read decisions failed for run {run.run_id}: {e}")
-                continue
-            for row in rows:
-                action = (row["action"] or "").upper()
-                if action not in ("BUY", "SELL"):
-                    continue
-                ticker = row["ticker"] or ""
-                sim_date = row["sim_date"] or ""
-                records.append({
-                    "title": f"{action} {ticker} on {sim_date}",
-                    "source": f"backtest_run_{run.run_id}_winner",
-                    "ai_score": 5.0 if action == "BUY" else 0.0,
-                    "urgency": 1,
-                    "label": action,
-                    "reasoning": row["reasoning"] or "",
-                    "return_pct": run.total_return_pct,
-                })
-
-        try:
-            with out_path.open("w") as fh:
-                for rec in records:
-                    fh.write(json.dumps(rec) + "\n")
-            print(f"[ml-feed] wrote {len(records)} records "
-                  f"from {len(winners)} winners → {out_path}")
-        except Exception as e:
-            print(f"[ml-feed] write failed: {e}")
-            return
-
-        # The digital-intern trainer reads from its own SQLite store and does
-        # not (yet) accept --from-file. We invoke it anyway and tolerate
-        # failure — the JSONL is the durable artifact a future trainer mode
-        # can consume. To wire this up properly, extend ml/trainer.py with a
-        # CLI that ingests this JSONL into the articles store.
-        try:
-            r = subprocess.run(
-                ["python3", "-m", "ml.trainer",
-                 "--from-file", str(out_path)],
-                cwd="/home/zeph/digital-intern",
-                capture_output=True, text=True, timeout=30,
-            )
-            if r.returncode == 0:
-                print(f"[ml-feed] trainer ingest ok: {r.stdout.strip()[:200]}")
-            else:
-                # Expected when ml.trainer has no CLI — JSONL is still on disk.
-                print("[ml-feed] ml.trainer --from-file not implemented yet — "
-                      f"JSONL persisted at {out_path}")
-        except Exception as e:
-            print(f"[ml-feed] trainer invoke skipped: {e}")
 
     def _send_progress(self, done: int, total: int, results: list[BacktestRun],
                        spy: float) -> None:
