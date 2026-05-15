@@ -428,6 +428,18 @@ TEMPLATE = r"""
   <!-- ────── Trader pane ────── -->
   <div id="tab-trader" class="tab-pane">
 
+    <!-- ─── Equity Curve (pinned top) ─── -->
+    <div class="card" style="margin-bottom:18px;">
+      <h2>Equity curve</h2>
+      <div class="stat-row">
+        <div class="stat"><div class="l">total value</div><div class="v" id="tv">—</div></div>
+        <div class="stat"><div class="l">cash</div><div class="v" id="cash">—</div></div>
+        <div class="stat"><div class="l">P/L vs $1000</div><div class="v" id="pl">—</div></div>
+        <div class="stat"><div class="l">S&amp;P 500</div><div class="v" id="sp">—</div></div>
+      </div>
+      <canvas id="eq"></canvas>
+    </div>
+
     <!-- ─── Daily Briefing (futures + market countdown + urgent news) ─── -->
     <div class="card" id="briefing-card" style="margin-bottom:18px;">
       <h2 style="display:flex;justify-content:space-between;align-items:center;">
@@ -719,17 +731,6 @@ TEMPLATE = r"""
       <ul id="nd-list" style="margin:0;padding:0;list-style:none;font-size:13px;">
         <li class="muted">loading…</li>
       </ul>
-    </div>
-
-    <div class="card" style="margin-bottom:18px;">
-      <h2>Equity curve</h2>
-      <div class="stat-row">
-        <div class="stat"><div class="l">total value</div><div class="v" id="tv">—</div></div>
-        <div class="stat"><div class="l">cash</div><div class="v" id="cash">—</div></div>
-        <div class="stat"><div class="l">P/L vs $1000</div><div class="v" id="pl">—</div></div>
-        <div class="stat"><div class="l">S&amp;P 500</div><div class="v" id="sp">—</div></div>
-      </div>
-      <canvas id="eq"></canvas>
     </div>
 
     <div class="grid">
