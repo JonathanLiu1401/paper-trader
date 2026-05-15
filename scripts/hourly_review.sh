@@ -39,16 +39,23 @@ You are doing a systematic code review, bug-fix, test suite, and documentation p
 Find and fix ALL bugs, logic errors, race conditions, missing error handling, dead code, and quality issues. Be surgical.
 
 ## Step 2 — Build comprehensive test suite
-Create or update tests/ directory with pytest tests covering:
-- paper_trader/signals.py: test signal generation, edge cases (empty data, NaN prices, missing tickers)
-- paper_trader/strategy.py: test decision logic, position sizing, risk limits
-- paper_trader/store.py: test portfolio read/write, trade recording
-- paper_trader/market.py: test is_market_open() with mocked datetime
-- paper_trader/runner.py: test _maybe_daily_close() logic
+The PURPOSE of tests is to catch bugs in the code itself. Tests must exercise real business logic and verify correctness — NOT just check that imports work or functions are callable.
 
-Write tests that can run without external APIs (mock yfinance, mock Discord). Use pytest fixtures. Tests must actually run and pass.
+Create or update tests/ directory with pytest tests that:
+- Test the ACTUAL LOGIC, not just that code runs
+- Cover edge cases that would reveal real bugs (empty input, zero division, off-by-one, wrong comparison operators, incorrect state transitions)
+- Assert specific expected values, not just "no exception was raised"
 
-Run tests after writing: cd /home/zeph/paper-trader && python3 -m pytest tests/ -v 2>&1 | tail -30
+Coverage required:
+- paper_trader/signals.py: test that signal scores are calculated correctly with known inputs, test that stale/missing data returns appropriate defaults, test that composite signals weight correctly
+- paper_trader/strategy.py: test that position sizing respects max_position limits, test that stop-loss logic triggers at the right threshold, test that strategy returns HOLD when no signal exceeds threshold
+- paper_trader/store.py: test that cash decreases correctly after a BUY, test that portfolio value sums positions + cash correctly, test that recent_trades returns correct ordering
+- paper_trader/market.py: test is_market_open() returns False on weekends, False before 9:30 ET, False after 16:00 ET, True at 10:00 ET on a weekday
+- paper_trader/runner.py: test _maybe_daily_close() only fires once per day, test it does not fire on weekends, test it does not fire before 16:05 ET
+
+Mock external APIs (yfinance, Discord, HTTP) with pytest monkeypatch or unittest.mock. Use in-memory SQLite for store tests.
+
+Run tests: cd /home/zeph/paper-trader && python3 -m pytest tests/ -v 2>&1 | tail -30
 
 Fix any test failures before proceeding.
 
@@ -92,12 +99,14 @@ You are doing a systematic code review, bug-fix, test suite, and documentation p
 Find and fix ALL bugs, logic errors, race conditions, missing error handling, dead code, and quality issues. Be surgical.
 
 ## Step 2 — Build comprehensive test suite
-Create or update tests/ with pytest tests covering:
-- paper_trader/ml/decision_scorer.py: test scoring with mock article data, test edge cases (empty features, zero scores, all-same scores), test that output is in expected range
-- paper_trader/backtest.py: test backtest logic with synthetic price series, test that returns are calculated correctly, test position tracking
-- run_continuous_backtests.py: test the scheduling logic, test that backtest results are persisted
+The PURPOSE of tests is to catch bugs in the code itself. Tests must exercise real business logic and verify correctness — not just confirm that code runs without error.
 
-Mock external dependencies (yfinance, DB reads). Tests must run without network access.
+Create or update tests/ with pytest tests that assert specific expected values and catch real logic bugs:
+- paper_trader/ml/decision_scorer.py: test that a known feature vector produces the expected score range, test that articles with high kw_score rank higher than low kw_score, test that the scorer handles missing/null fields without crashing and returns a safe default
+- paper_trader/backtest.py: test with a synthetic price series where the correct outcome is known (e.g. a simple BUY-and-hold should produce the exact expected return), test that stop-loss exits at the right price, test that position size is not exceeded
+- run_continuous_backtests.py: test that results are written to the expected location, test that old results are not overwritten without version/timestamp
+
+Mock yfinance and DB reads. All tests must run offline.
 
 Run tests: cd /home/zeph/paper-trader && python3 -m pytest tests/ -v -k "ml or backtest or scorer" 2>&1 | tail -30
 
@@ -151,14 +160,16 @@ IMPORTANT constraints:
 - score_source column must be set correctly: "llm"/"briefing_boost" for LLM labels, "ml" for model predictions
 
 ## Step 2 — Build comprehensive test suite
-Create or update tests/ directory with pytest tests covering:
-- storage/article_store.py: test get_unalerted_urgent filters backtest:// URLs correctly, test score_source isolation, test CRUD operations with in-memory SQLite
-- watchers/urgency_scorer.py: test scoring with mock articles, test threshold logic
-- ml/features.py: test feature extraction with mock articles, test all 15 feature dimensions are correct
-- ml/model.py: test model forward pass with dummy tensors, test checkpoint save/load
-- ml/trainer.py: test that training only uses llm/briefing_boost score_source, test sample weighting
+The PURPOSE of tests is to catch bugs in the code itself. Tests must exercise real business logic and verify correctness — assert specific values, not just "no crash".
 
-Mock the SQLite DB with in-memory SQLite (:memory:). Mock external API calls. Tests must run without network access or the real DB file.
+Create or update tests/ with pytest tests that would catch real bugs:
+- storage/article_store.py: test that get_unalerted_urgent NEVER returns articles with url starting with "backtest://" (this is a critical invariant — if it fails, backtest articles hit production alerts), test that marking an article alerted prevents it from appearing again, test score_source is set to "ml" when update_ml_scores_batch is called (not "llm"), test CRUD with in-memory SQLite
+- watchers/urgency_scorer.py: test that an article with kw_score=9.5 is correctly classified as urgent, test that kw_score=3.0 is NOT urgent, test that the scorer does not mark articles as urgent if they are already alerted
+- ml/features.py: test that feature vector has exactly 15 extra dims beyond TF-IDF, test that ticker_mention_density is correctly zero for articles with no portfolio tickers, test that days_since_published is 0 for a just-published article and ~1 for one published 24h ago
+- ml/model.py: test that the model output for relevance head is always in [0, 10], test that urgency head is in [0, 1], test that a zero-input tensor does not produce NaN outputs
+- ml/trainer.py: test that _fetch_training_data excludes rows with score_source="ml" (model must not train on its own predictions), test that sample weights are higher for high-relevance articles than low-relevance ones
+
+Use in-memory SQLite for store tests. Mock all external calls.
 
 Run tests: cd /home/zeph/digital-intern && python3 -m pytest tests/ -v 2>&1 | tail -30
 
@@ -227,12 +238,14 @@ Ideas to consider:
 - Auto-suggest trades based on top signals + current positions
 
 ## Step 5 — TEST your changes (REQUIRED before committing)
+The PURPOSE of tests is to catch bugs. If you add a feature or change logic, write tests that would fail if the logic were wrong.
+
 For every change made:
-1. Run python3 syntax check on modified files
-2. Run import verification
-3. If tests/ exists, run the full test suite and ensure ALL tests pass
-4. If you added new functionality, write tests for it in tests/
-5. DO NOT commit if any tests fail — fix them first
+1. Run the full test suite: python3 -m pytest tests/ -v
+2. If you added new functionality, write tests that verify the CORRECT BEHAVIOR (assert specific outputs, not just "no crash")
+3. If you changed existing logic, verify the existing tests still pass AND add new tests for the changed behavior
+4. DO NOT commit if any tests fail — fix them first
+5. DO NOT skip or weaken existing tests to make them pass — fix the underlying code
 
 Test commands:
 - paper-trader: cd /home/zeph/paper-trader && python3 -m pytest tests/ -v
