@@ -270,6 +270,17 @@ TEMPLATE = r"""
       font-family: var(--font-sans);
     }
     .bt-btn:hover { background: var(--bg-hover); }
+    .bt-filter-chip {
+      background: var(--bg-elevated); color: var(--text-secondary);
+      border: 1px solid var(--border); border-radius: 99px;
+      padding: 3px 10px; font-size: 11px; cursor: pointer;
+      font-family: var(--font-sans); transition: all 0.15s;
+    }
+    .bt-filter-chip:hover { border-color: var(--cyan); color: var(--text); }
+    .bt-filter-chip.active {
+      background: rgba(10,205,255,0.12); border-color: var(--cyan);
+      color: var(--cyan); font-weight: 600;
+    }
     .bt-tabs {
       display: flex; gap: 2px; margin-bottom: 12px;
       border-bottom: 1px solid var(--border);
@@ -817,20 +828,33 @@ TEMPLATE = r"""
           </div>
           <div class="progress-wrap" style="margin:8px 0 14px"><div class="progress-bar" id="bt-progress-bar" style="width:0%"></div></div>
           <div class="bt-headline">
-            <div class="stat"><div class="l">avg return</div><div class="v" id="bt-avg">—</div></div>
-            <div class="stat"><div class="l">avg final $</div><div class="v" id="bt-avg-final">—</div></div>
+            <div class="stat"><div class="l">avg annualized</div><div class="v" id="bt-avg-ann">—</div></div>
+            <div class="stat"><div class="l">avg total %</div><div class="v" id="bt-avg">—</div></div>
             <div class="stat"><div class="l">best</div><div class="v" id="bt-best">—</div></div>
             <div class="stat"><div class="l">worst</div><div class="v" id="bt-worst">—</div></div>
-            <div class="stat"><div class="l">SPY</div><div class="v" id="bt-spy">—</div></div>
-            <div class="stat"><div class="l">QQQ</div><div class="v" id="bt-qqq">—</div></div>
-            <div class="stat"><div class="l">vs SPY</div><div class="v" id="bt-beat">—</div></div>
+            <div class="stat"><div class="l">beat SPY</div><div class="v" id="bt-beat">—</div></div>
+            <div class="stat"><div class="l">win rate</div><div class="v" id="bt-winrate">—</div></div>
+            <div class="stat"><div class="l">filtered runs</div><div class="v" id="bt-filtered-count">—</div></div>
           </div>
-          <div style="display:flex;align-items:center;gap:10px;margin-bottom:8px;font-size:12px;color:#8b929d;">
-            <label for="bt-chart-limit">Show last</label>
-            <input id="bt-chart-limit" type="range" min="10" max="200" step="10" value="50"
-              style="width:120px;cursor:pointer;accent-color:#0acdff;"
+          <!-- Filter bar -->
+          <div style="display:flex;align-items:center;gap:8px;margin:10px 0 8px;flex-wrap:wrap;font-size:12px;">
+            <span style="color:var(--text-secondary);">Window:</span>
+            <div id="bt-win-filter" style="display:flex;gap:4px;flex-wrap:wrap;">
+              <button class="bt-filter-chip active" data-min="0" data-max="99" onclick="setBtWinFilter(this)">All</button>
+              <button class="bt-filter-chip" data-min="0" data-max="1.5" onclick="setBtWinFilter(this)">≤1yr</button>
+              <button class="bt-filter-chip" data-min="1.5" data-max="2.5" onclick="setBtWinFilter(this)">2yr</button>
+              <button class="bt-filter-chip" data-min="2.5" data-max="3.5" onclick="setBtWinFilter(this)">3yr</button>
+              <button class="bt-filter-chip" data-min="3.5" data-max="5.5" onclick="setBtWinFilter(this)">4–5yr</button>
+              <button class="bt-filter-chip" data-min="5.5" data-max="99" onclick="setBtWinFilter(this)">6–10yr</button>
+            </div>
+            <span style="color:var(--text-secondary);margin-left:8px;">Show:</span>
+            <input id="bt-chart-limit" type="range" min="5" max="50" step="5" value="20"
+              style="width:80px;cursor:pointer;accent-color:#0acdff;"
               oninput="document.getElementById('bt-chart-limit-val').textContent=this.value; drawBacktestChart()">
-            <span id="bt-chart-limit-val">50</span> runs
+            <span id="bt-chart-limit-val">20</span> runs
+          </div>
+          <div style="font-size:11px;color:var(--text-muted);margin-bottom:8px;">
+            Chart: normalized % return from start (day 0 = 0%). All window lengths comparable on same axis. Hover for details.
           </div>
           <div style="position:relative;height:420px;"><canvas id="bt-chart"></canvas></div>
         </div>
@@ -876,20 +900,21 @@ TEMPLATE = r"""
 
         <div class="card" style="margin-bottom:14px;">
           <h2>Runs table — click a row to highlight</h2>
+          <div style="overflow-x:auto;-webkit-overflow-scrolling:touch;">
           <table id="bt-tbl" class="sortable">
             <thead><tr>
               <th data-k="run_id">#</th>
-              <th data-k="seed" class="num">seed</th>
               <th data-k="status">status</th>
-              <th data-k="final_value" class="num">current $</th>
-              <th data-k="total_return_pct" class="num">return %</th>
+              <th data-k="total_return_pct" class="num">total %</th>
+              <th data-k="annualized_return_pct" class="num">ann. %/yr</th>
               <th data-k="vs_spy_pct" class="num">vs SPY</th>
               <th data-k="start_date">window</th>
+              <th data-k="duration_days" class="num">dur.</th>
               <th data-k="n_trades" class="num">trades</th>
-              <th data-k="n_decisions" class="num">decisions</th>
-              <th data-k="started_at">started</th>
+              <th data-k="n_decisions" class="num">signals</th>
             </tr></thead><tbody></tbody>
           </table>
+          </div>
         </div>
 
         <div class="card" id="bt-detail" style="display:none;">
@@ -1039,19 +1064,51 @@ let btLoaded = false;
 let btChart;
 let btRuns = [];
 let btPollTimer = null;
-let btSelectedRunId = null;          // currently highlighted run
-let btHiddenRuns = new Set();        // run_ids hidden from chart
-let btLastUpdated = null;            // ms epoch
-let btSortKey = "run_id", btSortDir = 1;
+let btSelectedRunId = null;
+let btHiddenRuns = new Set();
+let btLastUpdated = null;
+let btSortKey = "run_id", btSortDir = -1;
 let btDetailSubtab = "trades";
-let btSpyBaseline = null;            // SPY % return over sim period (from API)
-let btQqqBaseline = null;            // QQQ % return over sim period (from API)
+let btSpyBaseline = null;
+let btCurvesCache = {};              // run_id → normalized curve array
+let btWinMinYears = 0, btWinMaxYears = 99; // window-length filter
 
 function btRunColor(runId, idx) { return RUN_COLORS[idx % RUN_COLORS.length]; }
 function hexToRgba(hex, a) {
   const h = hex.replace("#","");
   const r = parseInt(h.slice(0,2),16), g = parseInt(h.slice(2,4),16), b = parseInt(h.slice(4,6),16);
   return `rgba(${r},${g},${b},${a})`;
+}
+
+// Window-length filter chip handler
+function setBtWinFilter(el) {
+  document.querySelectorAll("#bt-win-filter .bt-filter-chip").forEach(b => b.classList.remove("active"));
+  el.classList.add("active");
+  btWinMinYears = parseFloat(el.dataset.min);
+  btWinMaxYears = parseFloat(el.dataset.max);
+  renderBacktests();
+}
+
+// Returns runs passing the current window-length filter
+function filteredRuns() {
+  return btRuns.filter(r => {
+    if (!r.duration_days) return btWinMinYears === 0;
+    const yrs = r.duration_days / 365.25;
+    return yrs >= btWinMinYears && yrs < btWinMaxYears;
+  });
+}
+
+// Lazily fetch curves for an array of run_ids not yet in cache.
+// After fetching, calls callback().
+async function ensureCurves(runIds, callback) {
+  const missing = runIds.filter(id => !btCurvesCache[id]);
+  if (missing.length) {
+    try {
+      const data = await fetch(API_PREFIX + "/api/backtests/curves?run_ids=" + missing.join(",")).then(r => r.json());
+      Object.keys(data).forEach(k => { btCurvesCache[parseInt(k)] = data[k]; });
+    } catch(e) { console.error("curves fetch:", e); }
+  }
+  if (callback) callback();
 }
 
 let mpChart;
@@ -1105,7 +1162,6 @@ async function loadBacktests() {
     const r = await fetch(API_PREFIX + "/api/backtests").then(r => r.json());
     btRuns = r.runs || [];
     btSpyBaseline = r.spy_baseline != null ? r.spy_baseline : null;
-    btQqqBaseline = r.qqq_baseline != null ? r.qqq_baseline : null;
     btLastUpdated = Date.now();
     btLoaded = true;
     renderBacktests();
@@ -1114,15 +1170,16 @@ async function loadBacktests() {
     console.error(e);
   } finally {
     if (btPollTimer) clearTimeout(btPollTimer);
-    btPollTimer = setTimeout(loadBacktests, 5000);
+    // 60s poll — list is now metadata-only (<50KB) so fast, but no need to hammer
+    btPollTimer = setTimeout(loadBacktests, 60_000);
   }
 }
 
 function renderBacktests() {
   const total = btRuns.length;
-  const completed = btRuns.filter(x => x.status === "complete");
   const running = btRuns.filter(x => x.status === "running");
   const failed = btRuns.filter(x => x.status === "failed");
+  const completed = btRuns.filter(x => x.status === "complete");
   const pctDone = total ? (completed.length / total) * 100 : 0;
   document.getElementById("bt-progress-bar").style.width = pctDone + "%";
   let lbl = `${completed.length}/${total || 10} runs complete`;
@@ -1132,36 +1189,41 @@ function renderBacktests() {
   document.getElementById("bt-live-indicator").innerHTML =
     running.length ? `<span class="live-dot"></span>live` : `<span style="color:#00c896;">●</span> idle`;
 
-  if (completed.length) {
-    const avg = completed.reduce((a,b) => a + b.total_return_pct, 0) / completed.length;
-    const avgF = completed.reduce((a,b) => a + b.final_value, 0) / completed.length;
-    const best = completed.reduce((a,b) => a.final_value > b.final_value ? a : b);
-    const worst = completed.reduce((a,b) => a.final_value < b.final_value ? a : b);
-    const spy = completed[0].spy_return_pct;
-    const beat = completed.filter(x => x.total_return_pct > spy).length;
+  // Stats over the filtered set of completed runs
+  const vis = filteredRuns().filter(r => r.status === "complete");
+  document.getElementById("bt-filtered-count").textContent = vis.length ? `${vis.length}` : "—";
+  if (vis.length) {
+    const avg = vis.reduce((a,b) => a + (b.total_return_pct||0), 0) / vis.length;
+    const annVals = vis.map(r => r.annualized_return_pct).filter(v => v != null);
+    const avgAnn = annVals.length ? annVals.reduce((a,b)=>a+b,0)/annVals.length : null;
+    const best = vis.reduce((a,b) => (b.annualized_return_pct||0) > (a.annualized_return_pct||0) ? b : a);
+    const worst = vis.reduce((a,b) => (b.annualized_return_pct||0) < (a.annualized_return_pct||0) ? b : a);
+    const beat = vis.filter(x => x.vs_spy_pct != null && x.vs_spy_pct > 0).length;
+    const wins = vis.filter(x => (x.total_return_pct||0) > 0).length;
+
     const avgEl = document.getElementById("bt-avg");
     avgEl.textContent = (avg >= 0 ? "+" : "") + fmt(avg) + "%";
     avgEl.className = "v " + (avg >= 0 ? "pos" : "neg");
-    document.getElementById("bt-avg-final").textContent = dollar(avgF);
+
+    const avgAnnEl = document.getElementById("bt-avg-ann");
+    if (avgAnn != null) {
+      avgAnnEl.textContent = (avgAnn >= 0 ? "+" : "") + fmt(avgAnn) + "%/yr";
+      avgAnnEl.className = "v " + (avgAnn >= 0 ? "pos" : "neg");
+    } else { avgAnnEl.textContent = "—"; avgAnnEl.className = "v"; }
+
+    const bestAnn = best.annualized_return_pct;
     document.getElementById("bt-best").innerHTML =
-      `<span class="pos">${dollar(best.final_value)}</span> <span class="muted" style="font-size:12px;">#${best.run_id}</span>`;
+      `<span class="${(bestAnn||0)>=0?'pos':'neg'}">${bestAnn!=null?(bestAnn>=0?"+":"")+fmt(bestAnn)+"%/yr":"—"}</span> <span class="muted" style="font-size:11px;">#${best.run_id}</span>`;
+    const worstAnn = worst.annualized_return_pct;
     document.getElementById("bt-worst").innerHTML =
-      `<span class="${worst.total_return_pct >= 0 ? 'pos' : 'neg'}">${dollar(worst.final_value)}</span> <span class="muted" style="font-size:12px;">#${worst.run_id}</span>`;
-    const spyVal = btSpyBaseline ?? spy;
-    const spyEl = document.getElementById("bt-spy");
-    spyEl.textContent = (spyVal >= 0 ? "+" : "") + fmt(spyVal) + "%";
-    spyEl.className = "v " + (spyVal >= 0 ? "pos" : "neg");
-    const qqqEl = document.getElementById("bt-qqq");
-    if (btQqqBaseline != null) {
-      qqqEl.textContent = (btQqqBaseline >= 0 ? "+" : "") + fmt(btQqqBaseline) + "%";
-      qqqEl.className = "v " + (btQqqBaseline >= 0 ? "pos" : "neg");
-    } else {
-      qqqEl.textContent = "—";
-    }
-    document.getElementById("bt-beat").textContent = `${beat} / ${completed.length}`;
+      `<span class="${(worstAnn||0)>=0?'pos':'neg'}">${worstAnn!=null?(worstAnn>=0?"+":"")+fmt(worstAnn)+"%/yr":"—"}</span> <span class="muted" style="font-size:11px;">#${worst.run_id}</span>`;
+    document.getElementById("bt-beat").textContent = `${beat} / ${vis.length}`;
+    const winrateEl = document.getElementById("bt-winrate");
+    winrateEl.textContent = `${wins} / ${vis.length}`;
+    winrateEl.className = "v " + (wins >= vis.length/2 ? "pos" : "neg");
   } else {
-    ["bt-avg","bt-avg-final","bt-best","bt-worst","bt-spy","bt-qqq","bt-beat"].forEach(id =>
-      document.getElementById(id).textContent = "—");
+    ["bt-avg","bt-avg-ann","bt-best","bt-worst","bt-beat","bt-winrate"].forEach(id =>
+      (document.getElementById(id).textContent = "—", document.getElementById(id).className = "v"));
   }
 
   renderLegend();
@@ -1172,38 +1234,42 @@ function renderBacktests() {
 
 function renderLegend() {
   const wrap = document.getElementById("bt-legend");
-  const ordered = [...btRuns].sort((a,b) => a.run_id - b.run_id);
-  wrap.innerHTML = ordered.map((r, i) => {
-    const idx = btRuns.findIndex(x => x.run_id === r.run_id);
-    const color = btRunColor(r.run_id, idx);
+  const vis = filteredRuns();
+  const limitEl = document.getElementById("bt-chart-limit");
+  const limit = limitEl ? parseInt(limitEl.value, 10) : 20;
+  // Show the most-recent `limit` runs (sorted by run_id desc)
+  const chartRuns = [...vis].sort((a,b) => b.run_id - a.run_id).slice(0, limit);
+  wrap.innerHTML = chartRuns.map((r, i) => {
+    const color = btRunColor(r.run_id, i);
     const hidden = btHiddenRuns.has(r.run_id);
     const selected = btSelectedRunId === r.run_id;
-    const ret = r.total_return_pct;
-    const retCls = (ret || 0) >= 0 ? "pos" : "neg";
-    const retTxt = (ret == null) ? "—" : ((ret >= 0 ? "+" : "") + fmt(ret) + "%");
+    const ann = r.annualized_return_pct;
+    const retCls = (ann || 0) >= 0 ? "pos" : "neg";
+    const retTxt = ann != null ? ((ann >= 0 ? "+" : "") + fmt(ann) + "%/yr") : "—";
+    const durYrs = r.duration_days ? (r.duration_days / 365.25).toFixed(1) + "yr" : "";
     return `<div class="bt-legend-row${hidden ? ' hidden-run' : ''}${selected ? ' selected' : ''}" onclick="selectRun(${r.run_id})">
       <input type="checkbox" ${hidden ? '' : 'checked'} onclick="event.stopPropagation();toggleRun(${r.run_id})">
       <span class="bt-swatch" style="background:${color};"></span>
-      <span class="name">Run #${r.run_id}${r.status === 'running' ? ' <span class=\"spinner\" style=\"width:8px;height:8px;border-width:1px;margin:0 0 0 4px;\"></span>' : ''}</span>
+      <span class="name">#${r.run_id} <span class="muted" style="font-size:10px;">${durYrs}</span>${r.status === 'running' ? ' <span class="spinner" style="width:8px;height:8px;border-width:1px;margin:0 0 0 4px;"></span>' : ''}</span>
       <span class="ret ${retCls}">${retTxt}</span>
     </div>`;
-  }).join("") || `<div class="muted" style="font-size:12px;">no runs yet</div>`;
+  }).join("") || `<div class="muted" style="font-size:12px;">no runs match filter</div>`;
 }
 
 function renderTable() {
   const tbody = document.querySelector("#bt-tbl tbody");
-  // attach sort handlers
   document.querySelectorAll("#bt-tbl thead th").forEach(th => {
     th.classList.add("sortable-h");
     th.classList.remove("sort-asc","sort-desc");
     if (th.dataset.k === btSortKey) th.classList.add(btSortDir > 0 ? "sort-asc" : "sort-desc");
     th.onclick = () => {
       const k = th.dataset.k;
-      if (btSortKey === k) btSortDir = -btSortDir; else { btSortKey = k; btSortDir = 1; }
+      if (btSortKey === k) btSortDir = -btSortDir; else { btSortKey = k; btSortDir = -1; }
       renderTable();
     };
   });
-  const sorted = [...btRuns].sort((a,b) => {
+  const vis = filteredRuns();
+  const sorted = [...vis].sort((a,b) => {
     const va = a[btSortKey], vb = b[btSortKey];
     if (va == null && vb == null) return 0;
     if (va == null) return 1;
@@ -1215,39 +1281,39 @@ function renderTable() {
     const isRunning = r.status === "running";
     const isComplete = r.status === "complete";
     const retCls = (r.total_return_pct || 0) >= 0 ? "pos" : "neg";
+    const annCls = (r.annualized_return_pct || 0) >= 0 ? "pos" : "neg";
     const vsCls  = (r.vs_spy_pct || 0) >= 0 ? "pos" : "neg";
     const selected = btSelectedRunId === r.run_id;
-    const idx = btRuns.findIndex(x => x.run_id === r.run_id);
-    const color = btRunColor(r.run_id, idx);
-    const equityCell = isRunning
-      ? `<span class="spinner"></span>${dollar(r.final_value)}`
-      : dollar(r.final_value);
     const retCell = r.total_return_pct == null
       ? `<span class="muted">—</span>`
       : `<span class="${retCls}">${(r.total_return_pct >= 0 ? "+" : "") + fmt(r.total_return_pct)}%</span>`;
-    const vsCell = isComplete
+    const annCell = r.annualized_return_pct == null
+      ? `<span class="muted">—</span>`
+      : `<span class="${annCls}">${(r.annualized_return_pct >= 0 ? "+" : "") + fmt(r.annualized_return_pct)}%</span>`;
+    const vsCell = isComplete && r.vs_spy_pct != null
       ? `<span class="${vsCls}">${(r.vs_spy_pct >= 0 ? "+" : "") + fmt(r.vs_spy_pct)}%</span>`
       : `<span class="muted">—</span>`;
-    const startTxt = r.started_at ? r.started_at.replace("T"," ").slice(5,16) : "—";
     const win = formatWindow(r.start_date, r.end_date);
     const era = classifyEra(r.start_date, r.end_date);
-    const eraPill = era ? `<span class="pill" style="background:${era.bg};color:${era.fg};font-size:10px;margin-left:4px;">${era.tag}</span>` : "";
+    const eraPill = era ? `<span class="pill" style="background:${era.bg};color:${era.fg};font-size:10px;">${era.tag}</span>` : "";
     const winCell = win
-      ? `<div style="font-size:11px;line-height:1.3;">${win}${eraPill}</div>`
+      ? `<div style="font-size:11px;line-height:1.5;">${r.start_date} → ${r.end_date}<br>${eraPill}</div>`
       : `<span class="muted">—</span>`;
+    const durCell = r.duration_days
+      ? `<span style="font-size:11px;">${(r.duration_days/365.25).toFixed(1)}yr</span>`
+      : "—";
     return `<tr class="bt-row${selected ? ' selected' : ''}" onclick="selectRun(${r.run_id})">
-      <td><span class="pill" style="background:${hexToRgba(color,0.18)};color:${color};">#${r.run_id}</span></td>
-      <td class="num">${r.seed}</td>
+      <td><span class="pill" style="font-size:11px;">#${r.run_id}${isRunning?'<span class="spinner" style="width:7px;height:7px;border-width:1px;margin-left:3px;"></span>':''}</span></td>
       <td><span class="pill status-${r.status || 'pending'}">${r.status || 'pending'}</span></td>
-      <td class="num">${equityCell}</td>
       <td class="num">${retCell}</td>
+      <td class="num">${annCell}</td>
       <td class="num">${vsCell}</td>
       <td>${winCell}</td>
+      <td class="num">${durCell}</td>
       <td class="num">${r.n_trades || 0}</td>
       <td class="num">${r.n_decisions || 0}</td>
-      <td class="muted" style="font-size:12px;">${startTxt}</td>
     </tr>`;
-  }).join("") || `<tr><td colspan="10" class="muted">no backtest runs yet — run paper_trader.backtest</td></tr>`;
+  }).join("") || `<tr><td colspan="9" class="muted">no runs match the current filter</td></tr>`;
 }
 
 // ───────── Backtest era classification (frontend) ─────────
@@ -1306,138 +1372,101 @@ function dataSourcesForWindow(startStr, endStr) {
   ];
 }
 
-function drawBacktestChart() {
+// Normalized chart: X = day-index from run start (so all window lengths compare),
+// Y = % gain from start (so 1yr and 10yr runs are on the same scale).
+async function drawBacktestChart() {
   const limitEl = document.getElementById("bt-chart-limit");
-  const limit = limitEl ? parseInt(limitEl.value, 10) : 50;
-  // Show the most recent `limit` runs (sorted by run_id descending, then reversed for chart order)
-  const visibleRuns = [...btRuns]
-    .sort((a, b) => b.run_id - a.run_id)
-    .slice(0, limit)
-    .reverse();
+  const limit = limitEl ? parseInt(limitEl.value, 10) : 20;
 
-  const dateSet = new Set();
-  visibleRuns.forEach(r => (r.equity_curve||[]).forEach(p => dateSet.add(p.date)));
-  const labels = Array.from(dateSet).sort();
+  const vis = filteredRuns();
+  // Most recent `limit` runs by run_id
+  const chartRuns = [...vis].sort((a,b) => b.run_id - a.run_id).slice(0, limit);
 
-  const datasets = visibleRuns.map((r, i) => {
+  // Fetch any missing curves first, then render
+  const needIds = chartRuns.map(r => r.run_id);
+  await ensureCurves(needIds, null);
+
+  // Build day-index label set (union across all visible runs)
+  const daySet = new Set([0]);
+  chartRuns.forEach(r => {
+    const curve = btCurvesCache[r.run_id] || [];
+    curve.forEach(p => { if (p.day_index != null) daySet.add(p.day_index); });
+  });
+  const labels = Array.from(daySet).sort((a,b) => a-b);
+
+  const hasSelection = btSelectedRunId != null;
+
+  const datasets = chartRuns.map((r, i) => {
+    const curve = btCurvesCache[r.run_id] || [];
     const lookup = {};
-    (r.equity_curve||[]).forEach(p => lookup[p.date] = p.value);
-    let last = 1000;
+    curve.forEach(p => { if (p.day_index != null) lookup[p.day_index] = p.value_pct; });
+    let last = 0;
     const data = labels.map(d => {
       if (lookup[d] != null) { last = lookup[d]; return lookup[d]; }
-      return last;
+      // forward-fill, but only within the run's duration
+      const maxDay = r.duration_days || 9999;
+      return d <= maxDay ? last : null;
     });
     const isRunning = r.status === "running";
     const color = btRunColor(r.run_id, i);
     const isHidden = btHiddenRuns.has(r.run_id);
-    const hasSelection = btSelectedRunId != null;
     const isSelected = btSelectedRunId === r.run_id;
     const dim = hasSelection && !isSelected;
+    const durYrs = r.duration_days ? (r.duration_days/365.25).toFixed(1)+"yr" : "";
+    const ann = r.annualized_return_pct;
+    const annTxt = ann != null ? ` (${(ann>=0?"+":"")+ann.toFixed(1)}%/yr ann.)` : "";
     return {
-      label: `Run #${r.run_id}${isRunning ? ' (live)' : ''}`,
+      label: `#${r.run_id} ${durYrs}${annTxt}`,
       data,
       runId: r.run_id,
       kind: "run",
-      borderColor: dim ? hexToRgba(color, 0.2) : color,
-      backgroundColor: hexToRgba(color, 0.05),
-      borderWidth: isSelected ? 3.5 : (dim ? 1 : 2),
+      borderColor: dim ? hexToRgba(color, 0.18) : color,
+      backgroundColor: hexToRgba(color, 0.04),
+      borderWidth: isSelected ? 3.5 : (dim ? 0.8 : 1.5),
       borderDash: isRunning ? [5, 4] : [],
       pointRadius: 0, pointHoverRadius: 5,
-      tension: 0.18, fill: false,
+      tension: 0.15, fill: false,
       hidden: isHidden,
+      spanGaps: false,
     };
   });
 
-  // Benchmark overlays — SPY and QQQ, bold so they stand out against run lines.
-  // Use btSpyBaseline / btQqqBaseline (total % over the sim period) for linear interpolation.
-  const hasSelection = btSelectedRunId != null;
-  const _benchmarkLine = (retPct, label, color) => {
-    if (retPct == null || labels.length < 2) return null;
-    const r = retPct / 100;
-    const data = labels.map((d, i) => 1000 * (1 + r * i / (labels.length - 1)));
-    return {
-      label,
-      data,
+  // SPY benchmark: average annualized SPY return for S&P ~10.7%/yr.
+  // We draw an "average SPY" reference line that grows at ~10.7%/yr.
+  // If a specific per-window SPY is available from btSpyBaseline we use it scaled to max duration.
+  const maxDur = chartRuns.reduce((m, r) => Math.max(m, r.duration_days||0), 0);
+  if (maxDur > 0) {
+    const spyAnnPct = 10.7; // long-run S&P average annualized %
+    const spyData = labels.map(d => {
+      const yrs = d / 365.25;
+      return ((1 + spyAnnPct/100)**yrs - 1) * 100;
+    });
+    datasets.push({
+      label: `SPY avg (~${spyAnnPct}%/yr)`,
+      data: spyData,
       kind: "benchmark",
-      borderColor: hasSelection ? hexToRgba(color, 0.2) : color,
-      borderWidth: 3.5,
-      borderDash: [],
+      borderColor: hasSelection ? "rgba(180,180,180,0.2)" : "rgba(180,180,180,0.7)",
+      borderWidth: 2,
+      borderDash: [6, 3],
       pointRadius: 0,
       tension: 0,
       fill: false,
-      order: -1,  // draw on top of run lines
-    };
-  };
-  // Fall back to per-run spy_return_pct if global baseline not yet in API
-  const spyPct = btSpyBaseline ?? (btRuns.find(x => x.status === "complete")?.spy_return_pct ?? null);
-  const spyLine = _benchmarkLine(spyPct, `SPY ${spyPct != null ? (spyPct >= 0 ? "+" : "") + spyPct.toFixed(1) + "%" : ""}`, "#e0e0e0");
-  const qqqLine = _benchmarkLine(btQqqBaseline, `QQQ ${btQqqBaseline != null ? (btQqqBaseline >= 0 ? "+" : "") + btQqqBaseline.toFixed(1) + "%" : ""}`, "#0acdff");
-  if (spyLine) datasets.push(spyLine);
-  if (qqqLine) datasets.push(qqqLine);
+      order: -1,
+    });
+  }
 
-  // Era-shading plugin — draws translucent vertical bands for known market
-  // events (GFC, COVID crash, AI bull) when the window overlaps the chart.
-  const ERA_BANDS = [
-    { name: "GFC",          start: "2008-09-15", end: "2009-03-09", color: "rgba(239,83,80,0.10)" },
-    { name: "COVID crash",  start: "2020-01-20", end: "2020-03-23", color: "rgba(239,83,80,0.16)" },
-    { name: "Recovery '20", start: "2020-03-24", end: "2021-12-31", color: "rgba(0,200,150,0.05)" },
-    { name: "Rate-hike bear", start: "2022-01-03", end: "2022-12-30", color: "rgba(255,140,0,0.08)" },
-    { name: "AI bull",      start: "2023-01-03", end: "2024-12-31", color: "rgba(10,205,255,0.05)" },
-  ];
-  const eraShadingPlugin = {
-    id: "eraShading",
-    beforeDatasetsDraw(chart) {
-      try {
-        const { ctx, chartArea, scales } = chart;
-        const xScale = scales && scales.x;
-        const lbls = chart.data && chart.data.labels;
-        if (!ctx || !chartArea || !xScale || !lbls || !lbls.length) return;
-        const labelHasDate = d => lbls.indexOf(d) >= 0;
-        const findIdx = (date, dir) => {
-          // dir +1 = first label >= date; dir -1 = last label <= date
-          if (dir > 0) {
-            for (let i = 0; i < lbls.length; i++) if (lbls[i] >= date) return i;
-            return -1;
-          }
-          for (let i = lbls.length - 1; i >= 0; i--) if (lbls[i] <= date) return i;
-          return -1;
-        };
-        for (const b of ERA_BANDS) {
-          // Skip bands entirely outside the visible label range
-          if (lbls[lbls.length - 1] < b.start || lbls[0] > b.end) continue;
-          const i0 = findIdx(b.start, +1);
-          const i1 = findIdx(b.end,   -1);
-          if (i0 < 0 || i1 < 0 || i1 < i0) continue;
-          const x0 = xScale.getPixelForValue(lbls[i0]);
-          const x1 = xScale.getPixelForValue(lbls[i1]);
-          const left = Math.min(x0, x1);
-          const width = Math.max(2, Math.abs(x1 - x0));
-          ctx.save();
-          ctx.fillStyle = b.color;
-          ctx.fillRect(left, chartArea.top, width, chartArea.bottom - chartArea.top);
-          // Optional label at top of band
-          ctx.fillStyle = "rgba(221,225,231,0.55)";
-          ctx.font = "10px system-ui, sans-serif";
-          ctx.textBaseline = "top";
-          ctx.fillText(b.name, left + 4, chartArea.top + 3);
-          ctx.restore();
-        }
-      } catch (_) { /* never break the chart */ }
-    },
-  };
-
-  if (btChart) btChart.destroy();
-  btChart = new Chart(document.getElementById("bt-chart"), {
+  if (btChart) { btChart.destroy(); btChart = null; }
+  const canvas = document.getElementById("bt-chart");
+  if (!canvas) return;
+  btChart = new Chart(canvas, {
     type: "line",
     data: { labels, datasets },
-    plugins: [eraShadingPlugin],
     options: {
+      animation: false,
       responsive: true, maintainAspectRatio: false,
       interaction: { mode: "index", intersect: false },
       onClick: (evt, els, chart) => {
-        // Click directly on a line point: highlight that run.
         if (els && els.length) {
-          // prefer the topmost matched dataset that's a run
           for (const el of els) {
             const ds = chart.data.datasets[el.datasetIndex];
             if (ds && ds.kind === "run") { selectRun(ds.runId); return; }
@@ -1453,14 +1482,40 @@ function drawBacktestChart() {
           titleColor: "#dde1e7", bodyColor: "#dde1e7",
           padding: 10, boxPadding: 4,
           itemSort: (a,b) => b.parsed.y - a.parsed.y,
+          filter: (item) => item.parsed.y != null,
           callbacks: {
-            label: (ctx) => `${ctx.dataset.label}: ${dollar(ctx.parsed.y)}`,
+            title: (items) => {
+              const d = items[0]?.parsed?.x;
+              if (d == null) return "";
+              const yrs = (d/365.25).toFixed(1);
+              return `Day ${d} (year ${yrs})`;
+            },
+            label: (ctx) => {
+              const v = ctx.parsed.y;
+              if (v == null) return null;
+              return `${ctx.dataset.label}: ${v>=0?"+":""}${v.toFixed(1)}%`;
+            },
           },
         },
       },
       scales: {
-        x: { ticks: { color: "#8b929d", maxTicksLimit: 10 }, grid: { color: "#1f2126" }},
-        y: { ticks: { color: "#dde1e7", callback: v => "$"+v }, grid: { color: "#1f2126" }},
+        x: {
+          type: "linear",
+          title: { display: true, text: "Days from start", color: "#50565f", font: { size: 10 } },
+          ticks: {
+            color: "#8b929d", maxTicksLimit: 10,
+            callback: v => v >= 365 ? (v/365).toFixed(1)+"yr" : "d"+v,
+          },
+          grid: { color: "#1f2126" },
+        },
+        y: {
+          title: { display: true, text: "Return from start (%)", color: "#50565f", font: { size: 10 } },
+          ticks: {
+            color: "#dde1e7",
+            callback: v => (v>=0?"+":"") + v.toFixed(0) + "%",
+          },
+          grid: { color: "#1f2126" },
+        },
       },
     },
   });
@@ -1483,7 +1538,8 @@ function toggleRun(runId) {
 }
 
 function btToggleAll(show) {
-  btHiddenRuns = show ? new Set() : new Set(btRuns.map(r => r.run_id));
+  const vis = filteredRuns();
+  btHiddenRuns = show ? new Set() : new Set(vis.map(r => r.run_id));
   renderLegend();
   drawBacktestChart();
 }
@@ -2724,50 +2780,46 @@ def data_feed_api():
 def backtests_api():
     from datetime import datetime, timezone
     try:
-        from .backtest import BacktestStore, CACHE_DIR, PRICE_CACHE_PATH
-        import json as _json
+        from .backtest import BacktestStore
         store = BacktestStore()
-        runs = store.all_runs()
+        # Strip equity curves from the list — clients fetch curves lazily via
+        # /api/backtests/curves when needed. This cuts payload from ~5MB to ~50KB.
+        runs = store.all_runs(include_curves=False)
         completed = [r for r in runs if r.get("status") == "complete"]
         spy_baseline = completed[0].get("spy_return_pct") if completed else None
-
-        # QQQ baseline for the most-recent completed run. With variable windows
-        # there's no single "the" backtest range — each run carries its own dates.
-        qqq_baseline = None
-        try:
-            if completed:
-                latest = completed[-1]
-                start_str = latest.get("start_date")
-                end_str = latest.get("end_date")
-                qqq_prices: dict = {}
-                if start_str and end_str:
-                    win_path = CACHE_DIR / f"prices_{start_str}_{end_str}.json"
-                    if win_path.exists():
-                        try:
-                            qqq_prices = _json.loads(win_path.read_text()).get("QQQ", {})
-                        except Exception:
-                            qqq_prices = {}
-                if not qqq_prices and PRICE_CACHE_PATH.exists():
-                    qqq_prices = _json.loads(PRICE_CACHE_PATH.read_text()).get("QQQ", {})
-                dates = sorted(qqq_prices.keys())
-                starts = [d for d in dates if start_str and d >= start_str]
-                ends = [d for d in dates if end_str and d <= end_str]
-                if starts and ends:
-                    p0 = qqq_prices[starts[0]]
-                    p1 = qqq_prices[ends[-1]]
-                    if p0:
-                        qqq_baseline = round((p1 - p0) / p0 * 100, 2)
-        except Exception:
-            pass
 
         return jsonify({
             "runs": runs,
             "spy_baseline": spy_baseline,
-            "qqq_baseline": qqq_baseline,
+            "qqq_baseline": None,
             "last_updated": datetime.now(timezone.utc).isoformat(timespec="seconds"),
         })
     except Exception as e:
         return jsonify({"runs": [], "error": str(e)})
+
+
+@app.route("/api/backtests/curves")
+def backtest_curves_api():
+    """Return normalized equity curves for requested run_ids.
+
+    Query: ?run_ids=1,2,3
+    Returns: {run_id: [{date, day_index, value, value_pct}, ...], ...}
+    value_pct is % gain from start_value — comparable across different windows.
+    """
+    try:
+        raw_ids = request.args.get("run_ids", "").strip()
+        ids = [int(x.strip()) for x in raw_ids.split(",") if x.strip().isdigit()]
+        if not ids:
+            return jsonify({"error": "missing run_ids"}), 400
+        if len(ids) > 100:
+            return jsonify({"error": "max 100 run_ids per request"}), 400
+        from .backtest import BacktestStore
+        store = BacktestStore()
+        curves = store.run_curves(ids)
+        # keyed by string for JSON compatibility
+        return jsonify({str(k): v for k, v in curves.items()})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
 
 
 @app.route("/api/backtests/<int:run_id>")

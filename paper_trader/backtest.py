@@ -440,7 +440,7 @@ class BacktestStore:
             )
             self.conn.commit()
 
-    def all_runs(self) -> list[dict]:
+    def all_runs(self, include_curves: bool = False) -> list[dict]:
         # Serialise through the lock like every other method — the connection
         # is shared (check_same_thread=False) and an unlocked read interleaved
         # with a run thread's write corrupts cursor state.
@@ -449,13 +449,72 @@ class BacktestStore:
                 "SELECT * FROM backtest_runs ORDER BY run_id ASC"
             ).fetchall()
         out = []
+        from datetime import date as _date
         for r in rows:
             d = dict(r)
+            eq_json = d.pop("equity_curve_json", None) or "[]"
+            if include_curves:
+                try:
+                    d["equity_curve"] = json.loads(eq_json)
+                except Exception:
+                    d["equity_curve"] = []
+            # Compute duration and annualized return from stored dates.
             try:
-                d["equity_curve"] = json.loads(d.pop("equity_curve_json") or "[]")
+                s = _date.fromisoformat(d["start_date"])
+                e = _date.fromisoformat(d["end_date"])
+                d["duration_days"] = (e - s).days
+                years = d["duration_days"] / 365.25
+                if years > 0 and d.get("start_value") and d.get("final_value"):
+                    growth = d["final_value"] / d["start_value"]
+                    d["annualized_return_pct"] = round((growth ** (1.0 / years) - 1.0) * 100.0, 3)
+                else:
+                    d["annualized_return_pct"] = None
             except Exception:
-                d["equity_curve"] = []
+                d["duration_days"] = None
+                d["annualized_return_pct"] = None
             out.append(d)
+        return out
+
+    def run_curves(self, run_ids: list[int]) -> dict[int, list]:
+        """Return equity_curve lists for specific run_ids (lightweight lookup)."""
+        if not run_ids:
+            return {}
+        placeholders = ",".join("?" * len(run_ids))
+        with self._lock:
+            rows = self.conn.execute(
+                f"SELECT run_id, start_date, start_value, equity_curve_json "
+                f"FROM backtest_runs WHERE run_id IN ({placeholders})",
+                run_ids,
+            ).fetchall()
+        out = {}
+        from datetime import date as _date
+        for row in rows:
+            rid, start_date_str, start_val, eq_json = row
+            try:
+                raw = json.loads(eq_json or "[]")
+            except Exception:
+                raw = []
+            try:
+                start_d = _date.fromisoformat(start_date_str) if start_date_str else None
+            except Exception:
+                start_d = None
+            sv = float(start_val or 1000.0)
+            normalized = []
+            for p in raw:
+                v = float(p.get("value") or 0.0)
+                day_idx = None
+                if start_d and p.get("date"):
+                    try:
+                        day_idx = (_date.fromisoformat(p["date"]) - start_d).days
+                    except Exception:
+                        pass
+                normalized.append({
+                    "date": p.get("date"),
+                    "day_index": day_idx,
+                    "value": v,
+                    "value_pct": round((v / sv - 1.0) * 100.0, 3) if sv else 0.0,
+                })
+            out[rid] = normalized
         return out
 
     def run_detail(self, run_id: int) -> dict | None:
