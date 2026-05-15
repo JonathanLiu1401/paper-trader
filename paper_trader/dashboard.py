@@ -79,25 +79,80 @@ TEMPLATE = r"""
   <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='5' fill='%230d0d0d'/%3E%3Cline x1='7' y1='15' x2='7' y2='18' stroke='%2300d4ff' stroke-width='1.5'/%3E%3Crect x='5.5' y='18' width='3' height='7' rx='0.5' fill='%2300d4ff'/%3E%3Cline x1='7' y1='25' x2='7' y2='27' stroke='%2300d4ff' stroke-width='1.5'/%3E%3Cline x1='15' y1='12' x2='15' y2='15' stroke='%23ff3c4c' stroke-width='1.5'/%3E%3Crect x='13.5' y='15' width='3' height='6' rx='0.5' fill='%23ff3c4c'/%3E%3Cline x1='15' y1='21' x2='15' y2='24' stroke='%23ff3c4c' stroke-width='1.5'/%3E%3Cline x1='23' y1='5' x2='23' y2='8' stroke='%2300ff9f' stroke-width='1.5'/%3E%3Crect x='21.5' y='8' width='3' height='12' rx='0.5' fill='%2300ff9f'/%3E%3Cline x1='23' y1='20' x2='23' y2='23' stroke='%2300ff9f' stroke-width='1.5'/%3E%3Cpolyline points='7,21 15,17 23,11' stroke='%23ffd700' stroke-width='1.2' fill='none' stroke-dasharray='2,1.5'/%3E%3C/svg%3E">
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
   <style>
-    :root { color-scheme: dark; }
+    @import url('https://fonts.googleapis.com/css2?family=Outfit:wght@400;500;600;700&family=DM+Mono:ital,wght@0,400;0,500;1,400&display=swap');
+    :root {
+      color-scheme: dark;
+      --bg: #0c0d0f;
+      --bg-panel: #111316;
+      --bg-elevated: #17191d;
+      --bg-hover: #1c1f24;
+      --bg-input: #0e1012;
+      --border: rgba(255,255,255,0.07);
+      --border-strong: rgba(255,255,255,0.13);
+      --text: #dde1e7;
+      --text-secondary: #8b929d;
+      --text-muted: #50565f;
+      --amber: #f0b429;
+      --amber-dim: rgba(240,180,41,0.12);
+      --cyan: #0acdff;
+      --cyan-dim: rgba(10,205,255,0.12);
+      --green: #00c896;
+      --green-dim: rgba(0,200,150,0.12);
+      --red: #ff4455;
+      --red-dim: rgba(255,68,85,0.12);
+      --blue: #4d9eff;
+      --blue-dim: rgba(77,158,255,0.12);
+      --yellow: #fbbf24;
+      --yellow-dim: rgba(251,191,36,0.12);
+      --pink: #f472b6;
+      --font-sans: 'Outfit', system-ui, sans-serif;
+      --font-mono: 'DM Mono', 'JetBrains Mono', monospace;
+      --radius: 8px;
+      --radius-sm: 5px;
+    }
     * { box-sizing: border-box; }
     body {
-      margin: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Arial, sans-serif;
-      background: #0b0f14; color: #cfd8dc; padding: 24px; font-size: 16px;
+      margin: 0; padding: 0;
+      font-family: var(--font-sans);
+      background: var(--bg); color: var(--text);
+      font-size: 14px; line-height: 1.5;
     }
-    h1 { margin: 0 0 6px; font-size: 28px; }
-    .sub { color: #78909c; font-size: 14px; margin-bottom: 20px; }
+    .page-content { padding: 24px; max-width: 1600px; }
+    .topbar {
+      background: var(--bg-panel);
+      border-bottom: 1px solid var(--border);
+      padding: 0 20px; height: 48px;
+      display: flex; align-items: center; gap: 2px;
+      position: sticky; top: 0; z-index: 100; margin: 0;
+    }
+    .brand {
+      font-weight: 700; color: var(--amber);
+      font-size: 13px; letter-spacing: 0.08em;
+      text-transform: uppercase;
+      margin-right: 16px; flex-shrink: 0;
+    }
+    .topbar a {
+      color: var(--text-secondary); text-decoration: none;
+      font-size: 13px; font-weight: 500;
+      padding: 5px 12px; border-radius: var(--radius-sm);
+      transition: color 0.15s, background 0.15s;
+      white-space: nowrap;
+    }
+    .topbar a:hover { color: var(--text); background: var(--bg-hover); }
+    .topbar a.active { color: var(--amber); background: var(--amber-dim); }
+    h1 { margin: 0 0 4px; font-size: 22px; font-weight: 600; color: var(--text); }
+    .sub { color: var(--text-secondary); font-size: 13px; margin-bottom: 20px; }
     nav.tabs {
-      display: flex; gap: 4px; margin-bottom: 20px;
-      border-bottom: 1px solid #1b2229;
+      display: flex; gap: 2px; margin-bottom: 18px;
+      border-bottom: 1px solid var(--border);
     }
     nav.tabs a {
-      padding: 10px 18px; color: #78909c; text-decoration: none;
-      border-bottom: 2px solid transparent; font-size: 15px;
-      cursor: pointer;
+      padding: 8px 16px; color: var(--text-secondary); text-decoration: none;
+      border-bottom: 2px solid transparent; font-size: 13px; font-weight: 500;
+      cursor: pointer; transition: color 0.15s; margin-bottom: -1px;
     }
-    nav.tabs a.active { color: #42a5f5; border-bottom-color: #42a5f5; }
-    nav.tabs a:hover { color: #cfd8dc; }
+    nav.tabs a.active { color: var(--amber); border-bottom-color: var(--amber); }
+    nav.tabs a:hover { color: var(--text); }
     .tab-pane { display: none; }
     .tab-pane.active { display: block; }
     .grid {
@@ -106,60 +161,78 @@ TEMPLATE = r"""
     }
     @media (max-width: 980px) { .grid { grid-template-columns: 1fr; } }
     .card {
-      background: #11161d; border: 1px solid #1b2229; border-radius: 12px;
-      padding: 20px;
+      background: var(--bg-panel); border: 1px solid var(--border);
+      border-radius: var(--radius); padding: 18px 20px;
     }
     .card h2 {
-      margin: 0 0 14px; font-size: 15px;
-      color: #b0bec5; text-transform: uppercase;
+      margin: 0 0 14px; font-size: 11px; font-weight: 600;
+      color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.1em;
     }
     .stat-row { display: flex; gap: 24px; flex-wrap: wrap; margin-bottom: 12px; }
     .stat { flex: 1 1 120px; }
-    .stat .v { font-size: 26px; color: #eceff1; font-weight: 600; }
-    .stat .l { color: #78909c; font-size: 13px; text-transform: uppercase; }
-    .pos, .pl { color: #4caf50; }
-    .neg { color: #ef5350; }
-    table { width: 100%; border-collapse: collapse; font-size: 15px; }
-    th, td {
-      text-align: left; padding: 9px 10px;
-      border-bottom: 1px solid #1b2229;
+    .stat .v {
+      font-family: var(--font-mono);
+      font-size: 24px; color: var(--text); font-weight: 500;
+      font-variant-numeric: tabular-nums;
     }
-    th { color: #78909c; font-weight: 600; }
-    td.num { text-align: right; font-variant-numeric: tabular-nums; }
-    .muted { color: #78909c; }
+    .stat .l { color: var(--text-muted); font-size: 11px; text-transform: uppercase; letter-spacing: 0.08em; }
+    .pos, .pl { color: var(--green); }
+    .neg { color: var(--red); }
+    table { width: 100%; border-collapse: collapse; font-size: 13px; }
+    th {
+      text-align: left; padding: 0 10px 10px;
+      font-size: 11px; font-weight: 600; color: var(--text-muted);
+      text-transform: uppercase; letter-spacing: 0.08em;
+      border-bottom: 1px solid var(--border-strong);
+    }
+    td {
+      padding: 8px 10px; border-bottom: 1px solid var(--border);
+      font-size: 13px;
+    }
+    td.num {
+      text-align: right;
+      font-family: var(--font-mono);
+      font-variant-numeric: tabular-nums;
+    }
+    tr:hover td { background: var(--bg-hover); }
+    .muted { color: var(--text-secondary); }
     canvas { max-height: 280px; }
     .pill {
-      display: inline-block; padding: 2px 8px; border-radius: 100px;
-      background: #1f2933; color: #b0bec5; font-size: 10px; letter-spacing: .5px;
+      display: inline-flex; align-items: center;
+      padding: 2px 8px; border-radius: 4px;
+      background: var(--bg-elevated); color: var(--text-secondary);
+      font-size: 11px; font-weight: 500; letter-spacing: 0.04em;
+      font-family: var(--font-sans);
     }
-    .pill.buy { background: #1b3a2a; color: #66bb6a; }
-    .pill.sell { background: #3a1b1b; color: #ef5350; }
-    .pill.run { background: #20303f; color: #82b1ff; }
-    .pill.status-running  { background: #1f3a55; color: #82b1ff; }
-    .pill.status-complete { background: #1b3a2a; color: #66bb6a; }
-    .pill.status-failed   { background: #3a1b1b; color: #ef5350; }
-    .pill.status-pending  { background: #2a2a2a; color: #b0bec5; }
+    .pill.buy { background: var(--green-dim); color: var(--green); }
+    .pill.sell { background: var(--red-dim); color: var(--red); }
+    .pill.hold { background: var(--bg-elevated); color: var(--text-secondary); }
+    .pill.run { background: var(--blue-dim); color: var(--blue); }
+    .pill.status-running  { background: var(--blue-dim); color: var(--blue); }
+    .pill.status-complete { background: var(--green-dim); color: var(--green); }
+    .pill.status-failed   { background: var(--red-dim); color: var(--red); }
+    .pill.status-pending  { background: var(--bg-elevated); color: var(--text-secondary); }
     .spinner {
       display: inline-block; width: 10px; height: 10px;
-      border: 2px solid #1b2229; border-top-color: #82b1ff;
+      border: 2px solid var(--border-strong); border-top-color: var(--cyan);
       border-radius: 50%; animation: spin 0.8s linear infinite;
       vertical-align: middle; margin-right: 6px;
     }
     @keyframes spin { to { transform: rotate(360deg); } }
     .progress-wrap {
-      margin: 10px 0 16px; height: 6px; background: #1b2229;
+      margin: 8px 0; height: 4px; background: var(--bg-elevated);
       border-radius: 4px; overflow: hidden;
     }
     .progress-bar {
-      height: 100%; background: linear-gradient(90deg, #42a5f5, #66bb6a);
+      height: 100%; background: linear-gradient(90deg, var(--amber), var(--cyan));
       transition: width 0.4s ease;
     }
-    .progress-label { font-size: 12px; color: #78909c; margin-bottom: 4px; }
+    .progress-label { font-size: 11px; color: var(--text-muted); margin-bottom: 4px; }
     tr.bt-row { cursor: pointer; }
-    tr.bt-row:hover td { background: #161d26; }
-    tr.bt-row.best td { background: #143124; }
-    tr.bt-row.beat td:first-child { border-left: 2px solid #4caf50; }
-    tr.bt-row.miss td:first-child { border-left: 2px solid #ef5350; }
+    tr.bt-row:hover td { background: var(--bg-hover); }
+    tr.bt-row.best td { background: var(--green-dim); }
+    tr.bt-row.beat td:first-child { border-left: 2px solid var(--green); }
+    tr.bt-row.miss td:first-child { border-left: 2px solid var(--red); }
     #bt-trades { margin-top: 14px; display: none; }
     #bt-trades.show { display: block; }
     .bt-headline {
@@ -170,73 +243,93 @@ TEMPLATE = r"""
       display: grid; grid-template-columns: 240px 1fr; gap: 14px; align-items: start;
     }
     @media (max-width: 980px) { .bt-layout { grid-template-columns: 1fr; } }
-    .bt-sidebar { position: sticky; top: 14px; max-height: calc(100vh - 30px); overflow-y: auto; }
+    .bt-sidebar { position: sticky; top: 62px; max-height: calc(100vh - 78px); overflow-y: auto; }
     .bt-sidebar h2 { margin: 0; }
     .bt-legend-row {
       display: flex; align-items: center; gap: 8px; padding: 6px 4px;
-      border-bottom: 1px solid #1b2229; cursor: pointer; user-select: none;
+      border-bottom: 1px solid var(--border); cursor: pointer; user-select: none;
       transition: background 0.15s;
     }
-    .bt-legend-row:hover { background: #161d26; }
-    .bt-legend-row.selected { background: #1b2937; }
+    .bt-legend-row:hover { background: var(--bg-hover); }
+    .bt-legend-row.selected { background: var(--bg-elevated); }
     .bt-legend-row.hidden-run { opacity: 0.35; }
-    .bt-legend-row input[type=checkbox] { accent-color: #82b1ff; margin: 0; }
+    .bt-legend-row input[type=checkbox] { accent-color: var(--cyan); margin: 0; }
     .bt-swatch {
       width: 12px; height: 12px; border-radius: 3px; flex: 0 0 12px;
     }
-    .bt-legend-row .name { flex: 1; font-size: 13px; color: #cfd8dc; }
-    .bt-legend-row .ret { font-size: 11px; font-variant-numeric: tabular-nums; }
+    .bt-legend-row .name { flex: 1; font-size: 13px; color: var(--text); }
+    .bt-legend-row .ret { font-size: 11px; font-variant-numeric: tabular-nums; font-family: var(--font-mono); }
     .bt-btn {
-      background: #1b2937; color: #cfd8dc; border: 1px solid #2a3a4f;
-      border-radius: 4px; padding: 3px 8px; font-size: 11px; cursor: pointer;
+      background: var(--bg-elevated); color: var(--text);
+      border: 1px solid var(--border-strong); border-radius: var(--radius-sm);
+      padding: 3px 8px; font-size: 11px; cursor: pointer;
       text-transform: uppercase; letter-spacing: 0.5px;
+      font-family: var(--font-sans);
     }
-    .bt-btn:hover { background: #243349; }
+    .bt-btn:hover { background: var(--bg-hover); }
     .bt-tabs {
-      display: flex; gap: 4px; margin-bottom: 12px;
-      border-bottom: 1px solid #1b2229;
+      display: flex; gap: 2px; margin-bottom: 12px;
+      border-bottom: 1px solid var(--border);
     }
     .bt-tabs a {
-      padding: 8px 14px; color: #78909c; cursor: pointer; font-size: 13px;
-      border-bottom: 2px solid transparent;
+      padding: 8px 14px; color: var(--text-secondary); cursor: pointer; font-size: 13px;
+      border-bottom: 2px solid transparent; font-weight: 500;
     }
-    .bt-tabs a.active { color: #82b1ff; border-bottom-color: #82b1ff; }
+    .bt-tabs a.active { color: var(--amber); border-bottom-color: var(--amber); }
     .bt-subpane { display: none; }
     .bt-subpane.active { display: block; }
-    tr.bt-row.selected td { background: #1b2937 !important; }
+    tr.bt-row.selected td { background: var(--bg-elevated) !important; }
     .pill.status-running { animation: pulse 1.5s ease-in-out infinite; }
     @keyframes pulse { 0%,100%{opacity:1;} 50%{opacity:0.55;} }
     .live-dot {
-      display: inline-block; width: 8px; height: 8px; border-radius: 50%;
-      background: #66bb6a; margin-right: 6px; animation: pulse 1.5s infinite;
+      display: inline-block; width: 7px; height: 7px; border-radius: 50%;
+      background: var(--green); margin-right: 6px; animation: pulse 1.5s infinite;
     }
     th.sortable-h { cursor: pointer; user-select: none; }
-    th.sortable-h:hover { color: #cfd8dc; }
+    th.sortable-h:hover { color: var(--text); }
     th.sortable-h.sort-asc::after  { content: " ▲"; font-size: 9px; }
     th.sortable-h.sort-desc::after { content: " ▼"; font-size: 9px; }
+    select, input[type="text"], input[type="number"] {
+      background: var(--bg-input); color: var(--text);
+      border: 1px solid var(--border-strong); border-radius: var(--radius-sm);
+      padding: 6px 10px; font-size: 13px; font-family: var(--font-sans);
+    }
+    button, .btn {
+      background: var(--bg-elevated); color: var(--text);
+      border: 1px solid var(--border-strong); border-radius: var(--radius-sm);
+      padding: 6px 14px; font-size: 13px; font-family: var(--font-sans);
+      cursor: pointer; transition: background 0.15s;
+    }
+    button:hover, .btn:hover { background: var(--bg-hover); }
+    button.primary, .btn-primary {
+      background: var(--amber-dim);
+      border-color: rgba(240,180,41,0.3);
+      color: var(--amber);
+    }
   </style>
 </head>
 <body>
-  <nav style="background:#1a1a2e;padding:12px 24px;display:flex;gap:24px;align-items:center;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Arial,sans-serif;font-size:16px;border-bottom:1px solid #333;margin:-24px -24px 18px -24px">
-    <span style="color:#e94560;font-weight:bold;font-size:1.1em">◈ TRADING STACK</span>
-    <a href="/" style="color:#00b4d8;text-decoration:none">Home</a>
-    <a href="/intern/" style="color:#00b4d8;text-decoration:none">Digital Intern</a>
-    <a href="/trader/" style="color:#fff;border-bottom:2px solid #e94560;text-decoration:none">Paper Trader</a>
-    <a href="/trader/backtests" style="color:#00b4d8;text-decoration:none">Backtests</a>
-    <a href="/backtests/compare" style="color:#00b4d8;text-decoration:none">Compare</a>
-    <a href="/journal" style="color:#00b4d8;text-decoration:none">Journal</a>
-    <a href="/ops/" style="color:#00b4d8;text-decoration:none">Ops View</a>
-    <a href="/intern/chat" style="color:#00b4d8;text-decoration:none">Chat</a>
-    <a href="/system/" style="color:#00b4d8;text-decoration:none">System</a>
+  <nav class="topbar">
+    <span class="brand">◈ TRADING STACK</span>
+    <a href="/">Command Center</a>
+    <a href="/intern/">Digital Intern</a>
+    <a href="/trader/" class="{% if initial_tab != 'backtests' %}active{% endif %}">Paper Trader</a>
+    <a href="/trader/backtests" class="{% if initial_tab == 'backtests' %}active{% endif %}">Backtests</a>
+    <a href="/backtests/compare">Compare</a>
+    <a href="/journal">Journal</a>
+    <a href="/ops/">Ops View</a>
+    <a href="/intern/chat">Chat</a>
+    <a href="/system/">System</a>
   </nav>
 
+  <div class="page-content">
   <h1>Paper Trader</h1>
   <div class="sub" id="hb">loading…</div>
 
   <div class="card" style="margin-bottom:18px;">
     <h2 style="display:flex;justify-content:space-between;align-items:center;">
       <span>Signal Feed — Digital Intern</span>
-      <a href="/intern/" style="font-size:11px;color:#42a5f5;text-decoration:none;text-transform:none;letter-spacing:normal">View All Signals →</a>
+      <a href="/intern/" style="font-size:11px;color:#0acdff;text-decoration:none;text-transform:none;letter-spacing:normal">View All Signals →</a>
     </h2>
     <ul id="signal-feed" style="margin:0;padding:0;list-style:none;font-size:12px;">
       <li class="muted">loading…</li>
@@ -254,12 +347,12 @@ TEMPLATE = r"""
     <!-- ─── Daily Briefing (futures + market countdown + urgent news) ─── -->
     <div class="card" id="briefing-card" style="margin-bottom:18px;">
       <h2 style="display:flex;justify-content:space-between;align-items:center;">
-        <span><span id="briefing-dot" style="display:inline-block;width:8px;height:8px;border-radius:50%;background:#78909c;margin-right:8px;"></span>Daily briefing</span>
+        <span><span id="briefing-dot" style="display:inline-block;width:8px;height:8px;border-radius:50%;background:#8b929d;margin-right:8px;"></span>Daily briefing</span>
         <span class="muted" id="briefing-asof" style="font-size:11px;text-transform:none;letter-spacing:normal;">—</span>
       </h2>
-      <div id="briefing-status" style="font-size:14px;color:#cfd8dc;margin-bottom:12px;">loading…</div>
+      <div id="briefing-status" style="font-size:14px;color:#dde1e7;margin-bottom:12px;">loading…</div>
       <div id="briefing-futures" style="display:flex;flex-wrap:wrap;gap:14px;margin-bottom:14px;font-size:13px;"></div>
-      <div style="font-size:11px;color:#78909c;text-transform:uppercase;letter-spacing:0.5px;margin-bottom:6px;">Urgent overnight news</div>
+      <div style="font-size:11px;color:#8b929d;text-transform:uppercase;letter-spacing:0.5px;margin-bottom:6px;">Urgent overnight news</div>
       <ul id="briefing-urgent" style="margin:0;padding:0;list-style:none;font-size:13px;"></ul>
     </div>
 
@@ -269,7 +362,7 @@ TEMPLATE = r"""
         <span>Trade suggestions <span class="muted" style="font-size:11px;text-transform:none;letter-spacing:normal;font-weight:normal;">— co-pilot, not auto-executed</span></span>
         <span class="muted" id="sug-meta" style="font-size:11px;text-transform:none;letter-spacing:normal;">—</span>
       </h2>
-      <div id="sug-summary" style="font-size:12px;color:#78909c;margin-bottom:10px;">loading…</div>
+      <div id="sug-summary" style="font-size:12px;color:#8b929d;margin-bottom:10px;">loading…</div>
       <table id="sug-tbl" style="font-size:13px;">
         <thead><tr>
           <th>action</th><th>ticker</th><th class="num">conv.</th>
@@ -291,7 +384,7 @@ TEMPLATE = r"""
         <div class="stat"><div class="l">median age (d)</div><div class="v" id="risk-age">—</div></div>
         <div class="stat"><div class="l">stale positions</div><div class="v" id="risk-stale-n">—</div></div>
       </div>
-      <div id="risk-stale-list" style="font-size:12px;color:#cfd8dc;"></div>
+      <div id="risk-stale-list" style="font-size:12px;color:#dde1e7;"></div>
     </div>
 
     <!-- ─── Portfolio Greeks (options exposure) ─── -->
@@ -340,6 +433,82 @@ TEMPLATE = r"""
       </table>
     </div>
 
+    <!-- ─── Position Thesis Cards (new 2026-05-15) ─── -->
+    <div class="card" id="thesis-card" style="margin-bottom:18px;">
+      <h2 style="display:flex;justify-content:space-between;align-items:center;">
+        <span>Position thesis <span class="muted" style="font-size:11px;text-transform:none;letter-spacing:normal;font-weight:normal;">— per-holding integrated view: news, scorer, technicals, last decision, verdict</span></span>
+        <span class="muted" id="th-asof" style="font-size:11px;text-transform:none;letter-spacing:normal;">—</span>
+      </h2>
+      <div class="muted" id="th-meta" style="font-size:11px;margin-bottom:10px;">loading…</div>
+      <div id="th-grid" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(420px,1fr));gap:12px;">
+        <div class="muted">loading…</div>
+      </div>
+    </div>
+
+    <!-- ─── Drawdown Anatomy (new 2026-05-15) ─── -->
+    <div class="card" id="dd-card" style="margin-bottom:18px;">
+      <h2 style="display:flex;justify-content:space-between;align-items:center;">
+        <span>Drawdown anatomy <span class="muted" style="font-size:11px;text-transform:none;letter-spacing:normal;font-weight:normal;">— current DD from peak with per-position contribution</span></span>
+        <span class="muted" id="dd-asof" style="font-size:11px;text-transform:none;letter-spacing:normal;">—</span>
+      </h2>
+      <div class="stat-row" style="margin-bottom:14px;">
+        <div class="stat"><div class="l">current equity</div><div class="v" id="dd-current">—</div></div>
+        <div class="stat"><div class="l">peak equity</div><div class="v" id="dd-peak">—</div></div>
+        <div class="stat"><div class="l">drawdown</div><div class="v" id="dd-pct">—</div></div>
+        <div class="stat"><div class="l">trough</div><div class="v" id="dd-trough">—</div></div>
+        <div class="stat"><div class="l">time in DD</div><div class="v" id="dd-hours">—</div></div>
+        <div class="stat"><div class="l">recovered</div><div class="v" id="dd-rec">—</div></div>
+      </div>
+      <div style="font-size:13px;color:#dde1e7;margin-bottom:8px;text-transform:uppercase;letter-spacing:0.5px;">Per-position contribution</div>
+      <table id="dd-tbl" style="font-size:13px;">
+        <thead><tr>
+          <th>ticker</th><th class="num">qty</th><th class="num">cost</th>
+          <th class="num">px</th><th class="num">P/L $</th><th class="num">P/L %</th>
+          <th>drag</th>
+        </tr></thead>
+        <tbody><tr><td colspan="7" class="muted">loading…</td></tr></tbody>
+      </table>
+    </div>
+
+    <!-- ─── Confidence Calibration + Signal Attribution (new 2026-05-15) ─── -->
+    <div class="card" id="cal-card" style="margin-bottom:18px;">
+      <h2 style="display:flex;justify-content:space-between;align-items:center;">
+        <span>Confidence calibration &amp; signal attribution <span class="muted" style="font-size:11px;text-transform:none;letter-spacing:normal;font-weight:normal;">— do high-confidence trades actually win? which signal types pay?</span></span>
+        <span class="muted" id="cal-asof" style="font-size:11px;text-transform:none;letter-spacing:normal;">—</span>
+      </h2>
+      <div class="muted" id="cal-meta" style="font-size:11px;margin-bottom:10px;">loading…</div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:18px;">
+        <div>
+          <div style="font-size:12px;color:#dde1e7;margin-bottom:6px;text-transform:uppercase;letter-spacing:0.5px;">By Opus confidence</div>
+          <table id="cal-conf-tbl" style="font-size:13px;">
+            <thead><tr>
+              <th>bucket</th><th class="num">n</th><th class="num">win %</th>
+              <th class="num">avg ret</th><th class="num">avg conf</th>
+            </tr></thead>
+            <tbody><tr><td colspan="5" class="muted">loading…</td></tr></tbody>
+          </table>
+        </div>
+        <div>
+          <div style="font-size:12px;color:#dde1e7;margin-bottom:6px;text-transform:uppercase;letter-spacing:0.5px;">By signal source</div>
+          <table id="cal-src-tbl" style="font-size:13px;">
+            <thead><tr>
+              <th>source</th><th class="num">n</th><th class="num">win %</th>
+              <th class="num">avg ret</th><th class="num">best / worst</th>
+            </tr></thead>
+            <tbody><tr><td colspan="5" class="muted">loading…</td></tr></tbody>
+          </table>
+        </div>
+      </div>
+      <div style="font-size:12px;color:#dde1e7;margin-top:14px;margin-bottom:6px;text-transform:uppercase;letter-spacing:0.5px;">Recent realized trades</div>
+      <table id="cal-recent-tbl" style="font-size:12px;">
+        <thead><tr>
+          <th>buy → sell</th><th>ticker</th><th class="num">return</th>
+          <th class="num">conf</th><th>source</th><th>reasoning</th>
+        </tr></thead>
+        <tbody><tr><td colspan="6" class="muted">loading…</td></tr></tbody>
+      </table>
+    </div>
+
     <!-- ─── Portfolio Analytics ─── -->
     <div class="card" style="margin-bottom:18px;">
       <h2>Portfolio analytics</h2>
@@ -352,9 +521,9 @@ TEMPLATE = r"""
         <div class="stat"><div class="l">avg loser</div><div class="v" id="an-avgl">—</div></div>
         <div class="stat"><div class="l">realized P/L</div><div class="v" id="an-realized">—</div></div>
       </div>
-      <div style="font-size:13px;color:#b0bec5;margin-bottom:8px;text-transform:uppercase;letter-spacing:0.5px;">Sector exposure</div>
-      <div id="an-sector-bar" style="display:flex;height:22px;border-radius:6px;overflow:hidden;background:#0d1117;border:1px solid #1b2229;margin-bottom:6px;"></div>
-      <div id="an-sector-legend" style="display:flex;flex-wrap:wrap;gap:14px;font-size:12px;color:#cfd8dc;"></div>
+      <div style="font-size:13px;color:#dde1e7;margin-bottom:8px;text-transform:uppercase;letter-spacing:0.5px;">Sector exposure</div>
+      <div id="an-sector-bar" style="display:flex;height:22px;border-radius:6px;overflow:hidden;background:#0d1117;border:1px solid #1f2126;margin-bottom:6px;"></div>
+      <div id="an-sector-legend" style="display:flex;flex-wrap:wrap;gap:14px;font-size:12px;color:#dde1e7;"></div>
     </div>
 
     <!-- ─── Sector Pulse ─── -->
@@ -456,7 +625,7 @@ TEMPLATE = r"""
               <h2 style="margin:0 0 4px;">Backtest equity curves</h2>
               <div class="progress-label" id="bt-progress-label">—</div>
             </div>
-            <div style="text-align:right;font-size:12px;color:#78909c;">
+            <div style="text-align:right;font-size:12px;color:#8b929d;">
               <div id="bt-live-indicator"></div>
               <div id="bt-last-updated">last update: —</div>
             </div>
@@ -471,10 +640,10 @@ TEMPLATE = r"""
             <div class="stat"><div class="l">QQQ</div><div class="v" id="bt-qqq">—</div></div>
             <div class="stat"><div class="l">vs SPY</div><div class="v" id="bt-beat">—</div></div>
           </div>
-          <div style="display:flex;align-items:center;gap:10px;margin-bottom:8px;font-size:12px;color:#78909c;">
+          <div style="display:flex;align-items:center;gap:10px;margin-bottom:8px;font-size:12px;color:#8b929d;">
             <label for="bt-chart-limit">Show last</label>
             <input id="bt-chart-limit" type="range" min="10" max="200" step="10" value="50"
-              style="width:120px;cursor:pointer;accent-color:#42a5f5;"
+              style="width:120px;cursor:pointer;accent-color:#0acdff;"
               oninput="document.getElementById('bt-chart-limit-val').textContent=this.value; drawBacktestChart()">
             <span id="bt-chart-limit-val">50</span> runs
           </div>
@@ -483,7 +652,7 @@ TEMPLATE = r"""
 
         <div class="card" style="margin-bottom:14px;">
           <h2 style="margin:0 0 4px;">Model progress — return by cycle</h2>
-          <div style="color:#78909c;font-size:12px;margin-bottom:10px;">Best / avg / worst return per cycle of 5 runs. Upward trend = model improving.</div>
+          <div style="color:#8b929d;font-size:12px;margin-bottom:10px;">Best / avg / worst return per cycle of 5 runs. Upward trend = model improving.</div>
           <div style="position:relative;height:220px;"><canvas id="mp-chart"></canvas></div>
         </div>
 
@@ -623,18 +792,18 @@ async function refresh() {
     chart = new Chart(document.getElementById("eq"), {
       type: "line",
       data: { labels, datasets: [
-        { label: "Equity", data: values, borderColor: "#42a5f5",
+        { label: "Equity", data: values, borderColor: "#0acdff",
           backgroundColor: "rgba(66,165,245,0.08)", fill: true, tension: 0.18, borderWidth: 2, pointRadius: 0 },
         { label: "S&P 500 (raw)", data: sp, borderColor: "#ffb74d",
           backgroundColor: "rgba(255,183,77,0)", borderDash: [4,4], borderWidth: 1, pointRadius: 0, yAxisID: "y2" },
       ]},
       options: {
         responsive: true, maintainAspectRatio: false,
-        plugins: { legend: { labels: { color: "#cfd8dc" }}},
+        plugins: { legend: { labels: { color: "#dde1e7" }}},
         scales: {
-          x: { ticks: { color: "#78909c", maxTicksLimit: 8 }, grid: { color: "#1b2229" }},
-          y: { ticks: { color: "#cfd8dc" }, grid: { color: "#1b2229" }},
-          y2:{ position: "right", ticks: { color: "#78909c" }, grid: { display: false }}
+          x: { ticks: { color: "#8b929d", maxTicksLimit: 8 }, grid: { color: "#1f2126" }},
+          y: { ticks: { color: "#dde1e7" }, grid: { color: "#1f2126" }},
+          y2:{ position: "right", ticks: { color: "#8b929d" }, grid: { display: false }}
         }
       }
     });
@@ -689,23 +858,23 @@ async function loadModelProgress() {
       data: {
         labels,
         datasets: [
-          { label: "Best %",  data: best,  borderColor: "#4caf50", backgroundColor: "rgba(76,175,80,0.08)",  tension: 0.3, pointRadius: 3, fill: false },
-          { label: "Avg %",   data: avg,   borderColor: "#42a5f5", backgroundColor: "rgba(66,165,245,0.08)", tension: 0.3, pointRadius: 3, fill: false },
-          { label: "Worst %", data: worst, borderColor: "#ef5350", backgroundColor: "rgba(239,83,80,0.08)",  tension: 0.3, pointRadius: 3, fill: false },
+          { label: "Best %",  data: best,  borderColor: "#00c896", backgroundColor: "rgba(76,175,80,0.08)",  tension: 0.3, pointRadius: 3, fill: false },
+          { label: "Avg %",   data: avg,   borderColor: "#0acdff", backgroundColor: "rgba(66,165,245,0.08)", tension: 0.3, pointRadius: 3, fill: false },
+          { label: "Worst %", data: worst, borderColor: "#ff4455", backgroundColor: "rgba(239,83,80,0.08)",  tension: 0.3, pointRadius: 3, fill: false },
         ]
       },
       options: {
         responsive: true, maintainAspectRatio: false,
         plugins: {
-          legend: { labels: { color: "#cfd8dc", font: { size: 11 } } },
+          legend: { labels: { color: "#dde1e7", font: { size: 11 } } },
           tooltip: { callbacks: { label: c => c.dataset.label + ": " + c.raw.toFixed(1) + "%" } }
         },
         scales: {
           x: {
-            ticks: { color: "#78909c", maxTicksLimit: 20, maxRotation: 45 },
+            ticks: { color: "#8b929d", maxTicksLimit: 20, maxRotation: 45 },
             grid: { color: "rgba(255,255,255,0.05)" }
           },
-          y: { ticks: { color: "#78909c", callback: v => v.toFixed(0) + "%" }, grid: { color: "rgba(255,255,255,0.05)" } }
+          y: { ticks: { color: "#8b929d", callback: v => v.toFixed(0) + "%" }, grid: { color: "rgba(255,255,255,0.05)" } }
         }
       }
     });
@@ -742,7 +911,7 @@ function renderBacktests() {
   if (failed.length)   lbl += ` · ${failed.length} failed`;
   document.getElementById("bt-progress-label").textContent = lbl;
   document.getElementById("bt-live-indicator").innerHTML =
-    running.length ? `<span class="live-dot"></span>live` : `<span style="color:#66bb6a;">●</span> idle`;
+    running.length ? `<span class="live-dot"></span>live` : `<span style="color:#00c896;">●</span> idle`;
 
   if (completed.length) {
     const avg = completed.reduce((a,b) => a + b.total_return_pct, 0) / completed.length;
@@ -920,7 +1089,7 @@ function drawBacktestChart() {
   // Fall back to per-run spy_return_pct if global baseline not yet in API
   const spyPct = btSpyBaseline ?? (btRuns.find(x => x.status === "complete")?.spy_return_pct ?? null);
   const spyLine = _benchmarkLine(spyPct, `SPY ${spyPct != null ? (spyPct >= 0 ? "+" : "") + spyPct.toFixed(1) + "%" : ""}`, "#e0e0e0");
-  const qqqLine = _benchmarkLine(btQqqBaseline, `QQQ ${btQqqBaseline != null ? (btQqqBaseline >= 0 ? "+" : "") + btQqqBaseline.toFixed(1) + "%" : ""}`, "#42a5f5");
+  const qqqLine = _benchmarkLine(btQqqBaseline, `QQQ ${btQqqBaseline != null ? (btQqqBaseline >= 0 ? "+" : "") + btQqqBaseline.toFixed(1) + "%" : ""}`, "#0acdff");
   if (spyLine) datasets.push(spyLine);
   if (qqqLine) datasets.push(qqqLine);
 
@@ -947,7 +1116,7 @@ function drawBacktestChart() {
           mode: "index", intersect: false,
           backgroundColor: "rgba(15,20,28,0.95)",
           borderColor: "#2a3a4f", borderWidth: 1,
-          titleColor: "#cfd8dc", bodyColor: "#cfd8dc",
+          titleColor: "#dde1e7", bodyColor: "#dde1e7",
           padding: 10, boxPadding: 4,
           itemSort: (a,b) => b.parsed.y - a.parsed.y,
           callbacks: {
@@ -956,8 +1125,8 @@ function drawBacktestChart() {
         },
       },
       scales: {
-        x: { ticks: { color: "#78909c", maxTicksLimit: 10 }, grid: { color: "#1b2229" }},
-        y: { ticks: { color: "#cfd8dc", callback: v => "$"+v }, grid: { color: "#1b2229" }},
+        x: { ticks: { color: "#8b929d", maxTicksLimit: 10 }, grid: { color: "#1f2126" }},
+        y: { ticks: { color: "#dde1e7", callback: v => "$"+v }, grid: { color: "#1f2126" }},
       },
     },
   });
@@ -1064,9 +1233,9 @@ async function refreshSignals() {
       const url = a.url || "#";
       const title = (a.title || "(no title)").replace(/</g,"&lt;");
       const src = (a.source || "").replace(/</g,"&lt;");
-      return `<li style="padding:6px 0;border-bottom:1px solid #1b2229;">
-        <span class="pill" style="background:#1f3a4d;color:#82b1ff;margin-right:8px;">${score}</span>
-        <a href="${url}" target="_blank" rel="noopener" style="color:#cfd8dc;text-decoration:none">${title}</a>
+      return `<li style="padding:6px 0;border-bottom:1px solid #1f2126;">
+        <span class="pill" style="background:#1f3a4d;color:#4d9eff;margin-right:8px;">${score}</span>
+        <a href="${url}" target="_blank" rel="noopener" style="color:#dde1e7;text-decoration:none">${title}</a>
         <span class="muted" style="margin-left:6px;">· ${src}</span>
       </li>`;
     }).join("");
@@ -1077,18 +1246,18 @@ async function refreshSignals() {
 
 // ───────── Portfolio Analytics ─────────
 const SECTOR_COLORS = {
-  semis: "#42a5f5", semis_lev: "#1e88e5",
+  semis: "#0acdff", semis_lev: "#1e88e5",
   optical: "#ab47bc",
-  broad: "#66bb6a", broad_lev: "#43a047",
+  broad: "#00c896", broad_lev: "#43a047",
   tech: "#ffb74d", tech_lev: "#fb8c00",
   crypto_lev: "#ffd54f",
   bio_lev: "#ec407a", health_lev: "#e91e63",
   fin_lev: "#26a69a", defense_lev: "#7e57c2",
   housing_lev: "#8d6e63", util_lev: "#90a4ae",
-  cash: "#455a64", other: "#78909c",
+  cash: "#455a64", other: "#8b929d",
 };
 
-function _sectorColor(name) { return SECTOR_COLORS[name] || "#78909c"; }
+function _sectorColor(name) { return SECTOR_COLORS[name] || "#8b929d"; }
 
 async function refreshAnalytics() {
   let a;
@@ -1165,21 +1334,21 @@ async function refreshSectorPulse() {
     const news = t.news_count_24h || 0;
     const urgent = t.news_urgent_24h || 0;
     const newsBadge = urgent > 0
-      ? `<span style="background:#3a1b1b;color:#ef5350;padding:1px 6px;border-radius:8px;font-size:10px;font-weight:600;">${urgent}!</span>`
+      ? `<span style="background:#3a1b1b;color:#ff4455;padding:1px 6px;border-radius:8px;font-size:10px;font-weight:600;">${urgent}!</span>`
       : news > 0
-        ? `<span style="background:#1f3a4d;color:#82b1ff;padding:1px 6px;border-radius:8px;font-size:10px;">${news}</span>`
+        ? `<span style="background:#1f3a4d;color:#4d9eff;padding:1px 6px;border-radius:8px;font-size:10px;">${news}</span>`
         : `<span class="muted" style="font-size:10px;">0</span>`;
     const headline = t.top_headline
-      ? `<div style="margin-top:6px;font-size:11px;line-height:1.4;color:#b0bec5;">
-           ${t.top_url ? `<a href="${t.top_url}" target="_blank" rel="noopener" style="color:#b0bec5;text-decoration:none;">${(t.top_headline||'').slice(0,100)}</a>` : (t.top_headline||'').slice(0,100)}
+      ? `<div style="margin-top:6px;font-size:11px;line-height:1.4;color:#dde1e7;">
+           ${t.top_url ? `<a href="${t.top_url}" target="_blank" rel="noopener" style="color:#dde1e7;text-decoration:none;">${(t.top_headline||'').slice(0,100)}</a>` : (t.top_headline||'').slice(0,100)}
          </div>`
       : `<div class="muted" style="margin-top:6px;font-size:11px;">no news</div>`;
-    return `<div style="background:#0d1117;border:1px solid #1b2229;border-radius:6px;padding:10px;">
+    return `<div style="background:#0d1117;border:1px solid #1f2126;border-radius:6px;padding:10px;">
       <div style="display:flex;justify-content:space-between;align-items:baseline;">
         <span style="font-weight:600;color:#eceff1;font-size:14px;">${t.ticker}</span>
-        <span style="font-size:13px;color:#cfd8dc;font-variant-numeric:tabular-nums;">${px == null ? '—' : '$'+fmt(px)}</span>
+        <span style="font-size:13px;color:#dde1e7;font-variant-numeric:tabular-nums;">${px == null ? '—' : '$'+fmt(px)}</span>
       </div>
-      <div style="display:flex;gap:8px;font-size:11px;margin-top:5px;color:#78909c;">
+      <div style="display:flex;gap:8px;font-size:11px;margin-top:5px;color:#8b929d;">
         <span>RSI <span class="${rsiCls}">${rsi == null ? '—' : fmt(rsi,1)}</span></span>
         <span>5d <span class="${mom5Cls}">${mom5 == null ? '—' : (mom5>=0?'+':'')+fmt(mom5,1)+'%'}</span></span>
         <span style="margin-left:auto;">${newsBadge}</span>
@@ -1195,7 +1364,7 @@ async function refreshBriefing() {
     const r = await fetch(API_PREFIX + "/api/briefing").then(r => r.json());
     if (r.error) return;
     const dot = document.getElementById("briefing-dot");
-    if (dot) dot.style.background = r.market_open ? "#66bb6a" : "#ef5350";
+    if (dot) dot.style.background = r.market_open ? "#00c896" : "#ff4455";
     document.getElementById("briefing-status").textContent = r.status_line || "";
     document.getElementById("briefing-asof").textContent = (r.as_of || "").replace("T"," ").slice(0,19);
     // Futures row
@@ -1204,7 +1373,7 @@ async function refreshBriefing() {
     futWrap.innerHTML = Object.entries(r.futures || {}).map(([sym,px]) => {
       const label = futNames[sym] || sym;
       const value = (px == null) ? "—" : Number(px).toLocaleString(undefined,{maximumFractionDigits:2});
-      return `<div><span class="muted" style="font-size:11px;">${label}</span><div style="font-variant-numeric:tabular-nums;font-size:15px;color:#cfd8dc;">${value}</div></div>`;
+      return `<div><span class="muted" style="font-size:11px;">${label}</span><div style="font-variant-numeric:tabular-nums;font-size:15px;color:#dde1e7;">${value}</div></div>`;
     }).join("");
     // Urgent news (top 5)
     const urgEl = document.getElementById("briefing-urgent");
@@ -1215,9 +1384,9 @@ async function refreshBriefing() {
       urgEl.innerHTML = urgent.map(u => {
         const sc = (u.ai_score != null) ? Number(u.ai_score).toFixed(1) : "—";
         const tk = (u.tickers || []).slice(0,3).join(" ");
-        return `<li style="padding:4px 0;border-bottom:1px solid #1b2229;">
-          <span style="display:inline-block;min-width:34px;color:#ef5350;font-variant-numeric:tabular-nums;font-weight:600;">${sc}</span>
-          <span style="color:#cfd8dc;">${(u.title || "").replace(/[<>]/g, '')}</span>
+        return `<li style="padding:4px 0;border-bottom:1px solid #1f2126;">
+          <span style="display:inline-block;min-width:34px;color:#ff4455;font-variant-numeric:tabular-nums;font-weight:600;">${sc}</span>
+          <span style="color:#dde1e7;">${(u.title || "").replace(/[<>]/g, '')}</span>
           ${tk ? `<span class="muted" style="font-size:11px;margin-left:6px;">[${tk}]</span>` : ""}
         </li>`;
       }).join("");
@@ -1244,12 +1413,12 @@ async function refreshSuggestions() {
       return;
     }
     const actionStyle = {
-      "BUY":   "background:#1b3a2a;color:#66bb6a;",
-      "ADD":   "background:#1b3a2a;color:#66bb6a;",
+      "BUY":   "background:#1b3a2a;color:#00c896;",
+      "ADD":   "background:#1b3a2a;color:#00c896;",
       "TRIM":  "background:#3a2f1b;color:#ffb74d;",
-      "EXIT":  "background:#3a1b1b;color:#ef5350;",
-      "WATCH": "background:#1f3a4d;color:#82b1ff;",
-      "HOLD":  "background:#1f2933;color:#b0bec5;",
+      "EXIT":  "background:#3a1b1b;color:#ff4455;",
+      "WATCH": "background:#1f3a4d;color:#4d9eff;",
+      "HOLD":  "background:#1f2933;color:#dde1e7;",
     };
     tbody.innerHTML = items.map(s => {
       const styleA = actionStyle[s.action] || actionStyle["HOLD"];
@@ -1257,13 +1426,13 @@ async function refreshSuggestions() {
       const qty = s.held_qty ? Number(s.held_qty).toFixed(2) : "—";
       const rsi = (s.rsi == null) ? "—" : Number(s.rsi).toFixed(0);
       const rsiCls = (s.rsi != null && s.rsi >= 70) ? "neg" : (s.rsi != null && s.rsi <= 35) ? "pos" : "";
-      const urgent = s.news_urgent ? `<span style="color:#ef5350;font-weight:600;">!</span>` : "";
+      const urgent = s.news_urgent ? `<span style="color:#ff4455;font-weight:600;">!</span>` : "";
       const newsCell = s.news_count > 0
-        ? `<span style="color:#82b1ff;">${s.news_count}</span> <span class="muted">@</span> ${Number(s.news_max_score).toFixed(1)} ${urgent}`
+        ? `<span style="color:#4d9eff;">${s.news_count}</span> <span class="muted">@</span> ${Number(s.news_max_score).toFixed(1)} ${urgent}`
         : `<span class="muted">0</span>`;
       const reasons = (s.reasons || []).slice(0,3).join(" · ");
       const head = s.top_headline ? (s.top_url
-        ? `<a href="${s.top_url}" target="_blank" rel="noopener" style="color:#b0bec5;">${s.top_headline.replace(/[<>]/g,'')}</a>`
+        ? `<a href="${s.top_url}" target="_blank" rel="noopener" style="color:#dde1e7;">${s.top_headline.replace(/[<>]/g,'')}</a>`
         : `<span class="muted">${s.top_headline.replace(/[<>]/g,'')}</span>`) : `<span class="muted">—</span>`;
       return `<tr>
         <td><span class="pill" style="${styleA}padding:3px 8px;font-size:11px;font-weight:600;">${s.action}</span></td>
@@ -1312,7 +1481,7 @@ async function refreshRisk() {
       staleList.innerHTML = `<span class="muted">no stale positions — all holds are either fresh or moving</span>`;
     } else {
       staleList.innerHTML = "Stale: " + stale.map(s =>
-        `<span style="display:inline-block;background:#1b2229;border:1px solid #3a2f1b;border-radius:4px;padding:3px 8px;margin-right:6px;margin-bottom:4px;">${s.ticker} ${s.age_days}d ${s.pl_pct >= 0 ? "+" : ""}${s.pl_pct}%</span>`
+        `<span style="display:inline-block;background:#1f2126;border:1px solid #3a2f1b;border-radius:4px;padding:3px 8px;margin-right:6px;margin-bottom:4px;">${s.ticker} ${s.age_days}d ${s.pl_pct >= 0 ? "+" : ""}${s.pl_pct}%</span>`
       ).join("");
     }
   } catch (e) { console.error("risk:", e); }
@@ -1363,7 +1532,7 @@ async function refreshGreeks() {
 
 // ───────── DRAM/Semis heatmap ─────────
 function hmColorFor(pct) {
-  if (pct == null) return "#1b2229";
+  if (pct == null) return "#1f2126";
   // Map [-5%..+5%] to red..green via HSL.
   const clamped = Math.max(-5, Math.min(5, pct));
   // -5 → hue 0 (red), +5 → hue 130 (green)
@@ -1396,15 +1565,15 @@ async function refreshHeatmap() {
         const bg = hmColorFor(m5);
         const rsStr = rs == null ? "" : `<span style="color:${rs >= 0 ? '#7fff00' : '#ff7b7b'};font-size:10px;margin-left:4px;">vs SOX ${rs >= 0 ? '+' : ''}${fmt(rs,1)}</span>`;
         const newsStr = news > 0
-          ? `<span style="color:#cfd8dc;font-size:10px;margin-left:6px;">📰 ${news}${urg ? `<span style="color:#ff5252">!</span>` : ""}</span>`
+          ? `<span style="color:#dde1e7;font-size:10px;margin-left:6px;">📰 ${news}${urg ? `<span style="color:#ff4455">!</span>` : ""}</span>`
           : "";
         const rsi = t.rsi;
-        const rsiStr = rsi == null ? "" : `<span style="color:${rsi > 70 ? '#ff7b7b' : (rsi < 30 ? '#80deea' : '#78909c')};font-size:10px;margin-left:6px;">RSI ${fmt(rsi,0)}</span>`;
+        const rsiStr = rsi == null ? "" : `<span style="color:${rsi > 70 ? '#ff7b7b' : (rsi < 30 ? '#80deea' : '#8b929d')};font-size:10px;margin-left:6px;">RSI ${fmt(rsi,0)}</span>`;
         const px = t.price == null ? "—" : "$" + fmt(t.price, 2);
-        return `<div style="background:${bg};border:1px solid #1b2229;border-radius:4px;padding:6px 8px;min-width:130px;">
+        return `<div style="background:${bg};border:1px solid #1f2126;border-radius:4px;padding:6px 8px;min-width:130px;">
           <div style="display:flex;justify-content:space-between;align-items:center;gap:6px;">
             <span style="font-weight:bold;color:#fff;">${t.ticker}</span>
-            <span style="font-size:11px;color:#cfd8dc;">${px}</span>
+            <span style="font-size:11px;color:#dde1e7;">${px}</span>
           </div>
           <div style="font-size:13px;color:${(m5 || 0) >= 0 ? '#7fff00' : '#ff7b7b'};font-weight:bold;">${m5 == null ? "—" : (m5 >= 0 ? "+" : "") + fmt(m5, 2) + "%"}</div>
           <div style="margin-top:2px;">${rsStr}${rsiStr}${newsStr}</div>
@@ -1415,7 +1584,7 @@ async function refreshHeatmap() {
       const bmCls = (bm || 0) >= 0 ? "pos" : "neg";
       return `<div style="margin-bottom:14px;">
         <div style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:6px;">
-          <span style="text-transform:uppercase;font-size:11px;letter-spacing:0.5px;color:#78909c;">${b.name.replace(/_/g, " ")}</span>
+          <span style="text-transform:uppercase;font-size:11px;letter-spacing:0.5px;color:#8b929d;">${b.name.replace(/_/g, " ")}</span>
           <span class="${bmCls}" style="font-size:11px;">avg 5d ${bmStr}</span>
         </div>
         <div style="display:flex;flex-wrap:wrap;gap:6px;">${cells}</div>
@@ -1426,22 +1595,22 @@ async function refreshHeatmap() {
 
 // ───────── DecisionScorer per-position predictions ─────────
 function scorerColor(v) {
-  if (v == null) return "#cfd8dc";
+  if (v == null) return "#dde1e7";
   if (v >= 2) return "#7fff00";
   if (v >= 0.5) return "#a5d6a7";
-  if (v >= -0.5) return "#cfd8dc";
+  if (v >= -0.5) return "#dde1e7";
   if (v >= -2) return "#ff9100";
-  return "#ff5252";
+  return "#ff4455";
 }
 function verdictBadge(v) {
   const colors = {
     STRONG_HOLD: ["#1b5e20", "#a5d6a7"],
     HOLD:        ["#2e7d32", "#c5e1a5"],
-    NEUTRAL:     ["#37474f", "#cfd8dc"],
+    NEUTRAL:     ["#37474f", "#dde1e7"],
     TRIM:        ["#ef6c00", "#ffe0b2"],
     EXIT:        ["#b71c1c", "#ffcdd2"],
   };
-  const [bg, fg] = colors[v] || ["#1b2229", "#78909c"];
+  const [bg, fg] = colors[v] || ["#1f2126", "#8b929d"];
   return `<span style="background:${bg};color:${fg};padding:1px 6px;border-radius:3px;font-size:11px;letter-spacing:0.5px;">${v || "—"}</span>`;
 }
 async function refreshScorer() {
@@ -1466,7 +1635,7 @@ async function refreshScorer() {
       const v = p.pred_5d_return_pct;
       const sign = v >= 0 ? "+" : "";
       const newsCell = (p.news_count || 0) > 0
-        ? `${p.news_count}${(p.news_urgent || 0) > 0 ? ` <span style="color:#ff5252">!</span>` : ""}`
+        ? `${p.news_count}${(p.news_urgent || 0) > 0 ? ` <span style="color:#ff4455">!</span>` : ""}`
         : "—";
       return `<tr>
         <td><strong>${p.ticker}</strong></td>
@@ -1510,18 +1679,224 @@ async function refreshDedupedNews() {
             ? `<span style="background:#ff9100;color:#000;border-radius:3px;padding:1px 5px;font-size:10px;margin-right:6px;">u ${urgD}</span>`
             : "");
       const tickers = (a.tickers || []).slice(0, 4).map(t =>
-        `<span style="background:#1b2229;color:#42a5f5;font-size:10px;padding:1px 5px;border-radius:3px;margin-left:4px;">${t}</span>`
+        `<span style="background:#1f2126;color:#0acdff;font-size:10px;padding:1px 5px;border-radius:3px;margin-left:4px;">${t}</span>`
       ).join("");
       const title = (a.title || "").replace(/</g, "&lt;");
       const ts = a.first_seen ? a.first_seen.replace("T", " ").slice(5, 16) : "";
-      return `<li style="padding:6px 0;border-bottom:1px solid #1b2229;">
-        ${urgBadge}<span style="color:#cfd8dc;">${title}</span>${dups}
+      return `<li style="padding:6px 0;border-bottom:1px solid #1f2126;">
+        ${urgBadge}<span style="color:#dde1e7;">${title}</span>${dups}
         <div class="muted" style="font-size:11px;margin-top:3px;">
           [${score}] ${a.source || "?"} · ${ts}${tickers}
         </div>
       </li>`;
     }).join("");
   } catch (e) { console.error("deduped:", e); }
+}
+
+// ───────── Position thesis (new 2026-05-15) ─────────
+function verdictPill(v) {
+  const colors = {
+    STRONG_HOLD: ["#1b5e20", "#a5d6a7"],
+    HOLD:        ["#33691e", "#c5e1a5"],
+    WATCH:       ["#37474f", "#dde1e7"],
+    TRIM:        ["#bf360c", "#ffccbc"],
+    EXIT:        ["#b71c1c", "#ffcdd2"],
+  };
+  const [bg, fg] = colors[v] || ["#37474f", "#dde1e7"];
+  return `<span style="background:${bg};color:${fg};border-radius:3px;padding:2px 8px;font-size:11px;font-weight:bold;letter-spacing:0.5px;">${v}</span>`;
+}
+
+async function refreshThesis() {
+  try {
+    const r = await fetch(API_PREFIX + "/api/position-thesis").then(r => r.json());
+    document.getElementById("th-asof").textContent =
+      r.as_of ? r.as_of.replace("T"," ").slice(0,16) : "—";
+    if (r.error) {
+      document.getElementById("th-meta").textContent = "error: " + r.error;
+      document.getElementById("th-grid").innerHTML = "";
+      return;
+    }
+    const cards = r.cards || [];
+    const meta = `${r.n_positions || 0} open positions · scorer ` +
+      (r.scorer_trained ? `trained (n=${r.scorer_n_train})` : `untrained (n=${r.scorer_n_train})`);
+    document.getElementById("th-meta").textContent = meta;
+    const grid = document.getElementById("th-grid");
+    if (!cards.length) {
+      grid.innerHTML = `<div class="muted">no open positions</div>`;
+      return;
+    }
+    grid.innerHTML = cards.map(c => {
+      const pl = c.unrealized_pl || 0;
+      const plPct = c.pl_pct || 0;
+      const plColor = pl >= 0 ? "#00c896" : "#ff4455";
+      const plSign = pl >= 0 ? "+" : "";
+      const news = c.news || {};
+      const head = (news.headlines || [])[0];
+      const headHtml = head
+        ? `<div class="muted" style="font-size:11px;margin-top:4px;">📰 [${fmt(head.score,1)}] ${(head.title||"").replace(/</g,"&lt;").slice(0,120)}</div>`
+        : `<div class="muted" style="font-size:11px;margin-top:4px;">no recent news</div>`;
+      const ld = c.last_decision;
+      const ldHtml = ld
+        ? `<div style="font-size:11px;color:#90a4ae;margin-top:4px;">last: <strong>${ld.action.replace(/→.*/,'').trim()}</strong> conf=${ld.confidence!=null?fmt(ld.confidence,2):"?"} · ${(ld.reasoning||"").replace(/</g,"&lt;").slice(0,140)}</div>`
+        : "";
+      const rsi = c.rsi != null ? fmt(c.rsi, 0) : "—";
+      const m5 = c.mom_5d != null ? (c.mom_5d >= 0 ? "+" : "") + fmt(c.mom_5d, 1) + "%" : "—";
+      const m20 = c.mom_20d != null ? (c.mom_20d >= 0 ? "+" : "") + fmt(c.mom_20d, 1) + "%" : "—";
+      const pred = c.scorer_pred_5d;
+      const predHtml = pred != null
+        ? `<span style="color:${scorerColor(pred)};">${pred>=0?"+":""}${fmt(pred,2)}%</span>`
+        : "—";
+      const newsPulse = news.n
+        ? `${news.n}·<span style="color:#00c896">${news.bull||0}↑</span>/<span style="color:#ff4455">${news.bear||0}↓</span> avg ${fmt(news.avg_score,1)}`
+        : "<span class='muted'>—</span>";
+      return `<div style="background:#0d1117;border:1px solid #1f2126;border-radius:6px;padding:12px;">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">
+          <div><strong style="font-size:15px;color:#e0e0e0;">${c.ticker}</strong>
+            <span class="muted" style="font-size:11px;margin-left:6px;">qty ${c.qty} @ $${fmt(c.avg_cost,2)} · ${fmt(c.days_held,1)}d</span>
+          </div>
+          <div>${verdictPill(c.verdict)}</div>
+        </div>
+        <div style="display:flex;justify-content:space-between;font-size:12px;color:#dde1e7;margin-bottom:6px;">
+          <span>P/L <span style="color:${plColor};font-weight:bold;">${plSign}$${fmt(pl,2)} (${plSign}${fmt(plPct,2)}%)</span></span>
+          <span>scorer ${predHtml}</span>
+        </div>
+        <div style="display:flex;flex-wrap:wrap;gap:10px;font-size:11px;color:#90a4ae;margin-bottom:4px;">
+          <span>RSI ${rsi}</span><span>mom5 ${m5}</span><span>mom20 ${m20}</span>
+          <span>news ${newsPulse}</span>
+        </div>
+        <div style="font-size:11px;color:#dde1e7;font-style:italic;margin-top:6px;">→ ${c.thesis||"—"}</div>
+        ${headHtml}
+        ${ldHtml}
+      </div>`;
+    }).join("");
+  } catch (e) { console.error("thesis:", e); }
+}
+
+// ───────── Drawdown anatomy (new 2026-05-15) ─────────
+async function refreshDrawdown() {
+  try {
+    const r = await fetch(API_PREFIX + "/api/drawdown").then(r => r.json());
+    document.getElementById("dd-asof").textContent =
+      r.as_of ? r.as_of.replace("T"," ").slice(0,16) : "—";
+    if (r.error) {
+      document.getElementById("dd-pct").textContent = "err";
+      return;
+    }
+    document.getElementById("dd-current").textContent = "$" + fmt(r.current_value, 2);
+    document.getElementById("dd-peak").textContent = "$" + fmt(r.peak_value, 2);
+    const ddPct = r.drawdown_pct || 0;
+    const ddEl = document.getElementById("dd-pct");
+    if (r.at_high_water) {
+      ddEl.innerHTML = `<span style="color:#00c896;font-weight:bold;">◆ at high-water</span>`;
+    } else {
+      const col = ddPct <= -5 ? "#ff4455" : (ddPct <= -2 ? "#ff9100" : "#ffd54f");
+      ddEl.innerHTML = `<span style="color:${col};">${fmt(ddPct,2)}% ($${fmt(r.drawdown_abs,2)})</span>`;
+    }
+    document.getElementById("dd-trough").textContent =
+      r.trough_value != null ? `$${fmt(r.trough_value,2)} (${fmt(r.trough_pct,2)}%)` : "—";
+    document.getElementById("dd-hours").textContent =
+      r.hours_in_dd != null ? fmt(r.hours_in_dd, 1) + "h" : "—";
+    document.getElementById("dd-rec").textContent =
+      (r.at_high_water ? "100" : fmt(r.recovery_pct, 0)) + "%";
+    const tbody = document.querySelector("#dd-tbl tbody");
+    const rows = r.contributors || [];
+    if (!rows.length) {
+      tbody.innerHTML = `<tr><td colspan="7" class="muted">no open positions</td></tr>`;
+      return;
+    }
+    tbody.innerHTML = rows.map(p => {
+      const pl = p.unrealized_pl || 0;
+      const plPct = p.pl_pct || 0;
+      const color = pl >= 0 ? "#00c896" : "#ff4455";
+      const dragBadge = p.drag
+        ? `<span style="background:#b71c1c;color:#ffcdd2;border-radius:3px;padding:1px 5px;font-size:10px;">DRAG</span>`
+        : `<span class="muted">—</span>`;
+      return `<tr>
+        <td><strong>${p.ticker}</strong> <span class="muted" style="font-size:10px;">${p.type||""}</span></td>
+        <td class="num">${p.qty}</td>
+        <td class="num">$${fmt(p.avg_cost,2)}</td>
+        <td class="num">$${fmt(p.current_price,2)}</td>
+        <td class="num" style="color:${color};font-weight:bold;">${pl>=0?"+":""}$${fmt(pl,2)}</td>
+        <td class="num" style="color:${color};">${plPct>=0?"+":""}${fmt(plPct,2)}%</td>
+        <td>${dragBadge}</td>
+      </tr>`;
+    }).join("");
+  } catch (e) { console.error("drawdown:", e); }
+}
+
+// ───────── Confidence calibration + signal attribution (new 2026-05-15) ─────────
+async function refreshCalibration() {
+  try {
+    const r = await fetch(API_PREFIX + "/api/calibration").then(r => r.json());
+    document.getElementById("cal-asof").textContent =
+      r.as_of ? r.as_of.replace("T"," ").slice(0,16) : "—";
+    if (r.error) {
+      document.getElementById("cal-meta").textContent = "error: " + r.error;
+      return;
+    }
+    document.getElementById("cal-meta").textContent =
+      `${r.n_decisions_parsed||0} decisions parsed · ${r.n_realized_trades||0} realized round-trips matched`;
+    const confTbody = document.querySelector("#cal-conf-tbl tbody");
+    const confRows = r.confidence_buckets || [];
+    if (!confRows.some(b => b.n)) {
+      confTbody.innerHTML = `<tr><td colspan="5" class="muted">no closed trades yet — calibration builds over time</td></tr>`;
+    } else {
+      confTbody.innerHTML = confRows.map(b => {
+        const wrColor = b.win_rate >= 60 ? "#00c896" : (b.win_rate >= 40 ? "#ffd54f" : "#ff4455");
+        const retColor = b.avg_return > 0 ? "#00c896" : "#ff4455";
+        return `<tr>
+          <td>${b.bucket}</td>
+          <td class="num">${b.n}</td>
+          <td class="num" style="color:${b.n?wrColor:'#8b929d'};">${b.n?fmt(b.win_rate,1)+"%":"—"}</td>
+          <td class="num" style="color:${b.n?retColor:'#8b929d'};">${b.n?(b.avg_return>=0?"+":"")+fmt(b.avg_return,2)+"%":"—"}</td>
+          <td class="num">${b.n?fmt(b.avg_conf,2):"—"}</td>
+        </tr>`;
+      }).join("");
+    }
+    const srcTbody = document.querySelector("#cal-src-tbl tbody");
+    const srcRows = (r.signal_sources || []).sort((a,b) => (b.n||0)-(a.n||0));
+    if (!srcRows.some(s => s.n)) {
+      srcTbody.innerHTML = `<tr><td colspan="5" class="muted">no realized trades yet</td></tr>`;
+    } else {
+      srcTbody.innerHTML = srcRows.map(s => {
+        const wrColor = s.win_rate >= 60 ? "#00c896" : (s.win_rate >= 40 ? "#ffd54f" : "#ff4455");
+        const retColor = s.avg_return > 0 ? "#00c896" : "#ff4455";
+        const bw = s.n
+          ? `<span style="color:#00c896;">+${fmt(s.best,1)}%</span> / <span style="color:#ff4455;">${fmt(s.worst,1)}%</span>`
+          : "—";
+        return `<tr>
+          <td><strong>${s.source}</strong></td>
+          <td class="num">${s.n}</td>
+          <td class="num" style="color:${s.n?wrColor:'#8b929d'};">${s.n?fmt(s.win_rate,1)+"%":"—"}</td>
+          <td class="num" style="color:${s.n?retColor:'#8b929d'};">${s.n?(s.avg_return>=0?"+":"")+fmt(s.avg_return,2)+"%":"—"}</td>
+          <td class="num" style="font-size:11px;">${bw}</td>
+        </tr>`;
+      }).join("");
+    }
+    const rTbody = document.querySelector("#cal-recent-tbl tbody");
+    const recent = (r.recent_realized || []).slice().reverse();  // most recent first
+    if (!recent.length) {
+      rTbody.innerHTML = `<tr><td colspan="6" class="muted">no realized round-trips yet</td></tr>`;
+    } else {
+      rTbody.innerHTML = recent.slice(0, 12).map(t => {
+        const ret = t.return_pct;
+        const color = ret >= 0 ? "#00c896" : "#ff4455";
+        const sign = ret >= 0 ? "+" : "";
+        const buyTs = (t.buy_ts || "").replace("T", " ").slice(5, 16);
+        const sellTs = (t.sell_ts || "").replace("T", " ").slice(5, 16);
+        const conf = t.confidence != null ? fmt(t.confidence, 2) : "—";
+        const reason = (t.reasoning_excerpt || "").replace(/</g, "&lt;");
+        return `<tr>
+          <td class="muted" style="font-size:11px;">${buyTs} → ${sellTs}</td>
+          <td><strong>${t.ticker}</strong></td>
+          <td class="num" style="color:${color};font-weight:bold;">${sign}${fmt(ret,2)}%</td>
+          <td class="num">${conf}</td>
+          <td>${t.source||"—"}</td>
+          <td style="font-size:11px;color:#dde1e7;">${reason}</td>
+        </tr>`;
+      }).join("");
+    }
+  } catch (e) { console.error("calibration:", e); }
 }
 
 // ───────── boot ─────────
@@ -1536,6 +1911,9 @@ refreshGreeks();
 refreshHeatmap();
 refreshDedupedNews();
 refreshScorer();
+refreshThesis();
+refreshDrawdown();
+refreshCalibration();
 setInterval(refresh, 15_000);
 setInterval(refreshSignals, 30_000);
 setInterval(refreshAnalytics, 30_000);
@@ -1547,8 +1925,12 @@ setInterval(refreshGreeks, 60_000);
 setInterval(refreshHeatmap, 60_000);
 setInterval(refreshDedupedNews, 45_000);
 setInterval(refreshScorer, 60_000);
+setInterval(refreshThesis, 60_000);
+setInterval(refreshDrawdown, 30_000);
+setInterval(refreshCalibration, 120_000);
 showTab(INITIAL_TAB || "trader");
 </script>
+</div><!-- /.page-content -->
 </body>
 </html>
 """
@@ -2704,12 +3086,14 @@ def scorer_predictions_api():
             ml_score = float(sent.get("max_score") or 0.0)
             pred = scorer.predict(
                 ml_score=ml_score,
-                rsi=q.get("RSI"),
-                macd=q.get("MACD"),
+                rsi=q.get("rsi"),
+                macd=q.get("macd_signal"),
                 mom5=q.get("mom_5d"),
                 mom20=q.get("mom_20d"),
                 regime_mult=regime_mult,
                 ticker=tk,
+                vol_ratio=q.get("vol_ratio"),
+                bb_pos=q.get("bb_position"),
             )
             preds.append({
                 "ticker": tk,
@@ -2773,6 +3157,105 @@ def news_deduped_api():
         })
     except Exception as e:
         return jsonify({"error": str(e), "articles": []}), 500
+
+
+# ───────── Feature-dev additions (2026-05-15) ─────────
+# /api/position-thesis  — per-position integrated card (news, scorer, technicals, last decision, verdict)
+# /api/calibration       — confidence calibration + signal-source attribution from realized trades
+# /api/drawdown          — current DD anatomy: peak/trough, time-in-DD, per-position contribution
+
+
+@app.route("/api/position-thesis")
+def position_thesis_api():
+    """Per-open-position thesis cards.
+
+    Combines DecisionScorer prediction, live quant signals, news pulse from
+    digital-intern, and the most recent Opus decision that touched the ticker.
+    Each card carries a coarse verdict and a one-line thesis."""
+    try:
+        from .analytics.position_thesis import build_thesis_cards
+        from .ml.decision_scorer import DecisionScorer
+        from .strategy import get_quant_signals_live
+        from . import signals as _sig
+
+        store = get_store()
+        positions = store.open_positions()
+        held = sorted({p["ticker"] for p in positions
+                       if p.get("type") == "stock" and (p.get("qty") or 0) > 0})
+
+        # Reuse the same scorer prediction shape as /api/scorer-predictions
+        # without duplicating its logic — call into the live trader helpers.
+        quant = get_quant_signals_live(held) if held else {}
+        sent_list = _sig.ticker_sentiments(held, hours=4) if held else []
+        sent_by_tk = {s["ticker"]: s for s in sent_list}
+
+        regime_mult = 1.0
+        try:
+            spy_q = (get_quant_signals_live(["SPY"]) or {}).get("SPY") or {}
+            mm = spy_q.get("mom_5d")
+            if isinstance(mm, (int, float)):
+                regime_mult = max(0.7, min(1.3, 1.0 + mm * 0.075))
+        except Exception:
+            pass
+
+        scorer = DecisionScorer()
+        scorer_preds = []
+        for tk in held:
+            q = quant.get(tk) or {}
+            sent = sent_by_tk.get(tk) or {}
+            pred = scorer.predict(
+                ml_score=float(sent.get("max_score") or 0.0),
+                rsi=q.get("RSI"), macd=q.get("MACD"),
+                mom5=q.get("mom_5d"), mom20=q.get("mom_20d"),
+                regime_mult=regime_mult, ticker=tk,
+            )
+            scorer_preds.append({
+                "ticker": tk,
+                "pred_5d_return_pct": round(float(pred), 3),
+            })
+
+        decisions = store.recent_decisions(limit=80)
+        out = build_thesis_cards(positions, decisions, scorer_preds, quant)
+        out["scorer_trained"] = scorer.is_trained
+        out["scorer_n_train"] = scorer.n_train
+        return jsonify(out)
+    except Exception as e:
+        return jsonify({"error": str(e), "cards": []}), 500
+
+
+@app.route("/api/calibration")
+def calibration_api():
+    """Confidence calibration + signal-source attribution.
+
+    Buckets matched-and-closed BUY decisions by Opus's stated confidence
+    (0.0-0.5, 0.5-0.65, 0.65-0.8, 0.8-1.0) and computes win rate + avg return
+    per bucket. Also classifies decisions by reasoning keywords into
+    news/technical/mixed/other and computes the same stats per source."""
+    try:
+        from .analytics.calibration import build_calibration
+        store = get_store()
+        decisions = store.recent_decisions(limit=500)
+        trades = store.recent_trades(limit=500)
+        return jsonify(build_calibration(decisions, trades))
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/drawdown")
+def drawdown_api():
+    """Drawdown anatomy: peak/trough, time-in-DD, per-position contribution.
+
+    Returns a structured 0% when the portfolio is at a fresh high so the UI
+    can show a green high-water badge. ``recovery_pct`` measures how much of
+    the trough has been clawed back."""
+    try:
+        from .analytics.drawdown import compute_drawdown
+        store = get_store()
+        eq = store.equity_curve(limit=2000)
+        positions = store.open_positions()
+        return jsonify(compute_drawdown(eq, positions))
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
 
 
 def run(host: str = "0.0.0.0", port: int = 8090):
