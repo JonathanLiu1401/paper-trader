@@ -1387,16 +1387,19 @@ def _ml_decide(
         )
         _scorer_n = getattr(_scorer, "_n_train", 0)
         if _scorer.is_trained and _scorer_n >= 500:
-            if scorer_pred < -5.0:
-                # High-confidence loser per scorer — skip
-                return {"action": "HOLD", "ticker": buy_ticker, "qty": 0,
-                        "reasoning": f"ML score={best_score:.2f} scorer pred={scorer_pred:.1f}% — skip"}
+            # Scorer adjusts conviction only — never cancels the trade.
+            # The LLM already chose this ticker via ML score + quant analysis.
+            # Blocking based on 5d forward-return predictions sabotages leveraged
+            # ETF strategies: SOXL/TQQQ have noisy 5d windows but strong 3-12 month
+            # returns. A HOLD block here was the root cause of the oscillation.
+            if scorer_pred < -10.0:
+                conviction *= 0.6   # strong headwind — reduce but still buy
             elif scorer_pred < 0.0:
-                conviction *= 0.7  # mild penalty, not a hard block
+                conviction *= 0.85  # mild headwind — small reduction
             elif scorer_pred > 10.0:
-                conviction = min(conviction * 1.4, 0.95)  # strong boost
+                conviction = min(conviction * 1.3, 0.95)  # strong tailwind
             elif scorer_pred > 5.0:
-                conviction = min(conviction * 1.2, 0.95)  # soft boost
+                conviction = min(conviction * 1.15, 0.95)  # mild tailwind
 
         buy_notional = min(total_val * conviction, portfolio.cash * 0.95)
         qty = round(buy_notional / price, 4)
