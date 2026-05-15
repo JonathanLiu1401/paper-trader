@@ -1,6 +1,7 @@
 """Tests for variable backtest window selection + engine date plumbing."""
 from __future__ import annotations
 
+import json
 from datetime import date, timedelta
 from pathlib import Path
 from unittest import mock
@@ -217,3 +218,91 @@ class TestLabelKey:
         a = {"title": "NVDA beats", "source": "reuters"}
         b = {"title": "NVDA misses", "source": "reuters"}
         assert _label_key(a) != _label_key(b)
+
+
+# ────────────────── SEC EDGAR data flows into engine ──────────────────
+
+class TestSecCacheConsumed:
+    """Critical: collector data must actually feed the engine. Without this
+    test, the SEC fetch could silently write to disk while pre-2015 backtests
+    run purely on quant signals — exactly what the advisor caught."""
+
+    def test_local_news_includes_sec_filings_in_window(self, isolated_caches,
+                                                       monkeypatch):
+        import paper_trader.backtest as bt
+
+        # Synthetic price fake so engine init doesn't hit yfinance.
+        class _FakeTicker:
+            def __init__(self, sym):
+                self.sym = sym
+            def history(self, start, end, auto_adjust):
+                from datetime import date as _d
+                s = _d.fromisoformat(start)
+                e = _d.fromisoformat(end)
+                return _make_fake_hist(s, e)
+
+        monkeypatch.setattr(bt.yf, "Ticker", _FakeTicker)
+
+        # Seed a SEC EDGAR cache file BEFORE engine init.
+        sec_dir = isolated_caches / "sec_edgar"
+        sec_dir.mkdir()
+        win_start = date(2010, 1, 1)
+        win_end = date(2010, 6, 30)
+        sec_file = sec_dir / f"AAPL_{win_start.isoformat()}_{win_end.isoformat()}.json"
+        sec_file.write_text(json.dumps([
+            {
+                "title": "AAPL 8-K filing - March 15 2010",
+                "url": "https://www.sec.gov/Archives/edgar/data/AAPL/0001.htm",
+                "published": "2010-03-15",
+                "source": "SEC/8-K/AAPL",
+                "full_text": "AAPL 8-K filing - March 15 2010",
+            },
+            {
+                # Out of window — must be filtered out by _merge_sec_cache.
+                "title": "AAPL 10-K filing - January 2020",
+                "url": "https://www.sec.gov/Archives/edgar/data/AAPL/0099.htm",
+                "published": "2020-01-15",
+                "source": "SEC/10-K/AAPL",
+                "full_text": "AAPL 10-K filing - January 2020",
+            },
+        ]))
+
+        # Point LOCAL_ARTICLES_DB at a nonexistent file so the local-DB load
+        # path is a no-op and we test the SEC merge in isolation.
+        monkeypatch.setattr(bt, "LOCAL_ARTICLES_DB",
+                            isolated_caches / "no_such_db.db")
+
+        engine = bt.BacktestEngine(start=win_start, end=win_end)
+
+        in_window = engine._local_news.get("2010-03-15", [])
+        assert any("8-K filing" in a["title"] for a in in_window), (
+            "SEC filings inside window must be consumed by engine"
+        )
+        # The 2020-01-15 filing must NOT appear — it's outside the engine's
+        # window and the engine would otherwise leak forward-looking signals.
+        assert "2020-01-15" not in engine._local_news, (
+            "SEC filings outside engine window must be filtered out"
+        )
+
+    def test_no_sec_cache_dir_is_tolerated(self, isolated_caches, monkeypatch):
+        """Engine must initialize cleanly when sec_edgar/ doesn't exist —
+        most cycles will never have it pre-warmed."""
+        import paper_trader.backtest as bt
+
+        class _FakeTicker:
+            def __init__(self, sym):
+                self.sym = sym
+            def history(self, start, end, auto_adjust):
+                from datetime import date as _d
+                s = _d.fromisoformat(start)
+                e = _d.fromisoformat(end)
+                return _make_fake_hist(s, e)
+
+        monkeypatch.setattr(bt.yf, "Ticker", _FakeTicker)
+        monkeypatch.setattr(bt, "LOCAL_ARTICLES_DB",
+                            isolated_caches / "no_such_db.db")
+        # Explicitly do NOT create the sec_edgar/ directory.
+
+        # Should not raise; _local_news just stays empty.
+        engine = bt.BacktestEngine(start=date(2010, 1, 1), end=date(2010, 3, 1))
+        assert engine._local_news == {}

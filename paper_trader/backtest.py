@@ -615,13 +615,14 @@ def _volume_cache_path(start: date, end: date) -> Path:
     return CACHE_DIR / f"volumes_{start.isoformat()}_{end.isoformat()}.json"
 
 
-def _legacy_volume_cache_path() -> Path:
-    """Pre-refactor single-file cache. Read-only fallback so old caches still work."""
-    return CACHE_DIR / "volumes.json"
-
-
 def _load_volume_cache_for_window(start: date, end: date) -> None:
-    """Load the on-disk per-window volume cache into memory. Idempotent."""
+    """Load the on-disk per-window volume cache into memory. Idempotent.
+
+    No legacy fallback: an unrelated window's series silently seeds the new
+    cache key, which then short-circuits the network refetch — `vol_ratio`
+    then computes against irrelevant dates and returns None. Better to start
+    empty and pay one yfinance fetch.
+    """
     key = (start.isoformat(), end.isoformat())
     with _VOLUME_CACHE_LOCK:
         if key in _VOLUME_CACHE_DISK_LOADED:
@@ -633,16 +634,6 @@ def _load_volume_cache_for_window(start: date, end: date) -> None:
                 loaded = json.loads(path.read_text())
             except Exception:
                 loaded = {}
-        else:
-            # Fallback: read legacy single-file cache. Only useful if it happens
-            # to cover this window, but harmless if not — _ensure_volume_for
-            # re-fetches when entries are missing.
-            legacy = _legacy_volume_cache_path()
-            if legacy.exists():
-                try:
-                    loaded = json.loads(legacy.read_text())
-                except Exception:
-                    loaded = {}
         for ticker, series in loaded.items():
             _VOLUME_CACHE[(ticker, key[0], key[1])] = series
         _VOLUME_CACHE_DISK_LOADED.add(key)
@@ -1842,13 +1833,17 @@ class BacktestEngine:
         """Load entire articles.db into memory, keyed by published/first_seen date (YYYY-MM-DD).
 
         Returns empty dict if DB is unavailable — callers fall back gracefully.
+        SEC EDGAR cache files (populated by historical_collector) are merged in
+        regardless of whether the articles DB exists, so pre-2015 windows can
+        still see SEC filings as signals.
         """
         result: dict[str, list[dict]] = {}
         conn = None
         try:
             import sqlite3 as _sqlite3, zlib as _zlib
             if not LOCAL_ARTICLES_DB.exists():
-                return result
+                # Skip DB load but still merge SEC cache below.
+                raise FileNotFoundError("articles.db not present — SEC-only mode")
             conn = _sqlite3.connect(f"file:{LOCAL_ARTICLES_DB}?mode=ro", uri=True, timeout=5.0)
             # Filter out backtest-injected rows so the engine doesn't read its own
             # past decisions as future signals (training contamination). Mirrors
@@ -1892,6 +1887,10 @@ class BacktestEngine:
                 })
             print(f"[local_news] loaded {sum(len(v) for v in result.values())} articles "
                   f"across {len(result)} days from local DB")
+        except FileNotFoundError:
+            # Expected for pre-2015 backtest windows that pre-date the digital-intern
+            # articles DB — SEC merge below still runs.
+            pass
         except Exception as e:
             print(f"[local_news] DB load failed (using quant-only mode): {e}")
         finally:
@@ -1900,7 +1899,75 @@ class BacktestEngine:
                     conn.close()
                 except Exception:
                     pass
+
+        # Merge any cached SEC EDGAR filings overlapping this engine's window.
+        # historical_collector.fetch_sec_historical writes per-(ticker, start, end)
+        # JSON files; we union all matching files into _local_news so pre-2015
+        # windows (which have no GDELT, no live articles.db rows) still see SEC
+        # 8-K/10-Q/10-K as signals.
+        try:
+            sec_added = self._merge_sec_cache(result)
+            if sec_added:
+                print(f"[local_news] merged {sec_added} SEC filings from disk cache")
+        except Exception as e:
+            print(f"[local_news] SEC merge failed: {e}")
+
         return result
+
+    def _merge_sec_cache(self, result: dict[str, list[dict]]) -> int:
+        """Union SEC EDGAR cache files overlapping the engine's window into result.
+
+        Each file is named `{TICKER}_{start}_{end}.json`. We accept any file whose
+        recorded window has *some* overlap with this engine's window, since the
+        filings inside carry their own `published` date and we filter per-filing.
+        """
+        sec_dir = CACHE_DIR / "sec_edgar"
+        if not sec_dir.exists():
+            return 0
+        added = 0
+        win_start = self.start
+        win_end = self.end
+        seen_urls: set[str] = set()
+        for f in sec_dir.iterdir():
+            if not f.name.endswith(".json"):
+                continue
+            # Filename: TICKER_YYYY-MM-DD_YYYY-MM-DD.json. Parse loosely; if it
+            # doesn't match, fall through and just trust per-filing dates below.
+            try:
+                entries = json.loads(f.read_text())
+            except Exception:
+                continue
+            for e in entries or []:
+                pub = e.get("published") or ""
+                if len(pub) < 10:
+                    continue
+                pub_d = pub[:10]
+                try:
+                    pd = date.fromisoformat(pub_d)
+                except ValueError:
+                    continue
+                if pd < win_start or pd > win_end:
+                    continue
+                url = e.get("url") or ""
+                if url and url in seen_urls:
+                    continue
+                if url:
+                    seen_urls.add(url)
+                title = e.get("title") or ""
+                if not title:
+                    continue
+                result.setdefault(pub_d, []).append({
+                    "title": title,
+                    "url": url,
+                    "source": e.get("source") or "SEC",
+                    # SEC filings without Claude labels carry a modest baseline
+                    # signal — they're material disclosures, not noise.
+                    "score": 2.5,
+                    "snippet": (e.get("full_text") or "")[:300],
+                    "urgency": 0.0,
+                })
+                added += 1
+        return added
 
     def _sampled_days(self) -> list[date]:
         days = self.prices.trading_days

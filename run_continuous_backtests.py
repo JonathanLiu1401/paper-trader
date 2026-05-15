@@ -834,10 +834,13 @@ def main() -> None:
 
         # Optional pre-warmer for historical news. Background by default so
         # backtests proceed on quant signals while news fills in.
+        # `tickers=None` lets the collector pick its own narrow SEC ticker set
+        # (~17 names). Passing the full 117-ticker watchlist would issue an
+        # SEC request for each on every cycle, wasting rate budget on names
+        # that aren't tracked by the signal pipeline anyway.
         try:
             from paper_trader.historical_collector import prewarm_window
-            prewarm_window(win_start, win_end,
-                           tickers=engine.prices.tickers, background=True)
+            prewarm_window(win_start, win_end, tickers=None, background=True)
         except Exception as e:
             # Pre-warmer is best-effort — failure must not stop a cycle.
             print(f"[continuous] prewarm dispatch failed: {e}")
