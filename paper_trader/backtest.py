@@ -1391,13 +1391,17 @@ def _ml_decide(
                         "reasoning": f"ML score={best_score:.2f} scorer pred={scorer_pred:.1f}% — skip"}
             elif scorer_pred < 0.0:
                 conviction *= 0.7  # mild penalty, not a hard block
+            elif scorer_pred > 10.0:
+                conviction = min(conviction * 1.4, 0.95)  # strong boost
+            elif scorer_pred > 5.0:
+                conviction = min(conviction * 1.2, 0.95)  # soft boost
 
         buy_notional = min(total_val * conviction, portfolio.cash * 0.95)
         qty = round(buy_notional / price, 4)
         if qty < 0.01:
             return {"action": "HOLD", "ticker": buy_ticker, "qty": 0,
                     "reasoning": f"ML score={best_score:.2f} but notional too small"}
-        scorer_note = f" scorer={scorer_pred:+.1f}%" if _get_decision_scorer().is_trained else ""
+        scorer_note = f" scorer={scorer_pred:+.1f}%" if _scorer.is_trained else ""
         return {
             "action": "BUY", "ticker": buy_ticker, "qty": qty,
             "stop_loss": round(price * 0.92, 2),
@@ -1752,6 +1756,7 @@ class BacktestEngine:
         Returns empty dict if DB is unavailable — callers fall back gracefully.
         """
         result: dict[str, list[dict]] = {}
+        conn = None
         try:
             import sqlite3 as _sqlite3, zlib as _zlib
             if not LOCAL_ARTICLES_DB.exists():
@@ -1767,7 +1772,6 @@ class BacktestEngine:
                 "AND (source IS NULL OR (source NOT LIKE 'backtest_%' "
                 "AND source NOT LIKE 'opus_annotation%'))"
             ).fetchall()
-            conn.close()
             for title, url, source, published, ai_score, kw_score, full_text in rows:
                 # Use published date if available, else skip (not useful for historical sim)
                 day_str = None
@@ -1797,6 +1801,12 @@ class BacktestEngine:
                   f"across {len(result)} days from local DB")
         except Exception as e:
             print(f"[local_news] DB load failed (using quant-only mode): {e}")
+        finally:
+            if conn is not None:
+                try:
+                    conn.close()
+                except Exception:
+                    pass
         return result
 
     def _sampled_days(self) -> list[date]:
@@ -1853,11 +1863,13 @@ class BacktestEngine:
                 av_tickers = ["NVDA", "SPY"]
             for a in self.av_news.fetch(list(dict.fromkeys(av_tickers))[:4], d):
                 url = a.get("url", "")
-                if url and url not in seen_urls:
+                if url and url in seen_urls:
+                    continue
+                if url:
                     seen_urls.add(url)
-                    score, tickers = score_article(a)
-                    articles.append({"title": a["title"], "url": url,
-                                     "score": score, "tickers": tickers})
+                score, tickers = score_article(a)
+                articles.append({"title": a["title"], "url": url,
+                                 "score": score, "tickers": tickers})
 
         # ── Tier 3: GDELT — only from existing disk cache, no outbound calls ──
         # Skip entirely if local DB already gave us articles (fast path).
@@ -2123,96 +2135,6 @@ class BacktestEngine:
             except Exception:
                 pass
         return articles
-
-    def _fetch_quant_signals(self, tickers: list[str], d: date) -> dict[str, dict]:
-        """Compute per-spec quant signals (RSI, MACD, BB, momentum, volume, 52wk) at date `d`.
-
-        Reads daily closes from self.prices (PriceCache). Falls back to yfinance
-        for volume series. Each ticker is wrapped in try/except — a failure on
-        one ticker never aborts the loop. Returns a dict keyed by ticker with
-        rounded numeric fields:
-            rsi, macd_signal, bb_position, mom_5d, mom_20d, vol_ratio, wk52_pos
-        """
-        out: dict[str, dict] = {}
-        for t in tickers:
-            try:
-                pairs = _series_up_to(self.prices, t, d, max_points=300)
-                if len(pairs) < 30:
-                    continue
-                closes = [p[1] for p in pairs]
-                last = closes[-1]
-
-                # RSI-14
-                rsi_val = _rsi(closes, 14)
-
-                # MACD signal (signal line) — use signal line value, not the spread
-                macd_signal: float | None = None
-                if len(closes) >= 35:
-                    ema12 = _ema(closes, 12)
-                    ema26 = _ema(closes, 26)
-                    if ema12 and ema26:
-                        offset = len(ema12) - len(ema26)
-                        macd_line = [ema12[i + offset] - ema26[i] for i in range(len(ema26))]
-                        if len(macd_line) >= 9:
-                            sig = _ema(macd_line, 9)
-                            if sig:
-                                macd_signal = sig[-1]
-
-                # Bollinger Band position over 20 days
-                bb_position: float | None = None
-                if len(closes) >= 20:
-                    window = closes[-20:]
-                    sma20 = sum(window) / 20
-                    sd20 = _stdev(window)
-                    if sd20 > 0:
-                        raw = (last - sma20) / (2 * sd20)
-                        bb_position = max(-2.0, min(2.0, raw))
-
-                # 5- and 20-day momentum
-                mom_5d: float | None = None
-                if len(closes) >= 6 and closes[-6] > 0:
-                    mom_5d = (last - closes[-6]) / closes[-6] * 100
-                mom_20d: float | None = None
-                if len(closes) >= 21 and closes[-21] > 0:
-                    mom_20d = (last - closes[-21]) / closes[-21] * 100
-
-                # Volume ratio: today's vol / 20-day avg (excluding today)
-                vol_ratio: float | None = None
-                try:
-                    vols = _ensure_volume_for(t, START_DATE - timedelta(days=400), END_DATE)
-                    if vols:
-                        iso = d.isoformat()
-                        vdates = sorted(vd for vd in vols.keys() if vd <= iso)
-                        if len(vdates) >= 21:
-                            today_v = vols[vdates[-1]]
-                            prior20 = [vols[vd] for vd in vdates[-21:-1]]
-                            avg20 = sum(prior20) / len(prior20)
-                            if avg20 > 0:
-                                vol_ratio = today_v / avg20
-                except Exception:
-                    vol_ratio = None
-
-                # 52-week position: 0 (low) to 1 (high)
-                wk52_pos: float | None = None
-                window = closes[-252:] if len(closes) >= 252 else closes
-                hi = max(window)
-                lo = min(window)
-                if hi > lo:
-                    wk52_pos = (last - lo) / (hi - lo)
-
-                out[t] = {
-                    "rsi": round(rsi_val, 2) if rsi_val is not None else None,
-                    "macd_signal": round(macd_signal, 2) if macd_signal is not None else None,
-                    "bb_position": round(bb_position, 2) if bb_position is not None else None,
-                    "mom_5d": round(mom_5d, 2) if mom_5d is not None else None,
-                    "mom_20d": round(mom_20d, 2) if mom_20d is not None else None,
-                    "vol_ratio": round(vol_ratio, 2) if vol_ratio is not None else None,
-                    "wk52_pos": round(wk52_pos, 2) if wk52_pos is not None else None,
-                }
-            except Exception as e:
-                print(f"[quant_v2] {t} failed at {d}: {e}")
-                continue
-        return out
 
     def run_all(self, n: int = 10, start_run_id: int = 1) -> list[BacktestRun]:
         import traceback
