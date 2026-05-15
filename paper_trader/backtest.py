@@ -43,7 +43,8 @@ MAX_DECISIONS_PER_DAY = 10     # intraday loop: up to N ml_decide calls per trad
 GDELT_RATE_LIMIT_S = 5.5       # GDELT actual limit is ~1 req/5s; use 5.5 for safety
 GDELT_MAX_RECORDS = 100
 GDELT_RETRY_BACKOFF_S = 20.0  # reduced; 30s was too conservative
-GDELT_WARM_WORKERS = 3        # parallel workers for cache pre-warming
+GDELT_WARM_WORKERS = 1        # single worker — parallel workers share rate-limit lock and deadlock
+GDELT_MAX_WARM_REQUESTS = 150  # cap per warm cycle — full window warming takes hours; not worth it
 OPUS_TIMEOUT_S = 150
 # Global semaphore: caps concurrent claude CLI subprocesses to prevent OOM kills.
 # 10 parallel runs × ~1.5 GB/process = OOM on 14 GB RAM. Cap at 3 concurrent.
@@ -2270,27 +2271,26 @@ class BacktestEngine:
         if not uncached:
             print(f"[cache_warm] all {len(combos)} combos already cached — skipping")
             return
-        print(f"[cache_warm] warming {len(uncached)}/{len(combos)} date×keyword combos "
-              f"with {GDELT_WARM_WORKERS} workers …")
-        from concurrent.futures import ThreadPoolExecutor, as_completed
-        import random as _rnd
 
-        def _warm_one(args):
-            d, kw = args
-            try:
-                time.sleep(_rnd.uniform(0, 1.0))  # jitter to stagger workers
-                self.gdelt.fetch(d, kw)
-            except Exception:
-                pass
+        # Cap warming to avoid multi-hour blocking: sample the most recent uncached dates
+        # first (most likely to appear in tier-3 lookups) up to the budget limit.
+        import random as _rnd
+        _rnd.shuffle(uncached)  # randomize so different windows get variety
+        budget = min(len(uncached), GDELT_MAX_WARM_REQUESTS)
+        uncached = uncached[:budget]
+        print(f"[cache_warm] warming {budget} (of {len(combos)} total) combos — "
+              f"sequential, 1 req/{GDELT_RATE_LIMIT_S}s")
 
         done = 0
-        with ThreadPoolExecutor(max_workers=GDELT_WARM_WORKERS) as pool:
-            futs = {pool.submit(_warm_one, c): c for c in uncached}
-            for fut in as_completed(futs):
+        for d, kw in uncached:
+            try:
+                self.gdelt.fetch(d, kw)
                 done += 1
                 if done % 20 == 0:
-                    print(f"[cache_warm] {done}/{len(uncached)} warmed")
-        print(f"[cache_warm] done — {len(uncached)} new entries cached")
+                    print(f"[cache_warm] {done}/{budget} warmed")
+            except Exception:
+                pass
+        print(f"[cache_warm] done — {done}/{budget} new entries cached")
 
     def _fetch_yf_news(self, tickers: list[str], sim_date: date) -> list[dict]:
         """Supplement GDELT with yfinance ticker news. No rate limits, no API key.
