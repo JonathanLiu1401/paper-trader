@@ -440,9 +440,13 @@ class BacktestStore:
             self.conn.commit()
 
     def all_runs(self) -> list[dict]:
-        rows = self.conn.execute(
-            "SELECT * FROM backtest_runs ORDER BY run_id ASC"
-        ).fetchall()
+        # Serialise through the lock like every other method — the connection
+        # is shared (check_same_thread=False) and an unlocked read interleaved
+        # with a run thread's write corrupts cursor state.
+        with self._lock:
+            rows = self.conn.execute(
+                "SELECT * FROM backtest_runs ORDER BY run_id ASC"
+            ).fetchall()
         out = []
         for r in rows:
             d = dict(r)
@@ -454,24 +458,28 @@ class BacktestStore:
         return out
 
     def run_detail(self, run_id: int) -> dict | None:
-        row = self.conn.execute(
-            "SELECT * FROM backtest_runs WHERE run_id=?", (run_id,)
-        ).fetchone()
-        if not row:
-            return None
+        # All three reads under one lock — the shared connection is used by
+        # concurrent run threads, so interleaved execute() calls would corrupt
+        # cursor state and mix rows between queries.
+        with self._lock:
+            row = self.conn.execute(
+                "SELECT * FROM backtest_runs WHERE run_id=?", (run_id,)
+            ).fetchone()
+            if not row:
+                return None
+            trades = self.conn.execute(
+                "SELECT * FROM backtest_trades WHERE run_id=? ORDER BY sim_date ASC, id ASC",
+                (run_id,),
+            ).fetchall()
+            decisions = self.conn.execute(
+                "SELECT * FROM backtest_decisions WHERE run_id=? ORDER BY sim_date ASC, id ASC",
+                (run_id,),
+            ).fetchall()
         d = dict(row)
         try:
             d["equity_curve"] = json.loads(d.pop("equity_curve_json") or "[]")
         except Exception:
             d["equity_curve"] = []
-        trades = self.conn.execute(
-            "SELECT * FROM backtest_trades WHERE run_id=? ORDER BY sim_date ASC, id ASC",
-            (run_id,),
-        ).fetchall()
-        decisions = self.conn.execute(
-            "SELECT * FROM backtest_decisions WHERE run_id=? ORDER BY sim_date ASC, id ASC",
-            (run_id,),
-        ).fetchall()
         d["trades"] = [dict(t) for t in trades]
         d["decisions"] = [dict(x) for x in decisions]
         return d
@@ -736,18 +744,10 @@ def _compute_technical_indicators(ticker: str, sim_date: date,
     macd_res = _macd(closes)
     macd_label = macd_res[0] if macd_res else None
 
-    # MACD signal-line value (numeric) — used by _ml_decide and the scorer
-    macd_signal_val: float | None = None
-    if len(closes) >= 35:
-        ema12 = _ema(closes, 12)
-        ema26 = _ema(closes, 26)
-        if ema12 and ema26:
-            offset = len(ema12) - len(ema26)
-            macd_line = [ema12[i + offset] - ema26[i] for i in range(len(ema26))]
-            if len(macd_line) >= 9:
-                sig = _ema(macd_line, 9)
-                if sig:
-                    macd_signal_val = sig[-1]
+    # MACD signal-line value (numeric) — used by _ml_decide and the scorer.
+    # _macd() already computes and returns it as element [2]; reuse it instead
+    # of recomputing the full EMA chain.
+    macd_signal_val: float | None = macd_res[2] if macd_res else None
 
     ma_cross = None
     if len(closes) >= 200:
@@ -1996,7 +1996,6 @@ class BacktestEngine:
         n_trades = 0
         n_decisions = 0
         prev_sample = self.prices.trading_days[0] - timedelta(days=1)
-        last_curve_day: date | None = None
 
         sampled = self._sampled_days()
         if sampled and sampled[-1] != self.prices.trading_days[-1]:
@@ -2056,7 +2055,6 @@ class BacktestEngine:
                 "value": round(total, 2),
                 "cash": round(portfolio.cash, 2),
             })
-            last_curve_day = sim_date
             if idx % 5 == 0 or idx == len(sampled) - 1:
                 try:
                     self.store.update_partial_progress(
@@ -2229,25 +2227,6 @@ class BacktestEngine:
 
     def _send_final(self, results: list[BacktestRun], spy: float) -> None:
         pass  # silent — check dashboard at :8090/backtests
-
-    def _discord(self, message: str) -> bool:
-        if not shutil.which("openclaw"):
-            print(f"[discord] (no openclaw) {message}")
-            return False
-        try:
-            r = subprocess.run(
-                ["openclaw", "message", "send", "--channel", "discord",
-                 "--target", "channel:1496099475838603324", "--message", message],
-                capture_output=True, text=True, timeout=60,
-            )
-            if r.returncode != 0:
-                print(f"[discord] failed: {r.stderr.strip()[:200]}")
-                return False
-            print(f"[discord] sent: {message[:100]}")
-            return True
-        except Exception as e:
-            print(f"[discord] exception: {e}")
-            return False
 
 
 if __name__ == "__main__":

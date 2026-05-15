@@ -18,6 +18,23 @@ DAILY_CLOSE_HOUR_NY = 16    # report after 16:00 NY
 
 
 _daily_close_sent_for: str | None = None
+_last_hourly: datetime | None = None
+
+
+def _maybe_hourly():
+    global _last_hourly
+    now = datetime.now(timezone.utc)
+    if _last_hourly is not None and (now - _last_hourly).total_seconds() < 3600:
+        return
+    try:
+        # Only advance _last_hourly on success — a transient openclaw failure
+        # then retries next cycle instead of silently skipping the hour.
+        if reporter.send_hourly_summary():
+            _last_hourly = now
+        else:
+            print("[runner] hourly send returned False, will retry next cycle")
+    except Exception as e:
+        print(f"[runner] hourly send failed: {e}")
 
 
 def _maybe_daily_close():
@@ -68,10 +85,14 @@ def _cycle():
 
 
 def main():
+    global _last_hourly
     print("[runner] starting paper trader")
     store = get_store()
     pf = store.get_portfolio()
     print(f"[runner] portfolio: cash=${pf['cash']:.2f} total=${pf['total_value']:.2f}")
+    # Anchor the hourly clock to boot so the first summary lands ~1h in,
+    # rather than firing immediately alongside the online ping.
+    _last_hourly = datetime.now(timezone.utc)
     _start_dashboard()
     try:
         reporter._send("**PAPER TRADER ONLINE** ◈ engine booted, decision loop starting")
@@ -85,6 +106,7 @@ def main():
             print("[runner] cycle exception:")
             traceback.print_exc()
 
+        _maybe_hourly()
         _maybe_daily_close()
 
         market_open = market.is_market_open()

@@ -484,7 +484,13 @@ def _execute(decision: dict, snapshot: dict, store: Store) -> tuple[str, str]:
         return "HOLD", "REBALANCE not yet implemented; treated as HOLD"
 
     ticker = (decision.get("ticker") or "").upper()
-    qty = float(decision.get("qty") or 0)
+    # Claude can emit a non-numeric qty (e.g. "all", "half"). Coerce defensively
+    # so a bad field yields a recorded BLOCKED decision instead of an uncaught
+    # ValueError that aborts the whole cycle with no decision/equity point logged.
+    try:
+        qty = float(decision.get("qty") or 0)
+    except (TypeError, ValueError):
+        return "BLOCKED", f"qty not numeric: {decision.get('qty')!r}"
     reason = decision.get("reasoning", "")
 
     ok, why = _enforce_risk_pre_trade(decision, snapshot)

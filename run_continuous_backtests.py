@@ -57,9 +57,13 @@ def _now() -> str:
 
 
 def _next_run_id(engine: BacktestEngine) -> int:
-    row = engine.store.conn.execute(
-        "SELECT COALESCE(MAX(run_id), 0) FROM backtest_runs"
-    ).fetchone()
+    # Serialise through the store lock — a background _opus_annotate thread from
+    # the previous cycle may still be using the same sqlite3 connection, and
+    # concurrent use of one connection across threads corrupts cursor state.
+    with engine.store._lock:
+        row = engine.store.conn.execute(
+            "SELECT COALESCE(MAX(run_id), 0) FROM backtest_runs"
+        ).fetchone()
     return int(row[0]) + 1
 
 
@@ -104,12 +108,15 @@ def _append_top_decisions(engine: BacktestEngine, top_runs: list[BacktestRun],
         for run in top_runs:
             weight = 0.5 + 0.5 * (run.total_return_pct - min_ret) / span
             try:
-                rows = engine.store.conn.execute(
-                    "SELECT action, ticker, sim_date, reasoning, qty, confidence "
-                    "FROM backtest_decisions "
-                    "WHERE run_id = ? AND action IS NOT NULL AND action != 'HOLD'",
-                    (run.run_id,),
-                ).fetchall()
+                # Hold the store lock — the background _opus_annotate thread
+                # may share this sqlite3 connection across threads.
+                with engine.store._lock:
+                    rows = engine.store.conn.execute(
+                        "SELECT action, ticker, sim_date, reasoning, qty, confidence "
+                        "FROM backtest_decisions "
+                        "WHERE run_id = ? AND action IS NOT NULL AND action != 'HOLD'",
+                        (run.run_id,),
+                    ).fetchall()
             except Exception as e:
                 print(f"[continuous] run {run.run_id} read failed: {e}")
                 continue
@@ -170,13 +177,16 @@ def _compute_decision_outcomes(engine: "BacktestEngine",
 
     for run in top_runs:
         try:
-            rows = engine.store.conn.execute(
-                "SELECT action, ticker, sim_date, reasoning "
-                "FROM backtest_decisions "
-                "WHERE run_id=? AND action IN ('BUY','SELL') "
-                "AND ticker IS NOT NULL AND ticker != ''",
-                (run.run_id,),
-            ).fetchall()
+            # Hold the store lock — the background _opus_annotate thread may
+            # share this sqlite3 connection across threads.
+            with engine.store._lock:
+                rows = engine.store.conn.execute(
+                    "SELECT action, ticker, sim_date, reasoning "
+                    "FROM backtest_decisions "
+                    "WHERE run_id=? AND action IN ('BUY','SELL') "
+                    "AND ticker IS NOT NULL AND ticker != ''",
+                    (run.run_id,),
+                ).fetchall()
         except Exception as exc:
             print(f"[outcomes] run {run.run_id} read failed: {exc}")
             continue
@@ -297,6 +307,23 @@ def _train_decision_scorer(outcome_records: list[dict]) -> str:
         return f"scorer err: {exc}"
 
 
+def _parse_published_date(published) -> date | None:
+    """Parse a `published` value (ISO or RFC822) into a date; None if unparseable."""
+    if not published:
+        return None
+    try:
+        from email.utils import parsedate_to_datetime
+        dt = parsedate_to_datetime(published)
+        if dt is not None:
+            return dt.date()
+    except Exception:
+        pass
+    try:
+        return date.fromisoformat(str(published)[:10])
+    except Exception:
+        return None
+
+
 def _query_news_context(ticker: str, sim_date_str: str, n: int = 4) -> list[str]:
     """Fetch recent article titles from digital-intern DB near sim_date for ticker."""
     DB = ROOT.parent / "digital-intern" / "data" / "articles.db"
@@ -306,22 +333,27 @@ def _query_news_context(ticker: str, sim_date_str: str, n: int = 4) -> list[str]
         d = date.fromisoformat(sim_date_str)
     except ValueError:
         return []
-    lo = (d - timedelta(days=3)).isoformat()
-    hi = (d + timedelta(days=1)).isoformat()
+    lo = d - timedelta(days=3)
+    hi = d + timedelta(days=1)
     conn = None
     try:
         conn = sqlite3.connect(f"file:{DB}?mode=ro", uri=True, timeout=5)
+        # `published` in articles.db is stored in mixed formats — ISO for some
+        # sources, RFC822 ("Wed, 14 May 2026 ...") for RSS. A SQL
+        # `published BETWEEN` range filter silently drops every RFC822 row
+        # (their leading weekday letter lex-sorts after any ISO date string),
+        # so it would have excluded most live news. Fetch a generous candidate
+        # set ordered by ai_score and apply the date window in Python after
+        # parsing each timestamp robustly.
         rows = conn.execute(
-            "SELECT title FROM articles "
+            "SELECT title, published FROM articles "
             "WHERE (title LIKE ? OR title LIKE ?) "
-            "AND published BETWEEN ? AND ? "
             "AND (url IS NULL OR url NOT LIKE 'backtest://%') "
             "AND (source IS NULL OR (source NOT LIKE 'backtest_%' "
             "AND source NOT LIKE 'opus_annotation%')) "
             "ORDER BY ai_score DESC LIMIT ?",
-            (f"%{ticker}%", f"%{ticker.lower()}%", lo, hi, n),
+            (f"%{ticker}%", f"%{ticker.lower()}%", max(n * 20, 40)),
         ).fetchall()
-        return [r[0] for r in rows if r[0]]
     except Exception:
         return []
     finally:
@@ -330,6 +362,20 @@ def _query_news_context(ticker: str, sim_date_str: str, n: int = 4) -> list[str]
                 conn.close()
             except Exception:
                 pass
+
+    out: list[str] = []
+    for title, published in rows:
+        if not title:
+            continue
+        pub_d = _parse_published_date(published)
+        # Drop rows that parse to a date outside the window; keep unparseable
+        # ones (can't prove they leak) so the context isn't emptied entirely.
+        if pub_d is not None and not (lo <= pub_d <= hi):
+            continue
+        out.append(title)
+        if len(out) >= n:
+            break
+    return out
 
 
 def _opus_annotate(engine: "BacktestEngine", top_runs: list[BacktestRun],
@@ -352,11 +398,16 @@ def _opus_annotate(engine: "BacktestEngine", top_runs: list[BacktestRun],
 
     winner = top_runs[0]
     try:
-        rows = engine.store.conn.execute(
-            "SELECT action, ticker, sim_date, reasoning, qty, total_value "
-            "FROM backtest_decisions WHERE run_id=? ORDER BY sim_date",
-            (winner.run_id,),
-        ).fetchall()
+        # This runs in a background thread that overlaps _trim_history and the
+        # next cycle's run threads — all writing through the SAME sqlite3
+        # connection. Concurrent use of one connection across threads corrupts
+        # cursor state, so serialise this read through the store lock.
+        with engine.store._lock:
+            rows = engine.store.conn.execute(
+                "SELECT action, ticker, sim_date, reasoning, qty, total_value "
+                "FROM backtest_decisions WHERE run_id=? ORDER BY sim_date",
+                (winner.run_id,),
+            ).fetchall()
     except Exception as e:
         print(f"[opus_annotate] DB read failed: {e}")
         return 0
@@ -537,9 +588,14 @@ def _inject_and_train() -> str:
     # in articles.db (INSERT OR IGNORE de-dups by id), so re-reading them every
     # cycle wastes memory and IO as the file grows without bound.
     _MAX_INJECT_RECORDS = 10000
+    # winner_training.jsonl accumulates forever; read_text() would pull the whole
+    # (eventually multi-hundred-MB) file into memory every cycle. Stream it line
+    # by line through a bounded deque so peak memory is capped at the tail we use.
     try:
-        lines = WINNER_JSONL.read_text().splitlines()
-        recent = [l for l in lines if l.strip()][-_MAX_INJECT_RECORDS:]
+        from collections import deque
+        with WINNER_JSONL.open("r") as _fh:
+            recent = list(deque((ln for ln in _fh if ln.strip()),
+                                maxlen=_MAX_INJECT_RECORDS))
     except Exception as e:
         return f"jsonl read err: {e}"
     # Per-line parse so a single corrupt line doesn't drop the whole batch
@@ -676,13 +732,22 @@ Be concise. Only output the labeled lines, no intro text."""
         annotation_text = resp.content[0].text.strip()
         print(f"[continuous] LLM annotation cycle {cycle}:\n{annotation_text}")
 
+        # The LLM only reviewed trades from the best and worst runs (see the
+        # prompt above). Restrict label application to those two run_ids —
+        # matching on (ticker, action) alone would leak a verdict derived from
+        # one run's trade onto identically-named trades in the three unreviewed
+        # middle runs, corrupting their training sample weights.
+        allowed_run_ids = {winner.run_id, loser.run_id}
         for line in annotation_text.splitlines():
-            m = re.match(r"(\w[\w\-]+)\s+(BUY|SELL|HOLD)[:\s]+(ENDORSE|CONDEMN)", line.upper())
+            # [\w\-]* (not +) so single-letter tickers like V are not dropped.
+            m = re.match(r"(\w[\w\-]*)\s+(BUY|SELL|HOLD)[:\s]+(ENDORSE|CONDEMN)", line.upper())
             if not m:
                 continue
             ticker, action, verdict = m.group(1), m.group(2), m.group(3)
             label = 1 if verdict == "ENDORSE" else -1
             for r in outcome_records:
+                if r.get("run_id") not in allowed_run_ids:
+                    continue
                 if (str(r.get("ticker", "")).upper() == ticker and
                         str(r.get("action", "")).upper() == action):
                     r["llm_quality_label"] = label
@@ -736,7 +801,6 @@ def main() -> None:
             traceback.print_exc()
 
         winner = None
-        spy_pct = 0.0
         top_runs: list[BacktestRun] = []
         if results:
             sorted_results = sorted(results, key=lambda r: r.total_return_pct, reverse=True)
@@ -746,7 +810,6 @@ def main() -> None:
             if not top_runs:
                 top_runs = sorted_results[:1]  # always train on best even if negative
             winner = top_runs[0]
-            spy_pct = winner.spy_return_pct
             try:
                 _append_top_decisions(engine, top_runs, cycle)
             except Exception as e:
@@ -800,7 +863,13 @@ def main() -> None:
                 # ever sees the tail anyway.
                 if len(all_lines) > MAX_OUTCOMES_FOR_TRAINING * 2:
                     kept = all_lines[-MAX_OUTCOMES_FOR_TRAINING:]
-                    _all_outcomes_path.write_text("\n".join(kept) + "\n")
+                    # Atomic rewrite: a torn write (process killed mid-truncate)
+                    # would corrupt or empty the accumulated outcomes file —
+                    # permanently losing the scorer's training history. Write to
+                    # a temp file then atomically replace.
+                    _tmp = _all_outcomes_path.with_suffix(".jsonl.tmp")
+                    _tmp.write_text("\n".join(kept) + "\n")
+                    _tmp.replace(_all_outcomes_path)
                     print(f"[continuous] trimmed outcomes file "
                           f"{len(all_lines)} → {len(kept)} lines")
                     all_lines = kept

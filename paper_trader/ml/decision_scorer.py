@@ -185,18 +185,33 @@ def train_scorer(records: list[dict]) -> dict:
     model learns "goodness of THIS action"), return_pct (overall backtest run
     quality, used to weight samples). Returns stats dict.
     """
-    if len(records) < 30:
-        return {"status": "insufficient_data", "n": len(records)}
+    if not records:
+        return {"status": "insufficient_data", "n": 0}
 
-    # Deduplicate by (ticker, sim_date) — same market decision appearing across
-    # multiple runs has identical features/label; keep the highest-return-run copy.
+    # Deduplicate identical decisions seen across multiple runs (same features,
+    # same label) so they don't dominate training — keep the highest-return-run
+    # copy. The key MUST include action: build_features ignores action, and the
+    # SELL branch below flips the target sign, so a BUY and a SELL of the same
+    # ticker on the same day share features but carry OPPOSITE labels. Keying on
+    # (ticker, sim_date) alone silently discarded one of the pair — and with
+    # opposing personas (momentum vs contrarian) trading the same names, that
+    # collision is hit constantly.
     seen: dict[tuple, dict] = {}
     for r in records:
-        key = (str(r.get("ticker") or ""), str(r.get("sim_date") or ""))
+        key = (
+            str(r.get("ticker") or ""),
+            str(r.get("sim_date") or ""),
+            str(r.get("action") or "BUY").upper(),
+        )
         rp = _to_float(r.get("return_pct"), 0.0)
         if key not in seen or rp > _to_float(seen[key].get("return_pct"), 0.0):
             seen[key] = r
     records = list(seen.values())
+
+    # Length gate applied AFTER dedup — dedup can shrink the set well below the
+    # raw input count, and the model needs a real minimum of distinct samples.
+    if len(records) < 30:
+        return {"status": "insufficient_after_dedup", "n": len(records)}
 
     X_raw, y, weights = [], [], []
     for r in records:
@@ -225,7 +240,8 @@ def train_scorer(records: list[dict]) -> dict:
         # +200% run → 2.0×, 0% → 1.0×, -100%+ → 0.5×.
         rp = _to_float(r.get("return_pct"), 0.0)
         # LLM annotation multiplier: endorsed → 3x signal, condemned → 0.1x
-        llm_label = int(r.get("llm_quality_label", 0))
+        # `or 0` guards against an explicit JSON null in the record.
+        llm_label = int(r.get("llm_quality_label") or 0)
         llm_mult = {1: 3.0, -1: 0.1, 0: 1.0}.get(llm_label, 1.0)
         weights.append(max(0.5, min(2.0, 1.0 + rp / 200.0)) * llm_mult)
 
@@ -238,11 +254,16 @@ def train_scorer(records: list[dict]) -> dict:
         from sklearn.preprocessing import StandardScaler
         from sklearn.model_selection import train_test_split
 
+        # Split BEFORE scaling. Fitting StandardScaler on the full set leaks
+        # validation-fold statistics into the reported val_rmse. Fit on the
+        # training fold only; the model is itself trained on that fold, so the
+        # pickled scaler stays consistent with the model at inference.
         scaler = StandardScaler()
-        X_s = scaler.fit_transform(X)
-        X_tr, X_v, y_tr, y_v, w_tr, _ = train_test_split(
-            X_s, y, weights, test_size=0.2, random_state=42
+        X_tr_raw, X_v_raw, y_tr, y_v, w_tr, _ = train_test_split(
+            X, y, weights, test_size=0.2, random_state=42
         )
+        X_tr = scaler.fit_transform(X_tr_raw)
+        X_v = scaler.transform(X_v_raw)
         # MLPRegressor.fit doesn't accept sample_weight — emulate by deterministic
         # oversampling: weight 0.5→1× replica, 1.0→2×, 1.5→3×, 2.0→4×. Done
         # only on the training fold so val_rmse stays clean.
@@ -275,7 +296,12 @@ def train_scorer(records: list[dict]) -> dict:
         val_rmse = float("nan")
 
     SCORER_PATH.parent.mkdir(parents=True, exist_ok=True)
-    with SCORER_PATH.open("wb") as f:
+    # Atomic write: a torn pickle (process killed mid-write, or a backtest
+    # thread loading the file concurrently) would leave DecisionScorer
+    # permanently untrained. Write to a temp file then atomically replace.
+    _tmp = SCORER_PATH.with_suffix(".pkl.tmp")
+    with _tmp.open("wb") as f:
         pickle.dump({"model": model, "scaler": scaler, "n_train": len(records)}, f)
+    _tmp.replace(SCORER_PATH)
 
     return {"status": "ok", "n": len(records), "val_rmse": val_rmse}

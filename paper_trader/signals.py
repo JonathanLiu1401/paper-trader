@@ -172,7 +172,9 @@ def get_urgent_articles(minutes: int = 30) -> list[dict]:
             "id": r["id"],
             "title": r["title"],
             "source": r["source"],
-            "ai_score": r["ai_score"],
+            # urgent rows are not score-filtered, so ai_score may be NULL —
+            # coerce to 0.0 so downstream `f"{ai_score:.1f}"` formatting is safe.
+            "ai_score": r["ai_score"] or 0.0,
             "urgency": r["urgency"],
             "first_seen": r["first_seen"],
             "summary": summary[:300],

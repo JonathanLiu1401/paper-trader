@@ -85,12 +85,12 @@ def _portfolio_lines(positions: list[dict]) -> list[str]:
         if p["type"] in ("call", "put"):
             lines.append(
                 f"  {p['ticker']} {p['type'].upper()}{p['strike']} {p['expiry']}  "
-                f"qty {p['qty']}  P/L ${p.get('unrealized_pl',0):+.2f}"
+                f"qty {p['qty']}  P/L ${(p.get('unrealized_pl') or 0):+.2f}"
             )
         else:
             lines.append(
                 f"  {p['ticker']:<6} qty {p['qty']:<8} avg ${p['avg_cost']:.2f} "
-                f"now ${p.get('current_price',0):.2f}  P/L ${p.get('unrealized_pl',0):+.2f}"
+                f"now ${(p.get('current_price') or 0):.2f}  P/L ${(p.get('unrealized_pl') or 0):+.2f}"
             )
     return lines
 
