@@ -52,6 +52,15 @@ COOLDOWN_SECONDS = 60
 DISCORD_CHANNEL = "channel:1496099475838603324"
 WINNER_JSONL = ROOT / "data" / "winner_training.jsonl"
 
+# How often to run the validation suite (label audit + permutation test) on the
+# current cycle's engine. Validation is *expensive* (one full backtest per
+# permutation × ~5 perms = ~25 min total), so it runs in a background thread —
+# every 10 cycles is enough to catch regressions without dominating compute.
+VALIDATION_EVERY_N_CYCLES = 10
+VALIDATION_PERMUTATIONS = 5     # background-thread budget — keep this low
+VALIDATION_RESULTS_PATH = ROOT / "data" / "validation_results.json"
+VALIDATION_RESULTS_KEEP = 50    # cap file growth
+
 EARLIEST_WINDOW_START = date(1996, 1, 1)
 WINDOW_END_BUFFER_DAYS = 180  # never end a window within 6 months of today
 MIN_WINDOW_YEARS = 1
@@ -327,15 +336,39 @@ def _compute_decision_outcomes(engine: "BacktestEngine",
 
 
 def _train_decision_scorer(outcome_records: list[dict]) -> str:
-    """Train DecisionScorer on outcome records. Returns a short status string."""
+    """Train DecisionScorer on the historical 80% of outcomes; report OOS RMSE
+    on the most recent 20% (true temporal holdout — never seen during training).
+
+    `train_scorer`'s built-in val_rmse uses a *random* 80/20 split which leaks
+    future information into validation when records span time. The temporal
+    split here is the trustworthy generalization metric.
+    """
     if not outcome_records:
         return "no outcome records"
     try:
-        from paper_trader.ml.decision_scorer import train_scorer
-        result = train_scorer(outcome_records)
-        rmse = result.get("val_rmse", float("nan"))
-        rmse_s = f"{rmse:.2f}" if rmse == rmse else "n/a"
-        return f"scorer {result['status']} n={result['n']} rmse={rmse_s}"
+        from paper_trader.ml.decision_scorer import train_scorer, DecisionScorer
+        from paper_trader.validation import (
+            split_outcomes_temporal, evaluate_scorer_oos,
+        )
+        train_records, oos_records = split_outcomes_temporal(
+            outcome_records, oos_fraction=0.2
+        )
+        result = train_scorer(train_records)
+        val_rmse = result.get("val_rmse", float("nan"))
+        val_s = f"{val_rmse:.2f}" if val_rmse == val_rmse else "n/a"
+
+        oos_rmse_s = "n/a"
+        if result.get("status") == "ok" and oos_records:
+            # Re-load the freshly pickled model from disk so OOS predictions
+            # use the exact serialized state (catches any save/load bugs).
+            scorer = DecisionScorer()
+            oos = evaluate_scorer_oos(scorer, oos_records)
+            r = oos.get("rmse")
+            if r is not None and r == r:
+                oos_rmse_s = f"{r:.2f}"
+
+        return (f"scorer {result['status']} train_n={result['n']} "
+                f"val_rmse={val_s} oos_n={len(oos_records)} oos_rmse={oos_rmse_s}")
     except Exception as exc:
         return f"scorer err: {exc}"
 
@@ -791,6 +824,113 @@ Be concise. Only output the labeled lines, no intro text."""
     return outcome_records
 
 
+def _post_discord(message: str) -> None:
+    """Best-effort Discord post via openclaw. Silent on failure — never raise."""
+    if not shutil.which("openclaw"):
+        return
+    try:
+        subprocess.run(
+            ["openclaw", "message", "send",
+             "--channel", "discord",
+             "--target", DISCORD_CHANNEL,
+             "--message", message],
+            capture_output=True, timeout=20,
+        )
+    except Exception as e:
+        print(f"[discord] post failed: {e}")
+
+
+def _run_validation_async(engine, cycle: int, win_start: date, win_end: date,
+                          articles_db: str | None) -> None:
+    """Run the full validation suite (label audit + permutation test) and
+    persist results to ``data/validation_results.json``.
+
+    Designed to be invoked from a background daemon thread — a permutation
+    test runs ``VALIDATION_PERMUTATIONS`` full backtests serially, which can
+    take 20+ minutes. Running this synchronously would block the next
+    backtest cycle indefinitely.
+
+    The function never raises — every step has a best-effort try/except so
+    a validation failure cannot kill the loop.
+    """
+    print(f"[validation] cycle {cycle} starting (this runs in background)")
+    out: dict = {
+        "cycle": cycle,
+        "timestamp": _now(),
+        "window": f"{win_start}→{win_end}",
+        "permutation_test": None,
+        "label_audit": None,
+    }
+
+    # 1. Label contamination audit — fast, just SQL.
+    try:
+        from paper_trader.validation import audit_label_contamination
+        if articles_db:
+            audit = audit_label_contamination(articles_db, win_start, win_end)
+            out["label_audit"] = audit
+            if audit.get("contamination_rate", 0.0) > 0.5:
+                _post_discord(
+                    f"WARN: high label contamination "
+                    f"({audit['contamination_rate']:.0%}) "
+                    f"in window {win_start}→{win_end}. "
+                    f"Backtest returns may be inflated."
+                )
+    except Exception as e:
+        out["label_audit"] = {"error": str(e)}
+
+    # 2. Permutation test — slow.
+    try:
+        from paper_trader.validation import run_permutation_test
+        import tempfile
+        with tempfile.TemporaryDirectory(prefix="perm_cycle_") as tmp:
+            perm = run_permutation_test(
+                engine,
+                seed=cycle,
+                n_permutations=VALIDATION_PERMUTATIONS,
+                isolated_db_path=Path(tmp) / "perm.db",
+            )
+        out["permutation_test"] = perm
+        v = perm.get("verdict")
+        if v == "WORSE_THAN_RANDOM":
+            _post_discord(
+                f"ALERT: permutation test cycle {cycle} — strategy WORSE than "
+                f"random signal ordering "
+                f"(p={perm.get('p_value', 0):.2f}, "
+                f"z={perm.get('z_score', 0):.2f}). "
+                f"Signals may not carry real predictive value."
+            )
+        elif v == "SIGNIFICANT":
+            _post_discord(
+                f"OK: permutation test cycle {cycle} PASSED — "
+                f"p={perm.get('p_value', 0):.3f}, "
+                f"z={perm.get('z_score', 0):.1f}. "
+                f"Signal time-ordering carries real value."
+            )
+    except Exception as e:
+        out["permutation_test"] = {"error": str(e)}
+
+    # 3. Persist (capped tail).
+    try:
+        VALIDATION_RESULTS_PATH.parent.mkdir(parents=True, exist_ok=True)
+        existing: list = []
+        if VALIDATION_RESULTS_PATH.exists():
+            try:
+                existing = json.loads(VALIDATION_RESULTS_PATH.read_text())
+                if not isinstance(existing, list):
+                    existing = []
+            except Exception:
+                existing = []
+        existing.append(out)
+        existing = existing[-VALIDATION_RESULTS_KEEP:]
+        # Atomic write — torn JSON would break the dashboard's /api/validation.
+        tmp_p = VALIDATION_RESULTS_PATH.with_suffix(".json.tmp")
+        tmp_p.write_text(json.dumps(existing, indent=2))
+        tmp_p.replace(VALIDATION_RESULTS_PATH)
+        print(f"[validation] cycle {cycle} done — wrote {len(existing)} entries")
+    except Exception as e:
+        print(f"[validation] persist failed: {e}")
+
+
 _STOP = False
 
 
@@ -968,6 +1108,11 @@ def main() -> None:
 
         # Backtest results are silent — check the dashboard at :8090
 
+        # IMPORTANT: trim history BEFORE dispatching validation. The
+        # validation thread mutates `engine.store` (swaps in an isolated
+        # store for permutation runs), so anything that operates on the
+        # real backtest.db via `engine.store` must run first. Validation
+        # is the *last* thing scheduled on `engine` per cycle.
         try:
             deleted = _trim_history(engine, keep=KEEP_LAST_RUNS)
             if deleted:
@@ -975,6 +1120,27 @@ def main() -> None:
                       f"(keeping last {KEEP_LAST_RUNS})")
         except Exception as e:
             print(f"[continuous] trim failed: {e}")
+
+        # Validation suite — runs in a background thread so the next cycle
+        # isn't blocked by the ~25-min permutation test. Must be the LAST
+        # thing scheduled on `engine` because the validation function
+        # mutates `engine.store` (swaps in an isolated store for permutation
+        # runs); any subsequent code reading `engine.store` would silently
+        # read the empty isolated DB.
+        if cycle % VALIDATION_EVERY_N_CYCLES == 0:
+            try:
+                from paper_trader.backtest import LOCAL_ARTICLES_DB
+                articles_db = (str(LOCAL_ARTICLES_DB)
+                               if LOCAL_ARTICLES_DB.exists() else None)
+                import threading as _threading
+                _threading.Thread(
+                    target=_run_validation_async,
+                    args=(engine, cycle, win_start, win_end, articles_db),
+                    daemon=True, name=f"validation-{cycle}",
+                ).start()
+                print(f"[continuous] validation cycle {cycle} dispatched (background)")
+            except Exception as e:
+                print(f"[continuous] validation dispatch failed: {e}")
 
         elapsed = time.time() - t0
         if winner:

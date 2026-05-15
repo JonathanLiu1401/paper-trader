@@ -1,6 +1,7 @@
 """Flask dashboard at :8090 — portfolio chart, trade log, positions, decisions, backtests."""
 from __future__ import annotations
 
+import json
 import re
 import sqlite3
 import zlib
@@ -838,6 +839,39 @@ TEMPLATE = r"""
           <h2 style="margin:0 0 4px;">Model progress — return by cycle</h2>
           <div style="color:#8b929d;font-size:12px;margin-bottom:10px;">Best / avg / worst return per cycle of 5 runs. Upward trend = model improving.</div>
           <div style="position:relative;height:220px;"><canvas id="mp-chart"></canvas></div>
+        </div>
+
+        <div class="card" id="validation-card" style="margin-bottom:14px;">
+          <h2 style="margin:0 0 4px;">Signal Integrity</h2>
+          <div style="color:#8b929d;font-size:12px;margin-bottom:14px;">
+            Permutation test + label contamination audit. Runs every 10 backtest cycles in the background.
+            <br>SIGNIFICANT (p&lt;0.05) means signal time-ordering carries real predictive value, not random noise.
+          </div>
+          <div style="display:flex;gap:24px;flex-wrap:wrap;">
+            <div style="min-width:220px;">
+              <div style="font-size:11px;color:var(--text-secondary);text-transform:uppercase;letter-spacing:0.05em;">Permutation Test</div>
+              <div id="val-perm-verdict" style="font-weight:600;font-size:18px;margin-top:4px;">—</div>
+              <div style="font-size:12px;color:var(--text-secondary);margin-top:2px;">
+                <span id="val-perm-pvalue">p=—</span> · <span id="val-perm-zscore">z=—</span>
+              </div>
+              <div id="val-perm-original" style="font-size:12px;margin-top:6px;"></div>
+              <div id="val-perm-shuffled" style="font-size:12px;color:var(--text-secondary);"></div>
+            </div>
+            <div style="min-width:220px;">
+              <div style="font-size:11px;color:var(--text-secondary);text-transform:uppercase;letter-spacing:0.05em;">Label Contamination</div>
+              <div id="val-contam-rate" style="font-weight:600;font-size:18px;margin-top:4px;">—</div>
+              <div style="font-size:12px;color:var(--text-secondary);margin-top:6px;">
+                High = Claude labels carry hindsight<br>(retroactively-collected articles)
+              </div>
+              <div id="val-contam-detail" style="font-size:12px;margin-top:6px;color:var(--text-secondary);"></div>
+            </div>
+            <div style="min-width:220px;">
+              <div style="font-size:11px;color:var(--text-secondary);text-transform:uppercase;letter-spacing:0.05em;">Last Validation</div>
+              <div id="val-last-cycle" style="font-weight:600;font-size:18px;margin-top:4px;">—</div>
+              <div id="val-last-window" style="font-size:12px;color:var(--text-secondary);margin-top:2px;"></div>
+              <div id="val-last-when" style="font-size:11px;color:var(--text-muted);margin-top:6px;"></div>
+            </div>
+          </div>
         </div>
 
         <div class="card" style="margin-bottom:14px;">
@@ -2442,6 +2476,60 @@ async function refreshScorerConfidence() {
   } catch (e) { console.error("scorer-confidence:", e); }
 }
 
+// ───────── Signal Integrity validation ─────────
+async function refreshValidation() {
+  try {
+    const r = await fetch(API_PREFIX + "/api/validation").then(r => r.json());
+    const results = (r && r.results) || [];
+    const latest = results[results.length - 1];
+    if (!latest) return;
+
+    const pv = latest.permutation_test || {};
+    const verdictColor = {
+      SIGNIFICANT: "#00c896",
+      INCONCLUSIVE: "#fbbf24",
+      WORSE_THAN_RANDOM: "#ff4455",
+      UNKNOWN: "#8b929d",
+    }[pv.verdict] || "#8b929d";
+    const verdictEl = document.getElementById("val-perm-verdict");
+    if (verdictEl) {
+      verdictEl.textContent = pv.verdict || "—";
+      verdictEl.style.color = verdictColor;
+    }
+    const setText = (id, t) => { const el = document.getElementById(id); if (el) el.textContent = t; };
+    setText("val-perm-pvalue", pv.p_value != null ? `p=${Number(pv.p_value).toFixed(3)}` : "p=—");
+    setText("val-perm-zscore", pv.z_score != null ? `z=${Number(pv.z_score).toFixed(2)}` : "z=—");
+    setText("val-perm-original",
+      pv.original_return != null ? `Strategy: ${Number(pv.original_return).toFixed(1)}%` : "");
+    setText("val-perm-shuffled",
+      pv.permuted_mean != null
+        ? `Shuffled mean: ${Number(pv.permuted_mean).toFixed(1)}%  (n=${pv.n_permutations || 0})`
+        : "");
+
+    const audit = latest.label_audit || {};
+    const rate = audit.contamination_rate;
+    const contamColor = rate == null ? "#8b929d"
+      : rate > 0.5 ? "#ff4455"
+      : rate > 0.2 ? "#fbbf24"
+      : "#00c896";
+    const contamEl = document.getElementById("val-contam-rate");
+    if (contamEl) {
+      contamEl.textContent = rate == null ? "—" : `${(rate * 100).toFixed(0)}%`;
+      contamEl.style.color = contamColor;
+    }
+    setText("val-contam-detail",
+      audit.total_articles != null
+        ? `${audit.contaminated_count}/${audit.total_articles} articles · verdict: ${audit.verdict || "—"}`
+        : "");
+
+    setText("val-last-cycle", latest.cycle != null ? `cycle ${latest.cycle}` : "—");
+    setText("val-last-window", latest.window || "");
+    setText("val-last-when", latest.timestamp || "");
+  } catch (e) {
+    console.error("validation:", e);
+  }
+}
+
 // ───────── boot ─────────
 refresh();
 refreshSignals();
@@ -2461,6 +2549,7 @@ refreshCalibration();
 refreshDecisionHealth();
 refreshScorerConfidence();
 refreshDataFeed();
+refreshValidation();
 setInterval(refresh, 15_000);
 setInterval(refreshSignals, 30_000);
 setInterval(refreshAnalytics, 30_000);
@@ -2479,6 +2568,7 @@ setInterval(refreshCalibration, 120_000);
 setInterval(refreshDecisionHealth, 60_000);
 setInterval(refreshScorerConfidence, 120_000);
 setInterval(refreshDataFeed, 60_000);
+setInterval(refreshValidation, 120_000);
 showTab(INITIAL_TAB || "trader");
 </script>
 </div><!-- /.page-content -->
@@ -4322,6 +4412,23 @@ def disagreement_api():
         })
     except Exception as e:
         return jsonify({"error": str(e), "rows": []}), 500
+
+
+@app.route("/api/validation")
+def validation_api():
+    """Signal Integrity validation results — permutation tests + label audits.
+
+    Backed by data/validation_results.json which is appended to by the
+    continuous loop's background validation runner. Returns the full history
+    (capped at 50 entries on the writer side); the dashboard renders the
+    most recent entry."""
+    p = Path(__file__).resolve().parent.parent / "data" / "validation_results.json"
+    if not p.exists():
+        return jsonify({"results": []})
+    try:
+        return jsonify({"results": json.loads(p.read_text())})
+    except Exception as e:
+        return jsonify({"results": [], "error": str(e)}), 500
 
 
 @app.route("/api/decision-health")

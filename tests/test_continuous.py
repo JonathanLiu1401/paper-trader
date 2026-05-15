@@ -290,3 +290,34 @@ class TestTrainDecisionScorer:
                                               "action": "BUY", "forward_return_5d": 1.0}])
         # 1 record → insufficient_after_dedup
         assert "insufficient" in status
+
+    def test_temporal_split_reports_oos_rmse(self):
+        # Happy path: enough distinct (ticker, sim_date, action) keys to clear
+        # train_scorer's >=30 dedup gate, plus enough range that the temporal
+        # 80/20 split leaves a non-empty OOS set the scorer is evaluated on.
+        import random as _rnd
+        rng = _rnd.Random(11)
+        records = []
+        for i in range(80):
+            month = 1 + (i % 12)
+            day = 1 + (i // 12)
+            records.append({
+                "ticker": "NVDA" if i % 2 == 0 else "AMD",
+                "sim_date": f"2024-{month:02d}-{day:02d}",
+                "action": "BUY",
+                "ml_score": rng.uniform(0, 5),
+                "rsi": rng.uniform(20, 80),
+                "macd": rng.uniform(-1, 1),
+                "mom5": rng.uniform(-3, 3),
+                "mom20": rng.uniform(-5, 5),
+                "regime_mult": 1.0,
+                "forward_return_5d": rng.uniform(-3, 3),
+                "return_pct": 10.0,
+            })
+        status = rcb._train_decision_scorer(records)
+        # Status string should report both train and OOS metrics.
+        assert "train_n=" in status
+        assert "oos_n=" in status
+        assert "oos_rmse=" in status
+        # OOS holdout must be non-empty (~20% of 80)
+        assert "oos_n=0" not in status

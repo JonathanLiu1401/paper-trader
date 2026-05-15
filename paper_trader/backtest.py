@@ -1849,25 +1849,42 @@ class BacktestEngine:
             # past decisions as future signals (training contamination). Mirrors
             # the live-only clause used by paper_trader/signals.py.
             rows = conn.execute(
-                "SELECT title, url, source, published, ai_score, kw_score, full_text, urgency "
+                "SELECT title, url, source, published, first_seen, ai_score, "
+                "kw_score, full_text, urgency "
                 "FROM articles WHERE title IS NOT NULL AND title != '' "
                 "AND (url IS NULL OR url NOT LIKE 'backtest://%') "
                 "AND (source IS NULL OR (source NOT LIKE 'backtest_%' "
                 "AND source NOT LIKE 'opus_annotation%'))"
             ).fetchall()
-            for title, url, source, published, ai_score, kw_score, full_text, urgency in rows:
-                # Use published date if available, else skip (not useful for historical sim)
-                day_str = None
-                if published:
-                    try:
-                        from email.utils import parsedate_to_datetime
-                        dt = parsedate_to_datetime(published)
-                        day_str = dt.date().isoformat()
-                    except Exception:
-                        if len(published) >= 10:
-                            day_str = published[:10]
-                if not day_str:
+            # Hindsight label filter: an article whose `first_seen` lags
+            # `published` by more than this many days was almost certainly
+            # collected retroactively (e.g. by backfill_news.py / GDELT) and
+            # then labeled by Claude with knowledge of what happened after
+            # publication. Trusting that `ai_score` for a historical backtest
+            # is silent lookahead — fall back to the keyword baseline instead.
+            LABEL_STALENESS_DAYS = 60
+            from email.utils import parsedate_to_datetime as _parse_822
+
+            def _parse_day(raw):
+                if not raw:
+                    return None
+                try:
+                    dt = _parse_822(raw)
+                    if dt is not None:
+                        return dt.date()
+                except Exception:
+                    pass
+                try:
+                    return date.fromisoformat(str(raw)[:10])
+                except Exception:
+                    return None
+
+            for (title, url, source, published, first_seen, ai_score,
+                 kw_score, full_text, urgency) in rows:
+                pub_d = _parse_day(published)
+                if pub_d is None:
                     continue
+                day_str = pub_d.isoformat()
                 # Decode full text for richer scoring
                 snippet = ""
                 if full_text:
@@ -1875,7 +1892,22 @@ class BacktestEngine:
                         snippet = _zlib.decompress(full_text).decode("utf-8", errors="replace")[:300]
                     except Exception:
                         pass
-                score = float(ai_score or kw_score or 0)
+
+                seen_d = _parse_day(first_seen)
+                # NULL first_seen means "we don't know when this was labeled"
+                # (rows that pre-date the column). Don't punish those — keep the
+                # legacy `ai_score or kw_score` fallback. Only mark as
+                # contaminated when we can prove the lag.
+                hindsight_contaminated = False
+                if seen_d is not None:
+                    days_lag = (seen_d - pub_d).days
+                    hindsight_contaminated = days_lag > LABEL_STALENESS_DAYS
+
+                if hindsight_contaminated:
+                    score = float(kw_score or 0)
+                else:
+                    score = float(ai_score or kw_score or 0)
+
                 try:
                     urg_v = float(urgency) if urgency is not None else 0.0
                 except (TypeError, ValueError):
@@ -1884,6 +1916,7 @@ class BacktestEngine:
                     "title": title, "url": url or "",
                     "source": source or "", "score": score, "snippet": snippet,
                     "urgency": urg_v,
+                    "hindsight_contaminated": hindsight_contaminated,
                 })
             print(f"[local_news] loaded {sum(len(v) for v in result.values())} articles "
                   f"across {len(result)} days from local DB")
