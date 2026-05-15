@@ -79,7 +79,7 @@ TEMPLATE = r"""
   <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='5' fill='%230d0d0d'/%3E%3Cline x1='7' y1='15' x2='7' y2='18' stroke='%2300d4ff' stroke-width='1.5'/%3E%3Crect x='5.5' y='18' width='3' height='7' rx='0.5' fill='%2300d4ff'/%3E%3Cline x1='7' y1='25' x2='7' y2='27' stroke='%2300d4ff' stroke-width='1.5'/%3E%3Cline x1='15' y1='12' x2='15' y2='15' stroke='%23ff3c4c' stroke-width='1.5'/%3E%3Crect x='13.5' y='15' width='3' height='6' rx='0.5' fill='%23ff3c4c'/%3E%3Cline x1='15' y1='21' x2='15' y2='24' stroke='%23ff3c4c' stroke-width='1.5'/%3E%3Cline x1='23' y1='5' x2='23' y2='8' stroke='%2300ff9f' stroke-width='1.5'/%3E%3Crect x='21.5' y='8' width='3' height='12' rx='0.5' fill='%2300ff9f'/%3E%3Cline x1='23' y1='20' x2='23' y2='23' stroke='%2300ff9f' stroke-width='1.5'/%3E%3Cpolyline points='7,21 15,17 23,11' stroke='%23ffd700' stroke-width='1.2' fill='none' stroke-dasharray='2,1.5'/%3E%3C/svg%3E">
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
   <style>
-    @import url('https://fonts.googleapis.com/css2?family=Outfit:wght@400;500;600;700&family=DM+Mono:ital,wght@0,400;0,500;1,400&display=swap');
+    @import url('https://fonts.googleapis.com/css2?family=Syne:wght@400;600;700;800&family=Outfit:wght@400;500;600;700&family=DM+Mono:ital,wght@0,400;0,500;1,400&display=swap');
     :root {
       color-scheme: dark;
       --bg: #0c0d0f;
@@ -107,6 +107,7 @@ TEMPLATE = r"""
       --pink: #f472b6;
       --font-sans: 'Outfit', system-ui, sans-serif;
       --font-mono: 'DM Mono', 'JetBrains Mono', monospace;
+      --font-display: 'Syne', system-ui, sans-serif;
       --radius: 8px;
       --radius-sm: 5px;
     }
@@ -115,8 +116,9 @@ TEMPLATE = r"""
       margin: 0; padding: 0;
       font-family: var(--font-sans);
       background: var(--bg); color: var(--text);
-      font-size: 14px; line-height: 1.5;
+      font-size: 15px; line-height: 1.5;
     }
+    .brand, h1, h2, h3 { font-family: var(--font-display); }
     .page-content { padding: 24px; max-width: 1600px; }
     .topbar {
       background: var(--bg-panel);
@@ -306,11 +308,92 @@ TEMPLATE = r"""
       border-color: rgba(240,180,41,0.3);
       color: var(--amber);
     }
+    /* === Mobile-first responsive additions ============================== */
+    .nav-hamburger {
+      display: none; flex-direction: column; justify-content: space-between;
+      width: 32px; height: 22px; background: none; border: none; cursor: pointer;
+      padding: 0; margin-left: auto;
+    }
+    .nav-hamburger span {
+      display: block; height: 2px; background: var(--text); border-radius: 2px;
+      transition: all 0.2s;
+    }
+    .nav-drawer {
+      position: fixed; top: 0; left: -280px; width: 280px; height: 100vh;
+      background: var(--bg-panel); border-right: 1px solid #1e2028;
+      z-index: 1000; transition: left 0.25s ease; overflow-y: auto; padding: 20px 0;
+    }
+    .nav-drawer.open { left: 0; }
+    .nav-drawer-header {
+      font-family: var(--font-display); font-weight: 700; color: var(--amber);
+      font-size: 13px; letter-spacing: 0.1em; padding: 0 20px 20px;
+      border-bottom: 1px solid #1e2028; margin-bottom: 8px;
+    }
+    .nav-drawer a {
+      display: block; padding: 12px 20px; color: var(--text-secondary);
+      text-decoration: none; font-size: 14px; transition: all 0.15s;
+    }
+    .nav-drawer a:hover, .nav-drawer a.active {
+      color: var(--text); background: var(--bg-elevated);
+    }
+    .nav-overlay {
+      display: none; position: fixed; inset: 0;
+      background: rgba(0,0,0,0.6); z-index: 999;
+    }
+    .nav-overlay.open { display: block; }
+    .bottom-nav {
+      display: none; position: fixed; bottom: 0; left: 0; right: 0; height: 64px;
+      background: var(--bg-panel); border-top: 1px solid #1e2028;
+      grid-template-columns: repeat(5, 1fr); z-index: 200; align-items: stretch;
+    }
+    .bottom-tab {
+      display: flex; flex-direction: column; align-items: center;
+      justify-content: center; gap: 4px; color: var(--text-secondary);
+      text-decoration: none; font-size: 10px; min-height: 44px; transition: color 0.15s;
+    }
+    .bottom-tab svg { width: 20px; height: 20px; }
+    .bottom-tab.active, .bottom-tab:hover { color: var(--amber); }
+    .table-scroll { overflow-x: auto; -webkit-overflow-scrolling: touch; }
+    .table-scroll table { min-width: 500px; }
+    @media (max-width: 768px) {
+      .topbar-nav { display: none; }
+      .nav-hamburger { display: flex; }
+      body { font-size: 14px; }
+      button, .btn, a.btn, [role="button"] { min-height: 44px; min-width: 44px; }
+    }
+    @media (max-width: 480px) {
+      body { padding-bottom: 72px; }
+      .bottom-nav { display: grid; }
+      .topbar { padding: 0 16px; }
+      .card { min-height: auto !important; padding: 14px 16px; }
+      .grid, .grid-2, .grid2 { grid-template-columns: 1fr !important; }
+      [style*="max-height: 520px"],
+      [style*="max-height:520px"] { max-height: 60vh !important; }
+      table { font-size: 12px; }
+      th, td { padding: 8px 10px; }
+    }
   </style>
 </head>
 <body>
   <nav class="topbar">
     <span class="brand">◈ TRADING STACK</span>
+    <span class="topbar-nav" style="display:flex;align-items:center;gap:2px;">
+      <a href="/">Command Center</a>
+      <a href="/intern/">Digital Intern</a>
+      <a href="/trader/" class="{% if initial_tab != 'backtests' %}active{% endif %}">Paper Trader</a>
+      <a href="/trader/backtests" class="{% if initial_tab == 'backtests' %}active{% endif %}">Backtests</a>
+      <a href="/backtests/compare">Compare</a>
+      <a href="/journal">Journal</a>
+      <a href="/ops/">Ops View</a>
+      <a href="/intern/chat">Chat</a>
+      <a href="/system/">System</a>
+    </span>
+    <button class="nav-hamburger" id="navToggle" aria-label="Menu">
+      <span></span><span></span><span></span>
+    </button>
+  </nav>
+  <div class="nav-drawer" id="navDrawer">
+    <div class="nav-drawer-header">◈ TRADING STACK</div>
     <a href="/">Command Center</a>
     <a href="/intern/">Digital Intern</a>
     <a href="/trader/" class="{% if initial_tab != 'backtests' %}active{% endif %}">Paper Trader</a>
@@ -320,7 +403,8 @@ TEMPLATE = r"""
     <a href="/ops/">Ops View</a>
     <a href="/intern/chat">Chat</a>
     <a href="/system/">System</a>
-  </nav>
+  </div>
+  <div class="nav-overlay" id="navOverlay"></div>
 
   <div class="page-content">
   <h1>Paper Trader</h1>
@@ -385,6 +469,18 @@ TEMPLATE = r"""
         <div class="stat"><div class="l">stale positions</div><div class="v" id="risk-stale-n">—</div></div>
       </div>
       <div id="risk-stale-list" style="font-size:12px;color:#dde1e7;"></div>
+    </div>
+
+    <!-- ─── Earnings Risk ─── -->
+    <div class="card" style="margin-bottom:18px;">
+      <h2 style="display:flex;justify-content:space-between;align-items:center;">
+        <span>Earnings radar <span class="muted" style="font-size:11px;text-transform:none;letter-spacing:normal;font-weight:normal;">— scheduled gap risk on holdings &amp; watchlist</span></span>
+        <span class="muted" id="er-asof" style="font-size:11px;text-transform:none;letter-spacing:normal;">—</span>
+      </h2>
+      <div class="muted" id="er-meta" style="font-size:11px;margin-bottom:8px;">—</div>
+      <ul id="er-list" style="margin:0;padding:0;list-style:none;font-size:13px;">
+        <li class="muted">loading…</li>
+      </ul>
     </div>
 
     <!-- ─── Portfolio Greeks (options exposure) ─── -->
@@ -509,6 +605,64 @@ TEMPLATE = r"""
       </table>
     </div>
 
+    <!-- ─── Decision Pipeline Health (new 2026-05-15, agent 4) ─── -->
+    <div class="card" id="dh-card" style="margin-bottom:18px;">
+      <h2 style="display:flex;justify-content:space-between;align-items:center;">
+        <span>Decision pipeline health <span class="muted" style="font-size:11px;text-transform:none;letter-spacing:normal;font-weight:normal;">— is the live Opus trader actually deciding? NO_DECISION = parse failure</span></span>
+        <span id="dh-verdict" style="font-size:12px;padding:3px 10px;border-radius:4px;background:#1f2126;color:#8b929d;">—</span>
+      </h2>
+      <div class="muted" id="dh-reason" style="font-size:12px;margin-bottom:12px;">loading…</div>
+      <div class="stat-row" style="margin-bottom:14px;">
+        <div class="stat"><div class="l">cycles (24h)</div><div class="v" id="dh-total">—</div></div>
+        <div class="stat"><div class="l">parse-fail (24h)</div><div class="v" id="dh-fail">—</div></div>
+        <div class="stat"><div class="l">fills (24h)</div><div class="v" id="dh-fills">—</div></div>
+        <div class="stat"><div class="l">avg confidence</div><div class="v" id="dh-conf">—</div></div>
+        <div class="stat"><div class="l">since last fill</div><div class="v" id="dh-lastfill">—</div></div>
+        <div class="stat"><div class="l">signals / cycle</div><div class="v" id="dh-sigs">—</div></div>
+      </div>
+      <div style="font-size:12px;color:#dde1e7;margin-bottom:6px;text-transform:uppercase;letter-spacing:0.5px;">Action mix (all-time)</div>
+      <div id="dh-mix" style="margin-bottom:14px;"><div class="muted">loading…</div></div>
+      <div style="font-size:12px;color:#dde1e7;margin-bottom:6px;text-transform:uppercase;letter-spacing:0.5px;">Recent cycles</div>
+      <table id="dh-tape" style="font-size:12px;">
+        <thead><tr>
+          <th>time</th><th>outcome</th><th>action</th>
+          <th class="num">conf</th><th class="num">signals</th>
+        </tr></thead>
+        <tbody><tr><td colspan="5" class="muted">loading…</td></tr></tbody>
+      </table>
+    </div>
+
+    <!-- ─── Scorer Reliability + Confidence Intervals (new 2026-05-15, agent 4) ─── -->
+    <div class="card" id="scrl-card" style="margin-bottom:18px;">
+      <h2 style="display:flex;justify-content:space-between;align-items:center;">
+        <span>Scorer reliability <span class="muted" style="font-size:11px;text-transform:none;letter-spacing:normal;font-weight:normal;">— how far DecisionScorer predictions actually land from reality</span></span>
+        <span class="muted" id="scrl-asof" style="font-size:11px;text-transform:none;letter-spacing:normal;">—</span>
+      </h2>
+      <div class="muted" id="scrl-meta" style="font-size:11px;margin-bottom:10px;">loading…</div>
+      <div class="stat-row" style="margin-bottom:14px;">
+        <div class="stat"><div class="l">directional accuracy</div><div class="v" id="scrl-dir">—</div></div>
+        <div class="stat"><div class="l">mean abs error</div><div class="v" id="scrl-mae">—</div></div>
+        <div class="stat"><div class="l">90% residual band</div><div class="v" id="scrl-band">—</div></div>
+        <div class="stat"><div class="l">replay samples</div><div class="v" id="scrl-n">—</div></div>
+      </div>
+      <div style="font-size:12px;color:#dde1e7;margin-bottom:6px;text-transform:uppercase;letter-spacing:0.5px;">Held positions — prediction with empirical band</div>
+      <table id="scrl-pos" style="font-size:13px;margin-bottom:16px;">
+        <thead><tr>
+          <th>ticker</th><th class="num">pred 5d</th><th class="num">likely range</th>
+          <th>verdict</th><th class="num">band hit %</th><th>trust</th>
+        </tr></thead>
+        <tbody><tr><td colspan="6" class="muted">loading…</td></tr></tbody>
+      </table>
+      <div style="font-size:12px;color:#dde1e7;margin-bottom:6px;text-transform:uppercase;letter-spacing:0.5px;">Calibration by prediction band</div>
+      <table id="scrl-cal" style="font-size:12px;">
+        <thead><tr>
+          <th>predicted band</th><th class="num">n</th><th class="num">mean actual</th>
+          <th class="num">residual P10/P90</th><th class="num">MAE</th><th class="num">dir. acc.</th>
+        </tr></thead>
+        <tbody><tr><td colspan="6" class="muted">loading…</td></tr></tbody>
+      </table>
+    </div>
+
     <!-- ─── Portfolio Analytics ─── -->
     <div class="card" style="margin-bottom:18px;">
       <h2>Portfolio analytics</h2>
@@ -520,6 +674,14 @@ TEMPLATE = r"""
         <div class="stat"><div class="l">avg winner</div><div class="v" id="an-avgw">—</div></div>
         <div class="stat"><div class="l">avg loser</div><div class="v" id="an-avgl">—</div></div>
         <div class="stat"><div class="l">realized P/L</div><div class="v" id="an-realized">—</div></div>
+      </div>
+      <div class="stat-row" style="margin-bottom:18px;">
+        <div class="stat"><div class="l">profit factor</div><div class="v" id="an-pf">—</div></div>
+        <div class="stat"><div class="l">sortino (ann.)</div><div class="v" id="an-sortino">—</div></div>
+        <div class="stat"><div class="l">calmar</div><div class="v" id="an-calmar">—</div></div>
+        <div class="stat"><div class="l">S&amp;P β</div><div class="v" id="an-beta">—</div></div>
+        <div class="stat"><div class="l">S&amp;P corr</div><div class="v" id="an-corr">—</div></div>
+        <div class="stat"><div class="l">avg hold</div><div class="v" id="an-hold">—</div></div>
       </div>
       <div style="font-size:13px;color:#dde1e7;margin-bottom:8px;text-transform:uppercase;letter-spacing:0.5px;">Sector exposure</div>
       <div id="an-sector-bar" style="display:flex;height:22px;border-radius:6px;overflow:hidden;background:#0d1117;border:1px solid #1f2126;margin-bottom:6px;"></div>
@@ -573,6 +735,7 @@ TEMPLATE = r"""
     <div class="grid">
       <div class="card">
         <h2>Open positions</h2>
+        <div class="table-scroll">
         <table id="pos-tbl">
           <thead><tr>
             <th>ticker</th><th>type</th><th class="num">qty</th>
@@ -581,26 +744,31 @@ TEMPLATE = r"""
             <th class="num">P/L</th>
           </tr></thead><tbody></tbody>
         </table>
+        </div>
       </div>
       <div class="card">
         <h2>Recent trades</h2>
+        <div class="table-scroll">
         <table id="trades-tbl">
           <thead><tr>
             <th>time</th><th>action</th><th>ticker</th>
             <th class="num">qty</th><th class="num">price</th><th>reason</th>
           </tr></thead><tbody></tbody>
         </table>
+        </div>
       </div>
     </div>
 
     <div class="card" style="margin-top:18px;">
       <h2>Decision log</h2>
+      <div class="table-scroll">
       <table id="dec-tbl">
         <thead><tr>
           <th>time</th><th>open?</th><th class="num">signals</th>
           <th>action</th><th class="num">equity</th><th>reasoning</th>
         </tr></thead><tbody></tbody>
       </table>
+      </div>
     </div>
   </div>
 
@@ -1290,6 +1458,17 @@ async function refreshAnalytics() {
   setStat("an-avgl", a.avg_loser_usd == null ? "—" : fmtUsd(a.avg_loser_usd), a.avg_loser_usd != null ? "neg" : null);
   setStat("an-realized", fmtUsd(a.realized_pl_usd, 2), a.realized_pl_usd >= 0 ? "pos" : "neg");
 
+  setStat("an-pf", a.profit_factor == null ? "—" : fmt(a.profit_factor, 2),
+          a.profit_factor != null ? (a.profit_factor >= 1 ? "pos" : "neg") : null);
+  setStat("an-sortino", a.sortino_annualized == null ? "—" : fmt(a.sortino_annualized, 2),
+          a.sortino_annualized != null ? (a.sortino_annualized >= 0 ? "pos" : "neg") : null);
+  setStat("an-calmar", a.calmar_ratio == null ? "—" : fmt(a.calmar_ratio, 2),
+          a.calmar_ratio != null ? (a.calmar_ratio >= 0 ? "pos" : "neg") : null);
+  setStat("an-beta", a.sp500_beta == null ? "—" : fmt(a.sp500_beta, 2));
+  setStat("an-corr", a.sp500_correlation == null ? "—" : fmt(a.sp500_correlation, 2));
+  setStat("an-hold", a.avg_holding_days == null ? "—" :
+          fmt(a.avg_holding_days, 1) + "d");
+
   // Sector stacked bar
   const sectors = a.sector_exposure_pct || {};
   const cashPct = a.cash_pct || 0;
@@ -1485,6 +1664,44 @@ async function refreshRisk() {
       ).join("");
     }
   } catch (e) { console.error("risk:", e); }
+}
+
+// ───────── Earnings radar ─────────
+async function refreshEarningsRisk() {
+  let r;
+  try { r = await fetch(API_PREFIX + "/api/earnings-risk").then(r => r.json()); }
+  catch (e) { return; }
+  const list = document.getElementById("er-list");
+  const meta = document.getElementById("er-meta");
+  const asof = document.getElementById("er-asof");
+  if (!list) return;
+  if (!r || r.error) { list.innerHTML = `<li class="muted">unavailable</li>`; return; }
+  if (asof && r.as_of) asof.textContent = r.as_of.slice(11, 16) + " UTC";
+  const evs = r.events || [];
+  if (!r.source_ok) {
+    meta.textContent = "earnings calendar (:8080) unreachable";
+  } else {
+    meta.innerHTML = `${r.n_held_reporting} holding(s) reporting · ` +
+      `<span class="${r.n_imminent > 0 ? 'neg' : 'muted'}">${r.n_imminent} imminent (≤3d)</span> · ` +
+      `$${Number(r.held_exposure_at_risk_usd || 0).toFixed(0)} exposure at risk`;
+  }
+  if (!evs.length) {
+    list.innerHTML = `<li class="muted">no earnings within horizon for holdings or watchlist</li>`;
+    return;
+  }
+  const tierStyle = {
+    HELD_IMMINENT: "background:#3a1b1b;border:1px solid #7a2f2f;",
+    HELD_SOON:     "background:#3a2f1b;border:1px solid #7a5f2f;",
+    WATCH:         "background:#1f2126;border:1px solid #2f3540;",
+  };
+  const tierLabel = { HELD_IMMINENT: "⚠ HELD", HELD_SOON: "HELD", WATCH: "watch" };
+  list.innerHTML = evs.slice(0, 14).map(e => {
+    const d = e.days_away == null ? "?" : Number(e.days_away).toFixed(1) + "d";
+    const exp = e.held ? ` · $${Number(e.exposure_usd).toFixed(0)}` : "";
+    return `<li style="padding:6px 8px;margin-bottom:4px;border-radius:5px;${tierStyle[e.tier] || ''}">` +
+      `<b>${e.ticker}</b> <span class="muted" style="font-size:11px;">${tierLabel[e.tier] || ''}</span>` +
+      `<span style="float:right;">in ${d}${exp}</span></li>`;
+  }).join("");
 }
 
 // ───────── Greeks card (options exposure) ─────────
@@ -1899,6 +2116,155 @@ async function refreshCalibration() {
   } catch (e) { console.error("calibration:", e); }
 }
 
+// ───────── Decision pipeline health (new 2026-05-15, agent 4) ─────────
+async function refreshDecisionHealth() {
+  try {
+    const r = await fetch(API_PREFIX + "/api/decision-health").then(r => r.json());
+    if (r.error) {
+      document.getElementById("dh-reason").textContent = "error: " + r.error;
+      return;
+    }
+    const vmap = {
+      HEALTHY:  ["#1b5e20", "#a5d6a7"],
+      DEGRADED: ["#b8860b", "#000000"],
+      CRITICAL: ["#b71c1c", "#ffffff"],
+      NO_DATA:  ["#1f2126", "#8b929d"],
+    };
+    const [bg, fg] = vmap[r.verdict] || vmap.NO_DATA;
+    const vEl = document.getElementById("dh-verdict");
+    vEl.textContent = r.verdict + (r.verdict_window ? ` (${r.verdict_window})` : "");
+    vEl.style.background = bg;
+    vEl.style.color = fg;
+    document.getElementById("dh-reason").textContent = r.verdict_reason || "";
+
+    const w = (r.windows && r.windows["24h"]) || {};
+    document.getElementById("dh-total").textContent = w.total != null ? w.total : "—";
+    const failEl = document.getElementById("dh-fail");
+    failEl.textContent = w.parse_fail_pct != null ? fmt(w.parse_fail_pct, 0) + "%" : "—";
+    failEl.style.color = (w.parse_fail_pct || 0) >= 50 ? "#ff4455"
+                       : (w.parse_fail_pct || 0) >= 25 ? "#ffa726" : "#4caf50";
+    document.getElementById("dh-fills").textContent =
+      (w.filled != null ? w.filled : "—") + (w.fill_pct != null ? ` (${fmt(w.fill_pct,1)}%)` : "");
+    const c = r.confidence || {};
+    const trendArrow = {rising:" ↑", falling:" ↓", flat:""}[c.trend] || "";
+    document.getElementById("dh-conf").textContent =
+      c.avg != null ? fmt(c.avg, 2) + trendArrow : "—";
+    const cad = r.cadence || {};
+    document.getElementById("dh-lastfill").textContent =
+      cad.hours_since_fill != null ? fmt(cad.hours_since_fill, 1) + "h" : "never";
+    const sc = r.signal_count || {};
+    document.getElementById("dh-sigs").textContent =
+      sc.avg != null ? fmt(sc.avg, 1) : "—";
+
+    // action mix bars
+    const mixColors = {FILLED:"#4caf50", HOLD:"#5c6bc0", BLOCKED:"#ffa726",
+                       NO_DECISION:"#ff4455", OTHER:"#8b929d"};
+    const mix = r.action_mix || [];
+    const mixEl = document.getElementById("dh-mix");
+    if (!mix.length) {
+      mixEl.innerHTML = '<div class="muted">no decisions yet</div>';
+    } else {
+      mixEl.innerHTML = mix.map(m => `
+        <div style="display:flex;align-items:center;gap:8px;margin:3px 0;font-size:12px;">
+          <span style="width:96px;color:#dde1e7;">${m.category}</span>
+          <div style="flex:1;background:#1f2126;border-radius:3px;height:14px;overflow:hidden;">
+            <div style="width:${m.pct}%;height:100%;background:${mixColors[m.category]||"#8b929d"};"></div>
+          </div>
+          <span class="muted" style="width:96px;text-align:right;">${m.n} · ${fmt(m.pct,1)}%</span>
+        </div>`).join("");
+    }
+
+    // recent decision tape
+    const tape = r.recent || [];
+    const tb = document.querySelector("#dh-tape tbody");
+    if (!tape.length) {
+      tb.innerHTML = `<tr><td colspan="5" class="muted">no cycles</td></tr>`;
+    } else {
+      tb.innerHTML = tape.map(d => {
+        const col = mixColors[d.category] || "#8b929d";
+        const t = d.timestamp ? d.timestamp.replace("T", " ").slice(5, 16) : "—";
+        return `<tr>
+          <td class="muted">${t}</td>
+          <td><span style="color:${col};font-weight:bold;">${d.category}</span></td>
+          <td>${(d.action || "—").replace(/</g,"&lt;")}</td>
+          <td class="num">${d.confidence != null ? fmt(d.confidence,2) : "—"}</td>
+          <td class="num">${d.signal_count != null ? d.signal_count : "—"}</td>
+        </tr>`;
+      }).join("");
+    }
+  } catch (e) { console.error("decision-health:", e); }
+}
+
+// ───────── Scorer reliability + confidence intervals (new 2026-05-15, agent 4) ─────────
+async function refreshScorerConfidence() {
+  try {
+    const r = await fetch(API_PREFIX + "/api/scorer-confidence").then(r => r.json());
+    if (r.error) {
+      document.getElementById("scrl-meta").textContent = "error: " + r.error;
+      return;
+    }
+    document.getElementById("scrl-asof").textContent =
+      r.as_of ? r.as_of.replace("T", " ").slice(0, 16) : "—";
+    const o = r.overall;
+    if (!o) {
+      document.getElementById("scrl-meta").textContent =
+        `scorer not ready — ${r.n_samples || 0} replay samples (need more outcomes)`;
+      return;
+    }
+    document.getElementById("scrl-meta").textContent =
+      `trained on n=${r.n_train} · replayed over ${r.n_samples} historical outcomes · ` +
+      `residual = predicted − realized return`;
+    const dirEl = document.getElementById("scrl-dir");
+    dirEl.textContent = fmt(o.directional_accuracy_pct, 1) + "%";
+    dirEl.style.color = o.directional_accuracy_pct >= 65 ? "#4caf50"
+                      : o.directional_accuracy_pct >= 55 ? "#ffa726" : "#ff4455";
+    document.getElementById("scrl-mae").textContent = "±" + fmt(o.mae, 2) + "%";
+    document.getElementById("scrl-band").textContent =
+      fmt(o.resid_p10, 1) + " … +" + fmt(o.resid_p90, 1);
+    document.getElementById("scrl-n").textContent = r.n_samples;
+
+    // held positions with empirical band
+    const pos = r.positions || [];
+    const pb = document.querySelector("#scrl-pos tbody");
+    if (!pos.length) {
+      pb.innerHTML = `<tr><td colspan="6" class="muted">no open stock positions</td></tr>`;
+    } else {
+      const trustColor = {high:"#4caf50", medium:"#ffa726", low:"#ff4455", none:"#8b929d"};
+      pb.innerHTML = pos.map(p => {
+        const v = p.pred_5d_return_pct;
+        const iv = p.interval || {};
+        const range = (iv.low != null && iv.high != null)
+          ? `${iv.low >= 0 ? "+" : ""}${fmt(iv.low,1)}% … ${iv.high >= 0 ? "+" : ""}${fmt(iv.high,1)}%`
+          : "—";
+        return `<tr>
+          <td><strong>${p.ticker}</strong></td>
+          <td class="num" style="color:${scorerColor(v)};font-weight:bold;">${v == null ? "—" : (v>=0?"+":"") + fmt(v,2) + "%"}</td>
+          <td class="num" style="color:#dde1e7;">${range}</td>
+          <td>${verdictBadge(p.verdict)}</td>
+          <td class="num">${iv.directional_accuracy_pct != null ? fmt(iv.directional_accuracy_pct,0) + "%" : "—"}</td>
+          <td><span style="color:${trustColor[iv.reliability]||"#8b929d"};">${iv.reliability || "—"}</span></td>
+        </tr>`;
+      }).join("");
+    }
+
+    // calibration table
+    const cb = document.querySelector("#scrl-cal tbody");
+    const buckets = r.buckets || [];
+    if (!buckets.length) {
+      cb.innerHTML = `<tr><td colspan="6" class="muted">not enough samples</td></tr>`;
+    } else {
+      cb.innerHTML = buckets.map(b => `<tr>
+        <td>${(b.pred_lo>=0?"+":"") + fmt(b.pred_lo,1)}% … ${(b.pred_hi>=0?"+":"") + fmt(b.pred_hi,1)}%</td>
+        <td class="num">${b.n}</td>
+        <td class="num" style="color:${scorerColor(b.mean_actual)};">${(b.mean_actual>=0?"+":"") + fmt(b.mean_actual,2)}%</td>
+        <td class="num muted">${fmt(b.resid_p10,1)} / +${fmt(b.resid_p90,1)}</td>
+        <td class="num">±${fmt(b.mae,1)}</td>
+        <td class="num" style="color:${b.directional_accuracy_pct>=65?"#4caf50":b.directional_accuracy_pct>=55?"#ffa726":"#ff4455"};">${fmt(b.directional_accuracy_pct,0)}%</td>
+      </tr>`).join("");
+    }
+  } catch (e) { console.error("scorer-confidence:", e); }
+}
+
 // ───────── boot ─────────
 refresh();
 refreshSignals();
@@ -1907,6 +2273,7 @@ refreshSectorPulse();
 refreshBriefing();
 refreshSuggestions();
 refreshRisk();
+refreshEarningsRisk();
 refreshGreeks();
 refreshHeatmap();
 refreshDedupedNews();
@@ -1914,6 +2281,8 @@ refreshScorer();
 refreshThesis();
 refreshDrawdown();
 refreshCalibration();
+refreshDecisionHealth();
+refreshScorerConfidence();
 setInterval(refresh, 15_000);
 setInterval(refreshSignals, 30_000);
 setInterval(refreshAnalytics, 30_000);
@@ -1921,6 +2290,7 @@ setInterval(refreshSectorPulse, 60_000);
 setInterval(refreshBriefing, 60_000);
 setInterval(refreshSuggestions, 45_000);
 setInterval(refreshRisk, 30_000);
+setInterval(refreshEarningsRisk, 300_000);
 setInterval(refreshGreeks, 60_000);
 setInterval(refreshHeatmap, 60_000);
 setInterval(refreshDedupedNews, 45_000);
@@ -1928,9 +2298,56 @@ setInterval(refreshScorer, 60_000);
 setInterval(refreshThesis, 60_000);
 setInterval(refreshDrawdown, 30_000);
 setInterval(refreshCalibration, 120_000);
+setInterval(refreshDecisionHealth, 60_000);
+setInterval(refreshScorerConfidence, 120_000);
 showTab(INITIAL_TAB || "trader");
 </script>
 </div><!-- /.page-content -->
+
+<nav class="bottom-nav" id="bottomNav">
+  <a href="/" class="bottom-tab">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 9.5L12 3l9 6.5V20a1 1 0 0 1-1 1h-5v-7H9v7H4a1 1 0 0 1-1-1V9.5z"/></svg>
+    <span>Home</span>
+  </a>
+  <a href="/intern/" class="bottom-tab">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 3v18h18"/><path d="M7 14l4-4 3 3 5-6"/></svg>
+    <span>Intern</span>
+  </a>
+  <a href="/trader/" class="bottom-tab">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 17l6-6 4 4 8-8"/><path d="M17 7h4v4"/></svg>
+    <span>Trader</span>
+  </a>
+  <a href="/intern/chat" class="bottom-tab">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 11.5a8.38 8.38 0 0 1-8.5 8.5 8.5 8.5 0 0 1-3.8-.9L3 21l1.9-5.7A8.38 8.38 0 0 1 4 11.5 8.5 8.5 0 0 1 12.5 3 8.38 8.38 0 0 1 21 11.5z"/></svg>
+    <span>Chat</span>
+  </a>
+  <a href="/trader/backtests" class="bottom-tab">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 3v5h5"/><path d="M3.05 13A9 9 0 1 0 6 5.3L3 8"/><path d="M12 7v5l4 2"/></svg>
+    <span>Backtests</span>
+  </a>
+</nav>
+<script>
+(function(){
+  const navToggle = document.getElementById('navToggle');
+  const navDrawer = document.getElementById('navDrawer');
+  const navOverlay = document.getElementById('navOverlay');
+  if (navToggle) {
+    navToggle.addEventListener('click', () => {
+      navDrawer.classList.toggle('open');
+      navOverlay.classList.toggle('open');
+    });
+    navOverlay.addEventListener('click', () => {
+      navDrawer.classList.remove('open');
+      navOverlay.classList.remove('open');
+    });
+  }
+  document.querySelectorAll('.bottom-tab').forEach(tab => {
+    if (tab.getAttribute('href') === window.location.pathname) {
+      tab.classList.add('active');
+    }
+  });
+})();
+</script>
 </body>
 </html>
 """
@@ -2242,6 +2659,19 @@ def model_progress():
         return jsonify({"cycles": [], "error": str(e)})
 
 
+def _holding_days(buy_ts: str | None, sell_ts: str | None) -> float | None:
+    """Calendar days between a round-trip's first BUY and its closing SELL."""
+    if not buy_ts or not sell_ts:
+        return None
+    try:
+        b = datetime.fromisoformat(buy_ts.replace("Z", "+00:00"))
+        s = datetime.fromisoformat(sell_ts.replace("Z", "+00:00"))
+    except Exception:
+        return None
+    dd = (s - b).total_seconds() / 86400.0
+    return round(dd, 2) if dd >= 0 else None
+
+
 @app.route("/api/analytics")
 def analytics_api():
     """Derived portfolio analytics — sector exposure, drawdown, Sharpe, win rate, daily P/L."""
@@ -2318,11 +2748,16 @@ def analytics_api():
         # same ticker don't conflate into a single round-trip.
         per_position: dict[tuple, dict] = {}
         round_trips: list[float] = []
+        holding_days: list[float] = []  # one entry per closed round-trip
         for t in trades:
             typ = t.get("option_type") or "stock"
             key = (t["ticker"], typ, t.get("strike"), t.get("expiry"))
-            rec = per_position.setdefault(key, {"cost": 0.0, "proceeds": 0.0, "held": 0.0})
+            rec = per_position.setdefault(
+                key, {"cost": 0.0, "proceeds": 0.0, "held": 0.0, "first_buy_ts": None})
             if (t["action"] or "").startswith("BUY"):
+                # Stamp the open time on the first BUY of a fresh round-trip.
+                if abs(rec["held"]) < 1e-4:
+                    rec["first_buy_ts"] = t.get("timestamp")
                 rec["cost"] += t["value"]
                 rec["held"] += t["qty"]
             elif (t["action"] or "").startswith("SELL"):
@@ -2330,7 +2765,11 @@ def analytics_api():
                 rec["held"] -= t["qty"]
                 if abs(rec["held"]) < 1e-4:
                     round_trips.append(rec["proceeds"] - rec["cost"])
+                    hd = _holding_days(rec["first_buy_ts"], t.get("timestamp"))
+                    if hd is not None:
+                        holding_days.append(hd)
                     rec["cost"] = rec["proceeds"] = rec["held"] = 0.0
+                    rec["first_buy_ts"] = None
 
         wins = [p for p in round_trips if p > 0]
         losses = [p for p in round_trips if p <= 0]
@@ -2338,6 +2777,66 @@ def analytics_api():
         avg_winner = round(sum(wins) / len(wins), 2) if wins else None
         avg_loser = round(sum(losses) / len(losses), 2) if losses else None
         total_realized = round(sum(round_trips), 2) if round_trips else 0.0
+
+        # ─── 4b. Profit factor + avg holding period ───
+        # Profit factor = gross wins / gross losses. >1 means the edge survives
+        # losers; a 50% win rate with PF 2.0 is a real edge, PF 0.8 is bleeding.
+        gross_win = sum(wins)
+        gross_loss = abs(sum(losses))
+        profit_factor = round(gross_win / gross_loss, 2) if gross_loss > 1e-9 else None
+        avg_hold_days = (round(sum(holding_days) / len(holding_days), 2)
+                         if holding_days else None)
+
+        # ─── 4c. Sortino — like Sharpe but only downside vol is "risk" ───
+        sortino = None
+        if len(daily_returns) >= 5:
+            dmean = sum(daily_returns) / len(daily_returns)
+            downside = [r for r in daily_returns if r < 0]
+            if downside:
+                dvar = sum(r * r for r in downside) / len(daily_returns)
+                dstd = dvar ** 0.5
+                if dstd > 0:
+                    sortino = round((dmean / dstd) * (252 ** 0.5), 2)
+
+        # ─── 4d. S&P 500 beta + correlation (paired daily returns) ───
+        sp_by_day: dict[str, float] = {}
+        for p in eq:
+            day = (p["timestamp"] or "")[:10]
+            spx = p.get("sp500_price")
+            if day and spx:
+                sp_by_day[day] = spx
+        port_ret: list[float] = []
+        spx_ret: list[float] = []
+        for i in range(1, len(day_keys)):
+            d0, d1 = day_keys[i - 1], day_keys[i]
+            if d0 in sp_by_day and d1 in sp_by_day:
+                pv0, sv0 = by_day[d0], sp_by_day[d0]
+                pv1, sv1 = by_day[d1], sp_by_day[d1]
+                if pv0 > 0 and sv0 > 0:
+                    port_ret.append(pv1 / pv0 - 1.0)
+                    spx_ret.append(sv1 / sv0 - 1.0)
+        sp500_beta = None
+        sp500_corr = None
+        if len(port_ret) >= 5:
+            n = len(port_ret)
+            mp = sum(port_ret) / n
+            ms = sum(spx_ret) / n
+            cov = sum((port_ret[i] - mp) * (spx_ret[i] - ms) for i in range(n)) / n
+            var_s = sum((s - ms) ** 2 for s in spx_ret) / n
+            var_p = sum((p - mp) ** 2 for p in port_ret) / n
+            if var_s > 0:
+                sp500_beta = round(cov / var_s, 2)
+                if var_p > 0:
+                    sp500_corr = round(cov / ((var_s ** 0.5) * (var_p ** 0.5)), 3)
+
+        # ─── 4e. Calmar — annualized return ÷ max drawdown ───
+        # Meaningless on <20 trading days of history, so gate it hard.
+        calmar = None
+        if len(daily_returns) >= 20 and max_dd_pct and max_dd_pct > 0:
+            total_return_pct = (total_value / 1000.0 - 1.0) * 100.0
+            years = len(day_keys) / 252.0
+            if years > 0:
+                calmar = round((total_return_pct / years) / max_dd_pct, 2)
 
         # ─── 5. Daily P/L (today only, UTC bucket) ───
         today = datetime.now(timezone.utc).date().isoformat()
@@ -2366,6 +2865,12 @@ def analytics_api():
             "avg_winner_usd": avg_winner,
             "avg_loser_usd": avg_loser,
             "realized_pl_usd": total_realized,
+            "profit_factor": profit_factor,
+            "avg_holding_days": avg_hold_days,
+            "sortino_annualized": sortino,
+            "calmar_ratio": calmar,
+            "sp500_beta": sp500_beta,
+            "sp500_correlation": sp500_corr,
             "daily_pl_usd": daily_pl,
             "daily_pl_pct": daily_pl_pct,
         })
@@ -2831,10 +3336,14 @@ def _classify_action(ticker: str, held_qty: float, quant: dict, news_score: floa
 
     # ── Action selection ──
     if held_qty > 0:
-        if bias < -0.3 and news_weight < 0.4:
-            return "TRIM", min(0.6 + abs(bias) * 0.3, 0.95), notes
+        # EXIT must be checked before TRIM: a strong bearish bias (< -0.5) also
+        # satisfies the TRIM guard (bias < -0.3) when news is quiet, so testing
+        # TRIM first swallowed the EXIT case and downgraded severity exactly
+        # when the technical breakdown was strongest.
         if bias < -0.5:
             return "EXIT", min(0.65 + abs(bias) * 0.3, 0.95), notes
+        if bias < -0.3 and news_weight < 0.4:
+            return "TRIM", min(0.6 + abs(bias) * 0.3, 0.95), notes
         if bias > 0.25 and news_weight > 0.5:
             return "ADD", min(0.5 + bias * 0.3 + news_weight * 0.2, 0.95), notes
         return "HOLD", 0.4 + max(0.0, bias) * 0.2, notes
@@ -3203,11 +3712,15 @@ def position_thesis_api():
         for tk in held:
             q = quant.get(tk) or {}
             sent = sent_by_tk.get(tk) or {}
+            # Mirror /api/scorer-predictions exactly so both endpoints agree:
+            # the scorer wants numeric macd_signal, not the "bullish"/"bearish"
+            # MACD label (which _to_float silently zeroes).
             pred = scorer.predict(
                 ml_score=float(sent.get("max_score") or 0.0),
-                rsi=q.get("RSI"), macd=q.get("MACD"),
+                rsi=q.get("rsi"), macd=q.get("macd_signal"),
                 mom5=q.get("mom_5d"), mom20=q.get("mom_20d"),
                 regime_mult=regime_mult, ticker=tk,
+                vol_ratio=q.get("vol_ratio"), bb_pos=q.get("bb_position"),
             )
             scorer_preds.append({
                 "ticker": tk,
@@ -3254,6 +3767,202 @@ def drawdown_api():
         eq = store.equity_curve(limit=2000)
         positions = store.open_positions()
         return jsonify(compute_drawdown(eq, positions))
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/earnings-risk")
+def earnings_risk_api():
+    """Upcoming earnings cross-referenced against held positions + watchlist.
+
+    Earnings are the #1 scheduled risk event — a position into a print can gap
+    10%+ overnight. This pulls digital-intern's earnings calendar (:8080) and
+    flags which holdings and watchlist names report soon, with a risk tier:
+      HELD_IMMINENT  — you hold it and it reports within 3 days
+      HELD_SOON      — you hold it and it reports within the horizon
+      WATCH          — on the watchlist, not held
+    """
+    import json as _json
+    import urllib.request as _urllib
+
+    try:
+        store = get_store()
+        positions = store.open_positions()
+        held: dict[str, float] = {}
+        for p in positions:
+            t = (p.get("ticker") or "").upper()
+            if not t:
+                continue
+            mult = 100 if p.get("type") in ("call", "put") else 1
+            price = p.get("current_price") or p.get("avg_cost") or 0.0
+            held[t] = held.get(t, 0.0) + price * (p.get("qty") or 0.0) * mult
+
+        try:
+            from .strategy import WATCHLIST as _WATCHLIST
+            watch = {t.upper() for t in _WATCHLIST}
+        except Exception:
+            watch = set()
+
+        events = []
+        source_ok = True
+        try:
+            with _urllib.urlopen(
+                "http://127.0.0.1:8080/api/earnings", timeout=4) as resp:
+                snap = _json.loads(resp.read().decode("utf-8"))
+            events = snap.get("events") or []
+        except Exception:
+            source_ok = False
+
+        out = []
+        for ev in events:
+            tk = (ev.get("ticker") or "").upper()
+            if not tk:
+                continue
+            days = ev.get("days_away")
+            in_port = tk in held
+            on_watch = tk in watch
+            if not in_port and not on_watch:
+                continue
+            if in_port and days is not None and days <= 3:
+                tier = "HELD_IMMINENT"
+            elif in_port:
+                tier = "HELD_SOON"
+            else:
+                tier = "WATCH"
+            out.append({
+                "ticker": tk,
+                "earnings_date": ev.get("earnings_date"),
+                "days_away": days,
+                "tier": tier,
+                "held": in_port,
+                "exposure_usd": round(held.get(tk, 0.0), 2) if in_port else 0.0,
+            })
+        # Held + soonest first; tier rank keeps imminent risk at the top.
+        tier_rank = {"HELD_IMMINENT": 0, "HELD_SOON": 1, "WATCH": 2}
+        out.sort(key=lambda e: (tier_rank.get(e["tier"], 9),
+                                e["days_away"] if e["days_away"] is not None else 1e9))
+        held_at_risk = round(sum(e["exposure_usd"] for e in out if e["held"]), 2)
+        return jsonify({
+            "as_of": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+            "source_ok": source_ok,
+            "events": out,
+            "n_held_reporting": sum(1 for e in out if e["held"]),
+            "n_imminent": sum(1 for e in out if e["tier"] == "HELD_IMMINENT"),
+            "held_exposure_at_risk_usd": held_at_risk,
+        })
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+# ───────── Feature-dev additions (2026-05-15, agent 4) ─────────
+# /api/scorer-confidence — empirical ± bands + directional hit-rate for the
+#                          DecisionScorer, so its point predictions can be
+#                          trusted (or distrusted) with a real error bar.
+# /api/decision-health   — is the live Opus trader actually deciding? Surfaces
+#                          the NO_DECISION (parse-failure) rate the dashboard
+#                          otherwise hides entirely.
+
+
+def _live_scorer_predictions(scorer) -> list[dict]:
+    """Predicted 5d return for each held stock position (live feature vector).
+
+    Same feature construction as ``/api/scorer-predictions`` — kept as a shared
+    helper so the confidence endpoint stays in lockstep with the original."""
+    from .strategy import get_quant_signals_live
+    from . import signals as _sig
+
+    store = get_store()
+    held = sorted({
+        p["ticker"] for p in store.open_positions()
+        if p.get("type") == "stock" and (p.get("qty") or 0) > 0
+    })
+    if not held:
+        return []
+    quant = get_quant_signals_live(held) or {}
+    sent_by_tk = {s["ticker"]: s for s in (_sig.ticker_sentiments(held, hours=4) or [])}
+    regime_mult = 1.0
+    try:
+        spy_mom = (get_quant_signals_live(["SPY"]).get("SPY") or {}).get("mom_5d")
+        if isinstance(spy_mom, (int, float)):
+            regime_mult = max(0.7, min(1.3, 1.0 + spy_mom * 0.075))
+    except Exception:
+        pass
+    preds = []
+    for tk in held:
+        q = quant.get(tk) or {}
+        sent = sent_by_tk.get(tk) or {}
+        ml_score = float(sent.get("max_score") or 0.0)
+        pred = scorer.predict(
+            ml_score=ml_score, rsi=q.get("rsi"), macd=q.get("macd_signal"),
+            mom5=q.get("mom_5d"), mom20=q.get("mom_20d"), regime_mult=regime_mult,
+            ticker=tk, vol_ratio=q.get("vol_ratio"), bb_pos=q.get("bb_position"),
+        )
+        preds.append({
+            "ticker": tk,
+            "pred_5d_return_pct": round(float(pred), 3),
+            "verdict": _scorer_verdict(float(pred)),
+            "rsi": q.get("RSI"), "mom_5d": q.get("mom_5d"), "mom_20d": q.get("mom_20d"),
+        })
+    return preds
+
+
+def _load_decision_outcomes(max_rows: int = 4000) -> list[dict]:
+    """Tail of data/decision_outcomes.jsonl — the scorer's own training history."""
+    import json as _json
+    from pathlib import Path
+    path = Path(__file__).resolve().parent.parent / "data" / "decision_outcomes.jsonl"
+    if not path.exists():
+        return []
+    rows: list[dict] = []
+    for ln in path.read_text().splitlines():
+        ln = ln.strip()
+        if not ln:
+            continue
+        try:
+            rows.append(_json.loads(ln))
+        except Exception:
+            continue
+    return rows[-max_rows:]
+
+
+@app.route("/api/scorer-confidence")
+def scorer_confidence_api():
+    """Empirical prediction intervals + reliability for the DecisionScorer.
+
+    Replays the trained scorer over its own outcome history to measure how far
+    its predictions actually land from realized returns. Returns a calibration
+    table (residual P10/P50/P90 + directional hit-rate per prediction band) and,
+    for each held stock position, the live prediction wrapped in an empirical
+    [low, high] band drawn from the matching band's residual quantiles."""
+    try:
+        from .ml.decision_scorer import DecisionScorer
+        from .analytics.scorer_confidence import build_scorer_confidence, interval_for
+
+        scorer = DecisionScorer()
+        outcomes = _load_decision_outcomes()
+        conf = build_scorer_confidence(outcomes, scorer)
+
+        positions = []
+        if conf.get("overall"):
+            for p in _live_scorer_predictions(scorer):
+                iv = interval_for(p["pred_5d_return_pct"], conf)
+                positions.append({**p, "interval": iv})
+            positions.sort(key=lambda r: -(r["pred_5d_return_pct"] or 0))
+        conf["positions"] = positions
+        return jsonify(conf)
+    except Exception as e:
+        return jsonify({"error": str(e), "buckets": [], "positions": []}), 500
+
+
+@app.route("/api/decision-health")
+def decision_health_api():
+    """Health of the live decision pipeline — action mix, parse-failure rate,
+    confidence trend, cadence. Surfaces NO_DECISION ('claude returned no
+    parseable JSON') cycles that no other dashboard panel exposes."""
+    try:
+        from .analytics.decision_health import build_decision_health
+        decisions = get_store().recent_decisions(limit=2000)
+        return jsonify(build_decision_health(decisions))
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
