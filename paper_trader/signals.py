@@ -34,7 +34,7 @@ _NOT_TICKERS = {
     "FBI", "FDA", "FEB", "FED", "FOMC", "FOR", "FX", "FY", "GDP", "GOP",
     "HOW", "IMF", "IN", "IPO", "IS", "ISM", "IT", "ITS", "JAN", "JULY",
     "JUNE", "MAR", "MAY", "MOM", "NATO", "NEW", "NO", "NOV", "OCT", "OF",
-    "OK", "OLD", "ON", "ONE", "OPEC", "OR", "PB", "PBOC", "PE", "PM",
+    "OK", "OLD", "ON", "ONE", "OPEC", "OR", "PB", "PBOC", "PCE", "PE", "PM",
     "PMI", "PPI", "Q1", "Q2", "Q3", "Q4", "QE", "QOQ", "QT", "RE", "SEC",
     "SEPT", "SO", "TBA", "THE", "TO", "TWO", "UN", "UP", "US", "USA",
     "USD", "USDA", "VS", "WE", "WHAT", "WHEN", "WHERE", "WHO", "WHY",

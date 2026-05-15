@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import json
 import os
+import random
 import re
 import shutil
 import signal
@@ -50,6 +51,32 @@ MAX_OUTCOMES_FOR_TRAINING = 5000  # cap decision_outcomes.jsonl tail used per re
 COOLDOWN_SECONDS = 60
 DISCORD_CHANNEL = "channel:1496099475838603324"
 WINNER_JSONL = ROOT / "data" / "winner_training.jsonl"
+
+EARLIEST_WINDOW_START = date(1996, 1, 1)
+WINDOW_END_BUFFER_DAYS = 180  # never end a window within 6 months of today
+MIN_WINDOW_YEARS = 1
+MAX_WINDOW_YEARS = 5
+
+
+def _pick_window(seed: int) -> tuple[date, date]:
+    """Pick a deterministic random backtest window given a seed.
+
+    Duration is 1-5 years; start lies between 1996-01-01 and (today - duration - 180d)
+    so the window always ends at least 6 months before today.
+    """
+    rng = random.Random(seed)
+    duration_years = rng.randint(MIN_WINDOW_YEARS, MAX_WINDOW_YEARS)
+    duration_days = duration_years * 365
+
+    latest_start = date.today() - timedelta(days=duration_days + WINDOW_END_BUFFER_DAYS)
+    span = (latest_start - EARLIEST_WINDOW_START).days
+    if span < 0:
+        # Pathological: today is within ~5.5yr of EARLIEST. Clamp.
+        start = EARLIEST_WINDOW_START
+    else:
+        start = EARLIEST_WINDOW_START + timedelta(days=rng.randint(0, span))
+    end = start + timedelta(days=duration_days)
+    return start, end
 
 
 def _now() -> str:
@@ -163,6 +190,9 @@ def _compute_decision_outcomes(engine: "BacktestEngine",
 
     outcomes: list[dict] = []
     _quant_cache: dict[tuple, dict] = {}
+    # SPY-based regime depends only on sim_date — cache per date so a cycle of
+    # 5 runs × ~250 decisions doesn't recompute 1250 identical SPY 50/200 MAs.
+    _regime_cache: dict[str, str] = {}
 
     trading_days = engine.prices.trading_days
     if not trading_days:
@@ -225,7 +255,10 @@ def _compute_decision_outcomes(engine: "BacktestEngine",
                 _quant_cache[cache_key] = sigs.get(ticker, {})
             q = _quant_cache[cache_key]
 
-            regime = _market_regime(sim_d, engine.prices)
+            regime = _regime_cache.get(sim_date_str)
+            if regime is None:
+                regime = _market_regime(sim_d, engine.prices)
+                _regime_cache[sim_date_str] = regime
             # Match _ml_decide: "unknown" is treated as neutral 1.0, not bear.
             if regime == "bull":
                 regime_mult = 1.0
@@ -773,20 +806,49 @@ def main() -> None:
 
     print(f"[continuous] {_now()} starting ENSEMBLE-COMMITTEE loop "
           f"({RUNS_PER_CYCLE} runs/cycle, keep last {KEEP_LAST_RUNS}, "
-          f"cooldown {COOLDOWN_SECONDS}s)")
+          f"cooldown {COOLDOWN_SECONDS}s, variable {MIN_WINDOW_YEARS}–{MAX_WINDOW_YEARS}yr "
+          f"windows in {EARLIEST_WINDOW_START}–present)")
 
-    engine = BacktestEngine()
     cycle = 0
     while not _STOP:
         cycle += 1
+        # Each cycle picks its own random window. Engine is recreated because
+        # PriceCache and the per-window volume cache are window-keyed; reusing
+        # the previous engine would silently mix cache state from a different
+        # date range.
+        cycle_seed = int(time.time()) ^ (cycle * 2654435761) & 0xFFFFFFFF
+        win_start, win_end = _pick_window(cycle_seed)
+        win_years = (win_end - win_start).days / 365.0
+        print(f"\n[continuous] {_now()} ─── cycle {cycle} window: "
+              f"{win_start} → {win_end} ({win_years:.1f}yr, seed={cycle_seed}) ───")
+
+        try:
+            engine = BacktestEngine(start=win_start, end=win_end)
+        except Exception as e:
+            print(f"[continuous] engine init failed for {win_start}→{win_end}: {e}")
+            traceback.print_exc()
+            # Sleep briefly then move to next cycle; a yfinance hiccup shouldn't
+            # kill the loop.
+            time.sleep(30)
+            continue
+
+        # Optional pre-warmer for historical news. Background by default so
+        # backtests proceed on quant signals while news fills in.
+        try:
+            from paper_trader.historical_collector import prewarm_window
+            prewarm_window(win_start, win_end,
+                           tickers=engine.prices.tickers, background=True)
+        except Exception as e:
+            # Pre-warmer is best-effort — failure must not stop a cycle.
+            print(f"[continuous] prewarm dispatch failed: {e}")
+
         start_id = _next_run_id(engine)
         t0 = time.time()
-        print(f"\n[continuous] {_now()} ─── cycle {cycle} start "
-              f"(run_ids {start_id}..{start_id + RUNS_PER_CYCLE - 1}) ───")
+        print(f"[continuous] cycle {cycle} runs {start_id}..{start_id + RUNS_PER_CYCLE - 1}")
 
-        # Refresh local article cache so long-running engines see new news that
-        # digital-intern wrote since the last cycle. Without this, _local_news
-        # stays frozen at engine __init__ and backtests grow progressively stale.
+        # Refresh local article cache so the engine sees news digital-intern
+        # has written since the last engine init. (Engine is fresh, but this
+        # also covers articles written during the current cycle's lifetime.)
         try:
             n_arts = engine.refresh_local_articles()
             print(f"[continuous] refreshed local_news: {n_arts} articles")

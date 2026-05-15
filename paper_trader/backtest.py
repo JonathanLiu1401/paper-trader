@@ -34,10 +34,9 @@ ROOT = Path(__file__).resolve().parent.parent
 BACKTEST_DB = ROOT / "backtest.db"
 CACHE_DIR = ROOT / "data" / "backtest_cache"
 GDELT_CACHE = CACHE_DIR / "gdelt"
+# Legacy cache path — kept for migration; new caches are per-window.
 PRICE_CACHE_PATH = CACHE_DIR / "prices.json"
 
-START_DATE = date(2025, 5, 1)   # 1-year window — full market cycle, rich ML training signal
-END_DATE = date(2026, 5, 13)
 INITIAL_CASH = 1000.0
 SAMPLE_EVERY_N_DAYS = 1         # daily decisions — 1 per trading day
 MAX_DECISIONS_PER_DAY = 10     # intraday loop: up to N ml_decide calls per trading day
@@ -364,7 +363,8 @@ class BacktestStore:
         self.conn.commit()
         self._lock = threading.Lock()
 
-    def upsert_run(self, run_id: int, seed: int, status: str) -> None:
+    def upsert_run(self, run_id: int, seed: int, status: str,
+                   start: date, end: date) -> None:
         with self._lock:
             existing = self.conn.execute(
                 "SELECT run_id FROM backtest_runs WHERE run_id=?", (run_id,)
@@ -378,7 +378,7 @@ class BacktestStore:
                 self.conn.execute(
                     "INSERT INTO backtest_runs (run_id, seed, start_date, end_date, "
                     "start_value, status, started_at) VALUES (?,?,?,?,?,?,?)",
-                    (run_id, seed, START_DATE.isoformat(), END_DATE.isoformat(),
+                    (run_id, seed, start.isoformat(), end.isoformat(),
                      INITIAL_CASH, status, now),
                 )
             self.conn.commit()
@@ -499,22 +499,31 @@ class PriceCache:
         self.trading_days: list[date] = []
         self._load()
 
+    @property
+    def cache_path(self) -> Path:
+        """Per-window cache file. Variable windows would otherwise collide on one file."""
+        return CACHE_DIR / f"prices_{self.start.isoformat()}_{self.end.isoformat()}.json"
+
     def _load(self) -> None:
         CACHE_DIR.mkdir(parents=True, exist_ok=True)
-        if PRICE_CACHE_PATH.exists():
+        # Try per-window cache first, then fall back to legacy single-file cache
+        # so existing 2025-05-01 → 2026-05-13 caches still work after the refactor.
+        for cache_path in (self.cache_path, PRICE_CACHE_PATH):
+            if not cache_path.exists():
+                continue
             try:
-                cached = json.loads(PRICE_CACHE_PATH.read_text())
+                cached = json.loads(cache_path.read_text())
                 meta = cached.get("_meta", {})
                 if (meta.get("start") == self.start.isoformat()
                         and meta.get("end") == self.end.isoformat()
                         and set(meta.get("tickers", [])) >= set(self.tickers)):
                     self.prices = {k: v for k, v in cached.items() if k != "_meta"}
                     self._build_trading_days()
-                    print(f"[price_cache] loaded {len(self.prices)} tickers from cache "
-                          f"({len(self.trading_days)} trading days)")
+                    print(f"[price_cache] loaded {len(self.prices)} tickers from "
+                          f"{cache_path.name} ({len(self.trading_days)} trading days)")
                     return
             except Exception as e:
-                print(f"[price_cache] cache read failed: {e}")
+                print(f"[price_cache] cache read failed ({cache_path.name}): {e}")
 
         print(f"[price_cache] downloading {len(self.tickers)} tickers "
               f"{self.start} → {self.end} from yfinance…")
@@ -548,9 +557,10 @@ class PriceCache:
             "saved_at": datetime.now(timezone.utc).isoformat(),
         }}
         payload.update(self.prices)
-        PRICE_CACHE_PATH.write_text(json.dumps(payload))
+        out_path = self.cache_path
+        out_path.write_text(json.dumps(payload))
         self._build_trading_days()
-        print(f"[price_cache] saved → {PRICE_CACHE_PATH} "
+        print(f"[price_cache] saved → {out_path} "
               f"({len(self.trading_days)} trading days)")
 
     def _build_trading_days(self) -> None:
@@ -590,43 +600,76 @@ class PriceCache:
 
 # ─────────────────────────── technical indicators ───────────────────────────
 
-# Volume series cache: ticker -> {iso_date: volume}. Filled lazily on first
-# call to _get_quant_signals so existing close-only price cache stays compatible.
-_VOLUME_CACHE: dict[str, dict[str, float]] = {}
-_VOLUME_CACHE_PATH = CACHE_DIR / "volumes.json"
+# Volume series cache: keyed by (ticker, start_iso, end_iso) so different
+# backtest windows don't collide. Persisted per-window on disk too.
+# A bare ticker key (as used by the original module global) would silently
+# return stale data when reused across windows — vol_ratio would compute
+# against an unrelated window's history.
+_VOLUME_CACHE: dict[tuple[str, str, str], dict[str, float]] = {}
 _VOLUME_CACHE_LOCK = threading.Lock()
-_VOLUME_CACHE_LOADED = False
+# Track which (start, end) windows we've already loaded from disk into memory.
+_VOLUME_CACHE_DISK_LOADED: set[tuple[str, str]] = set()
 
 
-def _load_volume_cache_from_disk() -> None:
-    global _VOLUME_CACHE, _VOLUME_CACHE_LOADED
+def _volume_cache_path(start: date, end: date) -> Path:
+    return CACHE_DIR / f"volumes_{start.isoformat()}_{end.isoformat()}.json"
+
+
+def _legacy_volume_cache_path() -> Path:
+    """Pre-refactor single-file cache. Read-only fallback so old caches still work."""
+    return CACHE_DIR / "volumes.json"
+
+
+def _load_volume_cache_for_window(start: date, end: date) -> None:
+    """Load the on-disk per-window volume cache into memory. Idempotent."""
+    key = (start.isoformat(), end.isoformat())
     with _VOLUME_CACHE_LOCK:
-        if _VOLUME_CACHE_LOADED:
+        if key in _VOLUME_CACHE_DISK_LOADED:
             return
-        if _VOLUME_CACHE_PATH.exists():
+        path = _volume_cache_path(start, end)
+        loaded: dict[str, dict[str, float]] = {}
+        if path.exists():
             try:
-                _VOLUME_CACHE = json.loads(_VOLUME_CACHE_PATH.read_text())
+                loaded = json.loads(path.read_text())
             except Exception:
-                _VOLUME_CACHE = {}
-        _VOLUME_CACHE_LOADED = True
+                loaded = {}
+        else:
+            # Fallback: read legacy single-file cache. Only useful if it happens
+            # to cover this window, but harmless if not — _ensure_volume_for
+            # re-fetches when entries are missing.
+            legacy = _legacy_volume_cache_path()
+            if legacy.exists():
+                try:
+                    loaded = json.loads(legacy.read_text())
+                except Exception:
+                    loaded = {}
+        for ticker, series in loaded.items():
+            _VOLUME_CACHE[(ticker, key[0], key[1])] = series
+        _VOLUME_CACHE_DISK_LOADED.add(key)
 
 
-def _persist_volume_cache() -> None:
+def _persist_volume_cache_for_window(start: date, end: date) -> None:
+    key = (start.isoformat(), end.isoformat())
     try:
-        _VOLUME_CACHE_PATH.parent.mkdir(parents=True, exist_ok=True)
-        _VOLUME_CACHE_PATH.write_text(json.dumps(_VOLUME_CACHE))
+        path = _volume_cache_path(start, end)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        flat = {ticker: series
+                for (ticker, s, e), series in _VOLUME_CACHE.items()
+                if (s, e) == key}
+        path.write_text(json.dumps(flat))
     except Exception as e:
         print(f"[volume_cache] persist failed: {e}")
 
 
 def _ensure_volume_for(ticker: str, start: date, end: date) -> dict[str, float]:
     """Lazily fetch a volume series for `ticker` covering [start, end]. Cached on disk."""
-    _load_volume_cache_from_disk()
+    _load_volume_cache_for_window(start, end)
+    cache_key = (ticker, start.isoformat(), end.isoformat())
     # Use `in` rather than truthiness: a previously-failed ticker is stored as
     # {} which is falsy, so a truthiness check would retry the network call on
     # every invocation. Across many decisions × runs this added measurable cost.
-    if ticker in _VOLUME_CACHE:
-        return _VOLUME_CACHE[ticker]
+    if cache_key in _VOLUME_CACHE:
+        return _VOLUME_CACHE[cache_key]
     try:
         end_pad = (end + timedelta(days=2)).isoformat()
         hist = yf.Ticker(ticker).history(start=start.isoformat(),
@@ -639,13 +682,13 @@ def _ensure_volume_for(ticker: str, start: date, end: date) -> dict[str, float]:
                     continue
                 series[ts.date().isoformat()] = float(vol)
         with _VOLUME_CACHE_LOCK:
-            _VOLUME_CACHE[ticker] = series
-            _persist_volume_cache()
+            _VOLUME_CACHE[cache_key] = series
+        _persist_volume_cache_for_window(start, end)
         return series
     except Exception as e:
         print(f"[volume_cache] {ticker} fetch failed: {e}")
         with _VOLUME_CACHE_LOCK:
-            _VOLUME_CACHE[ticker] = {}
+            _VOLUME_CACHE[cache_key] = {}
         return {}
 
 
@@ -788,8 +831,14 @@ def _compute_technical_indicators(ticker: str, sim_date: date,
 
     vol_ratio: float | None = None
     try:
-        # volumes cover [start, end] for the ticker
-        vols = _ensure_volume_for(ticker, START_DATE - timedelta(days=400), END_DATE)
+        # volumes cover [start, end] for the ticker — use the PriceCache's
+        # window (offset back 400d for warm-up) so different backtest windows
+        # don't share a single cached series.
+        vols = _ensure_volume_for(
+            ticker,
+            prices.start - timedelta(days=400),
+            prices.end,
+        )
         if vols:
             iso = sim_date.isoformat()
             # find sim_date volume + last 20 trading-day window
@@ -1742,8 +1791,8 @@ Return JSON only — a SINGLE consensus decision, no per-member objects.
 class BacktestRun:
     run_id: int
     seed: int
-    start_date: str = START_DATE.isoformat()
-    end_date: str = END_DATE.isoformat()
+    start_date: str           # ISO date — no default; engine must supply window
+    end_date: str             # ISO date — no default; engine must supply window
     start_value: float = INITIAL_CASH
     final_value: float = 0.0
     total_return_pct: float = 0.0
@@ -1761,9 +1810,14 @@ LOCAL_ARTICLES_DB = Path(__file__).resolve().parent.parent.parent / "digital-int
 
 
 class BacktestEngine:
-    def __init__(self):
+    def __init__(self, start: date | None = None, end: date | None = None):
+        # Standalone runs (e.g. `python3 run_backtests.py`) get a sane default
+        # equal to the pre-refactor hardcoded window so the one-shot launcher
+        # keeps working without arg-plumbing changes. Continuous loop overrides.
+        self.start = start or date(2025, 5, 1)
+        self.end = end or date(2026, 5, 13)
         self.store = BacktestStore()
-        self.prices = PriceCache(WATCHLIST, START_DATE, END_DATE)
+        self.prices = PriceCache(WATCHLIST, self.start, self.end)
         self.gdelt = GDELTFetcher()
         self.av_news = AlphaVantageNewsFetcher()
         # Pre-load local articles DB into memory keyed by ISO date string.
@@ -1988,8 +2042,9 @@ class BacktestEngine:
         if seed is None:
             seed = int.from_bytes(os.urandom(4), "big") ^ (run_id * 1337)
         rng = random.Random(seed)
-        self.store.upsert_run(run_id, seed, "running")
-        print(f"\n══════ RUN {run_id}  seed={seed} ══════")
+        self.store.upsert_run(run_id, seed, "running",
+                              start=self.start, end=self.end)
+        print(f"\n══════ RUN {run_id}  seed={seed} window={self.start}→{self.end} ══════")
 
         portfolio = SimPortfolio()
         equity_curve: list[dict] = []
@@ -2090,6 +2145,8 @@ class BacktestEngine:
 
         return BacktestRun(
             run_id=run_id, seed=seed,
+            start_date=self.start.isoformat(),
+            end_date=self.end.isoformat(),
             final_value=round(final_value, 2),
             total_return_pct=round(ret_pct, 2),
             spy_return_pct=round(spy_return, 2),
@@ -2202,7 +2259,8 @@ class BacktestEngine:
             except Exception as e:
                 print(f"[engine] RUN {i} CRASHED: {e}")
                 traceback.print_exc()
-                self.store.upsert_run(i, 0, "failed")
+                self.store.upsert_run(i, 0, "failed",
+                                      start=self.start, end=self.end)
                 return None
 
         with ThreadPoolExecutor(max_workers=n) as pool:

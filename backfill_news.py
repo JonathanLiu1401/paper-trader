@@ -8,7 +8,7 @@ skipped so the job is fully resumable.
 
 Usage:
     cd /home/zeph/paper-trader
-    python3 backfill_news.py                         # fill START_DATE..END_DATE
+    python3 backfill_news.py                         # fill default window (May 2025–May 2026)
     python3 backfill_news.py --from 2025-05-01       # override start
     python3 backfill_news.py --status                # print coverage stats and exit
 
@@ -36,9 +36,13 @@ from paper_trader.backtest import (
     GDELT_CACHE,
     GDELT_RATE_LIMIT_S,
     LOCAL_ARTICLES_DB,
-    START_DATE,
-    END_DATE,
 )
+
+# Default backfill window when --from/--to are not supplied. Matches the previous
+# hardcoded BacktestEngine window so existing operator muscle memory keeps working;
+# override via CLI for variable-window backfills.
+DEFAULT_BACKFILL_START = date(2025, 5, 1)
+DEFAULT_BACKFILL_END = date(2026, 5, 13)
 
 _STOP = False
 
@@ -131,8 +135,8 @@ def main() -> None:
     ap.add_argument("--status", action="store_true")
     args = ap.parse_args()
 
-    start = date.fromisoformat(args.from_date) if args.from_date else START_DATE
-    end = date.fromisoformat(args.to_date) if args.to_date else END_DATE
+    start = date.fromisoformat(args.from_date) if args.from_date else DEFAULT_BACKFILL_START
+    end = date.fromisoformat(args.to_date) if args.to_date else DEFAULT_BACKFILL_END
 
     if not LOCAL_ARTICLES_DB.exists():
         print(f"[backfill] articles DB not found at {LOCAL_ARTICLES_DB}")
@@ -152,7 +156,7 @@ def main() -> None:
 
     # Need BacktestEngine for trading_days list and GDELTFetcher
     print("[backfill] initialising engine (PriceCache + GDELT)…")
-    engine = BacktestEngine()
+    engine = BacktestEngine(start=start, end=end)
     trading_days = [d for d in engine.prices.trading_days if start <= d <= end]
     print(f"[backfill] {len(trading_days)} trading days in {start} → {end}")
 

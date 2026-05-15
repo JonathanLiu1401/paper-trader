@@ -81,7 +81,13 @@ def _to_float(v, default: float) -> float:
     # bool is a subclass of int — exclude it so True/False don't become 1.0/0.0.
     if isinstance(v, bool):
         return default
+    # np.float64 inherits from float, but np.float32 / np.integer do not — so
+    # a bare isinstance(v, (int, float)) check silently drops np.float32 values
+    # (which come back from pandas/numpy operations) to the default. Add a
+    # numpy fallback explicitly.
     if isinstance(v, (int, float)) and v == v:  # excludes NaN
+        return float(v)
+    if isinstance(v, np.generic) and np.isfinite(v):
         return float(v)
     return default
 
@@ -137,6 +143,8 @@ class DecisionScorer:
         except Exception as e:
             print(f"[decision_scorer] load failed: {e}")
 
+    _predict_err_logged: bool = False
+
     def predict(
         self,
         ml_score: float,
@@ -165,7 +173,12 @@ class DecisionScorer:
             if self._scaler is not None:
                 X = self._scaler.transform(X)
             return float(self._model.predict(X)[0])
-        except Exception:
+        except Exception as e:
+            # Log once per instance — silent swallow was masking shape / dtype
+            # mismatches when feature additions were rolled out without retraining.
+            if not self._predict_err_logged:
+                print(f"[decision_scorer] predict error (silenced after first): {e}")
+                self._predict_err_logged = True
             return 0.0
 
     @property
