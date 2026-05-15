@@ -44,7 +44,7 @@ SECTOR_MAP: dict[str, str] = {
     "BITU": "crypto", "ETHU": "crypto", "CONL": "crypto",
 }
 
-N_FEATURES = 6 + len(SECTORS)  # 6 base + 7 sector one-hot = 13
+N_FEATURES = 8 + len(SECTORS)  # 8 base (added vol_ratio, bb_position) + 7 sector one-hot = 15
 
 
 class _LstsqScaler:
@@ -88,6 +88,8 @@ def build_features(
     mom20: float | None,
     regime_mult: float,
     ticker: str,
+    vol_ratio: float | None = None,
+    bb_pos: float | None = None,
 ) -> list[float]:
     """Build a fixed-length feature vector for one decision."""
     rsi_v = _to_float(rsi, 50.0)
@@ -96,8 +98,10 @@ def build_features(
     mom20_v = _to_float(mom20, 0.0)
     sector = SECTOR_MAP.get(ticker, "other")
     sector_oh = [1.0 if s == sector else 0.0 for s in SECTORS]
+    vol_v = max(0.0, min(5.0, _to_float(vol_ratio, 1.0)))
+    bb_v = max(-2.0, min(2.0, _to_float(bb_pos, 0.0)))
     return [_to_float(ml_score, 0.0), rsi_v, macd_v, mom5_v, mom20_v,
-            _to_float(regime_mult, 1.0)] + sector_oh
+            _to_float(regime_mult, 1.0), vol_v, bb_v] + sector_oh
 
 
 class DecisionScorer:
@@ -132,13 +136,16 @@ class DecisionScorer:
         mom20: float | None,
         regime_mult: float,
         ticker: str,
+        vol_ratio: float | None = None,
+        bb_pos: float | None = None,
     ) -> float:
         """Return predicted 5d forward return (%). Returns 0.0 if not trained."""
         if not self._trained or self._model is None:
             return 0.0
         try:
             X = np.array(
-                [build_features(ml_score, rsi, macd, mom5, mom20, regime_mult, ticker)],
+                [build_features(ml_score, rsi, macd, mom5, mom20, regime_mult, ticker,
+                                vol_ratio=vol_ratio, bb_pos=bb_pos)],
                 dtype=np.float32,
             )
             if self._scaler is not None:
@@ -167,25 +174,40 @@ def train_scorer(records: list[dict]) -> dict:
     if len(records) < 30:
         return {"status": "insufficient_data", "n": len(records)}
 
+    # Deduplicate by (ticker, sim_date) — same market decision appearing across
+    # multiple runs has identical features/label; keep the highest-return-run copy.
+    seen: dict[tuple, dict] = {}
+    for r in records:
+        key = (str(r.get("ticker") or ""), str(r.get("sim_date") or ""))
+        rp = _to_float(r.get("return_pct"), 0.0)
+        if key not in seen or rp > _to_float(seen[key].get("return_pct"), 0.0):
+            seen[key] = r
+    records = list(seen.values())
+
     X_raw, y, weights = [], [], []
     for r in records:
         X_raw.append(build_features(
-            float(r.get("ml_score", 0.0)),
+            _to_float(r.get("ml_score"), 0.0),
             r.get("rsi"),
             r.get("macd"),
             r.get("mom5"),
             r.get("mom20"),
-            float(r.get("regime_mult", 1.0)),
-            str(r.get("ticker", "")),
+            _to_float(r.get("regime_mult"), 1.0),
+            str(r.get("ticker") or ""),
+            vol_ratio=r.get("vol_ratio"),
+            bb_pos=r.get("bb_position"),
         ))
-        fr = float(r.get("forward_return_5d", 0.0))
-        action = str(r.get("action", "BUY")).upper()
+        # Use _to_float so JSON nulls / missing keys / strings don't crash.
+        # Prior float(r.get(..., default)) crashed on `null` values because
+        # dict.get returns the value (None) even when a default is supplied.
+        fr = _to_float(r.get("forward_return_5d"), 0.0)
+        action = str(r.get("action") or "BUY").upper()
         # SELL: negative forward returns were the *correct* outcome, so flip
         # sign — the model then learns one consistent meaning of "good".
         y.append(-fr if action == "SELL" else fr)
         # Sample weight from overall run quality:
         # +200% run → 2.0×, 0% → 1.0×, -100%+ → 0.5×.
-        rp = float(r.get("return_pct", 0.0))
+        rp = _to_float(r.get("return_pct"), 0.0)
         weights.append(max(0.5, min(2.0, 1.0 + rp / 200.0)))
 
     X = np.array(X_raw, dtype=np.float32)
@@ -212,10 +234,8 @@ def train_scorer(records: list[dict]) -> dict:
         model = MLPRegressor(
             hidden_layer_sizes=(64, 32, 16),
             activation="relu",
-            max_iter=500,
+            max_iter=600,
             random_state=42,
-            early_stopping=True,
-            validation_fraction=0.15,
         )
         model.fit(X_tr_w, y_tr_w)
         y_pred = model.predict(X_v)

@@ -226,6 +226,8 @@ def _compute_decision_outcomes(engine: "BacktestEngine",
                 "mom5": q.get("mom_5d"),
                 "mom20": q.get("mom_20d"),
                 "regime_mult": regime_mult,
+                "vol_ratio": q.get("vol_ratio"),
+                "bb_position": q.get("bb_position"),
                 "forward_return_5d": round(fwd_ret, 4),
                 "return_pct": run.total_return_pct,
             })
@@ -567,21 +569,6 @@ def _try_train_ml() -> str:
     return _inject_and_train()
 
 
-def _discord(message: str) -> None:
-    if not shutil.which("openclaw"):
-        print(f"[discord] (no openclaw) {message}")
-        return
-    try:
-        subprocess.run(
-            ["openclaw", "message", "send", "--channel", "discord",
-             "--target", DISCORD_CHANNEL, "--message", message],
-            capture_output=True, text=True, timeout=60,
-        )
-        print(f"[discord] sent: {message[:120]}")
-    except Exception as e:
-        print(f"[discord] failed: {e}")
-
-
 _STOP = False
 
 
@@ -659,14 +646,24 @@ def main() -> None:
             # Capped at MAX_OUTCOMES_FOR_TRAINING — older outcomes describe a stale
             # signal regime and the file would otherwise grow unbounded.
             try:
-                all_outcomes: list[dict] = []
+                all_lines: list[str] = []
                 if _all_outcomes_path.exists():
-                    for _line in _all_outcomes_path.read_text().splitlines():
-                        if _line.strip():
-                            try:
-                                all_outcomes.append(json.loads(_line))
-                            except Exception:
-                                pass
+                    all_lines = [l for l in _all_outcomes_path.read_text().splitlines() if l.strip()]
+                # Trim the file on disk when it grows past 2× the training cap so
+                # it doesn't accumulate indefinitely across cycles. The model only
+                # ever sees the tail anyway.
+                if len(all_lines) > MAX_OUTCOMES_FOR_TRAINING * 2:
+                    kept = all_lines[-MAX_OUTCOMES_FOR_TRAINING:]
+                    _all_outcomes_path.write_text("\n".join(kept) + "\n")
+                    print(f"[continuous] trimmed outcomes file "
+                          f"{len(all_lines)} → {len(kept)} lines")
+                    all_lines = kept
+                all_outcomes: list[dict] = []
+                for _line in all_lines:
+                    try:
+                        all_outcomes.append(json.loads(_line))
+                    except Exception:
+                        pass
                 all_outcomes = all_outcomes[-MAX_OUTCOMES_FOR_TRAINING:]
                 scorer_status = _train_decision_scorer(all_outcomes)
                 print(f"[continuous] {scorer_status}")

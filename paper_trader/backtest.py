@@ -1382,6 +1382,8 @@ def _ml_decide(
             mom20=q_buy.get("mom_20d"),
             regime_mult=regime_mult,
             ticker=buy_ticker,
+            vol_ratio=q_buy.get("vol_ratio"),
+            bb_pos=q_buy.get("bb_position"),
         )
         _scorer_n = getattr(_scorer, "_n_train", 0)
         if _scorer.is_trained and _scorer_n >= 500:
