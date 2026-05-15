@@ -8,6 +8,11 @@ from unittest import mock
 import pytest
 
 from run_continuous_backtests import _pick_window
+from paper_trader.historical_collector import (
+    _label_key,
+    _parse_labels,
+    _apply_labels,
+)
 
 
 # ─────────────────────────── _pick_window ───────────────────────────
@@ -151,3 +156,64 @@ class TestEngineWithCustomDates:
         ).fetchone()
         assert row["start_date"] == custom_start.isoformat()
         assert row["end_date"] == custom_end.isoformat()
+
+
+# ───────────────────── historical_collector pure logic ─────────────────────
+
+class TestParseLabels:
+    def test_basic_pipe_separated(self):
+        raw = "0|7.5|1\n1|3.0|0\n2|0|0"
+        assert _parse_labels(raw, expected=3) == [(7.5, 1), (3.0, 0), (0.0, 0)]
+
+    def test_missing_lines_fallback_to_zero(self):
+        raw = "0|5|1"
+        # expected=3 → indices 1 and 2 get the (0.0, 0) fallback.
+        result = _parse_labels(raw, expected=3)
+        assert result == [(5.0, 1), (0.0, 0), (0.0, 0)]
+
+    def test_relevance_clamped_to_range(self):
+        raw = "0|99|1\n1|-5|0"
+        assert _parse_labels(raw, expected=2) == [(10.0, 1), (0.0, 0)]
+
+    def test_urgency_clamped_to_0_or_1(self):
+        # Regex only accepts 0 or 1 in the urgency field; anything else is
+        # treated as "no valid label" → fallback (0, 0).
+        raw = "0|5|2"
+        assert _parse_labels(raw, expected=1) == [(0.0, 0)]
+
+    def test_garbage_lines_ignored(self):
+        raw = "not a label\n\nrandom text\n0|4|1"
+        assert _parse_labels(raw, expected=1) == [(4.0, 1)]
+
+
+class TestApplyLabels:
+    def test_keeps_existing_ai_score(self):
+        articles = [{"title": "x", "source": "s", "ai_score": 9.9}]
+        # Even if a label exists, an article with ai_score is left alone.
+        labels = {_label_key(articles[0]): (1.0, 0)}
+        out = _apply_labels(articles, labels)
+        assert out[0]["ai_score"] == 9.9
+
+    def test_fills_in_missing_score(self):
+        articles = [{"title": "x", "source": "s"}]
+        labels = {_label_key(articles[0]): (4.2, 1)}
+        out = _apply_labels(articles, labels)
+        assert out[0]["ai_score"] == 4.2
+        assert out[0]["urgency"] == 1
+
+    def test_unlabeled_article_unchanged(self):
+        articles = [{"title": "x", "source": "s"}]
+        out = _apply_labels(articles, labels={})
+        assert "ai_score" not in out[0]
+
+
+class TestLabelKey:
+    def test_same_title_and_source_collide(self):
+        a = {"title": "NVDA beats", "source": "reuters"}
+        b = {"title": "NVDA beats", "source": "reuters"}
+        assert _label_key(a) == _label_key(b)
+
+    def test_different_titles_differ(self):
+        a = {"title": "NVDA beats", "source": "reuters"}
+        b = {"title": "NVDA misses", "source": "reuters"}
+        assert _label_key(a) != _label_key(b)
