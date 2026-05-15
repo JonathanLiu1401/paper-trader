@@ -2,9 +2,13 @@
 
 Architecturally separate from ArticleNet (the text classifier). This model learns
 from price outcomes, not text patterns, giving it signal that ArticleNet structurally
-cannot learn. Trained on actual backtest BUY/SELL decisions with their real 5d outcomes.
+cannot learn. Trained on actual backtest BUY/SELL decisions with their real
+5-trading-day forward returns.
 
-sklearn is used when available; falls back to numpy least-squares if not installed.
+Architecture: sklearn MLPRegressor (64, 32, 16) on 17 features (10 numeric:
+8 quant + 2 news signals (urgency, article_count) + 7-way sector one-hot).
+Falls back to a numpy weighted least-squares linear model when sklearn is
+unavailable.
 """
 from __future__ import annotations
 
@@ -21,9 +25,11 @@ SECTOR_MAP: dict[str, str] = {
     # Tech / semis
     "NVDA": "tech", "AMD": "tech", "MU": "tech", "INTC": "tech", "QCOM": "tech",
     "AAPL": "tech", "MSFT": "tech", "META": "tech", "GOOGL": "tech", "AMZN": "tech",
+    "TSLA": "tech", "CRM": "tech", "SNOW": "tech",
     "TSM": "tech", "ASML": "tech", "SMH": "tech", "SOXL": "tech", "TECL": "tech",
     "TQQQ": "tech", "QQQ": "tech", "XLK": "tech", "SHOP": "tech", "PLTR": "tech",
     "NVDU": "tech", "MSFU": "tech", "AMZU": "tech", "GOOGU": "tech", "METAU": "tech",
+    "TSLL": "tech", "TSLT": "tech",
     "SOXS": "tech", "TECS": "tech", "FNGD": "tech", "FNGU": "tech",
     "SPY": "tech", "UPRO": "tech", "SPXL": "tech",  # broad index, treated as tech-correlated
     # Energy
@@ -44,7 +50,7 @@ SECTOR_MAP: dict[str, str] = {
     "BITU": "crypto", "ETHU": "crypto", "CONL": "crypto",
 }
 
-N_FEATURES = 8 + len(SECTORS)  # 8 base (added vol_ratio, bb_position) + 7 sector one-hot = 15
+N_FEATURES = 10 + len(SECTORS)  # 10 base (quant + news_urgency + news_article_count) + 7 sector one-hot = 17
 
 
 class _LstsqScaler:
@@ -90,6 +96,8 @@ def build_features(
     ticker: str,
     vol_ratio: float | None = None,
     bb_pos: float | None = None,
+    news_urgency: float | None = None,
+    news_article_count: float | None = None,
 ) -> list[float]:
     """Build a fixed-length feature vector for one decision."""
     rsi_v = _to_float(rsi, 50.0)
@@ -100,8 +108,10 @@ def build_features(
     sector_oh = [1.0 if s == sector else 0.0 for s in SECTORS]
     vol_v = max(0.0, min(5.0, _to_float(vol_ratio, 1.0)))
     bb_v = max(-2.0, min(2.0, _to_float(bb_pos, 0.0)))
+    urg_v = max(0.0, min(100.0, _to_float(news_urgency, 50.0)))
+    cnt_v = max(0.0, min(20.0, _to_float(news_article_count, 1.0)))
     return [_to_float(ml_score, 0.0), rsi_v, macd_v, mom5_v, mom20_v,
-            _to_float(regime_mult, 1.0), vol_v, bb_v] + sector_oh
+            _to_float(regime_mult, 1.0), vol_v, bb_v, urg_v, cnt_v] + sector_oh
 
 
 class DecisionScorer:
@@ -138,6 +148,8 @@ class DecisionScorer:
         ticker: str,
         vol_ratio: float | None = None,
         bb_pos: float | None = None,
+        news_urgency: float | None = None,
+        news_article_count: float | None = None,
     ) -> float:
         """Return predicted 5d forward return (%). Returns 0.0 if not trained."""
         if not self._trained or self._model is None:
@@ -145,7 +157,9 @@ class DecisionScorer:
         try:
             X = np.array(
                 [build_features(ml_score, rsi, macd, mom5, mom20, regime_mult, ticker,
-                                vol_ratio=vol_ratio, bb_pos=bb_pos)],
+                                vol_ratio=vol_ratio, bb_pos=bb_pos,
+                                news_urgency=news_urgency,
+                                news_article_count=news_article_count)],
                 dtype=np.float32,
             )
             if self._scaler is not None:
@@ -196,6 +210,8 @@ def train_scorer(records: list[dict]) -> dict:
             str(r.get("ticker") or ""),
             vol_ratio=r.get("vol_ratio"),
             bb_pos=r.get("bb_position"),
+            news_urgency=r.get("news_urgency"),
+            news_article_count=r.get("news_article_count"),
         ))
         # Use _to_float so JSON nulls / missing keys / strings don't crash.
         # Prior float(r.get(..., default)) crashed on `null` values because
@@ -208,7 +224,10 @@ def train_scorer(records: list[dict]) -> dict:
         # Sample weight from overall run quality:
         # +200% run → 2.0×, 0% → 1.0×, -100%+ → 0.5×.
         rp = _to_float(r.get("return_pct"), 0.0)
-        weights.append(max(0.5, min(2.0, 1.0 + rp / 200.0)))
+        # LLM annotation multiplier: endorsed → 3x signal, condemned → 0.1x
+        llm_label = int(r.get("llm_quality_label", 0))
+        llm_mult = {1: 3.0, -1: 0.1, 0: 1.0}.get(llm_label, 1.0)
+        weights.append(max(0.5, min(2.0, 1.0 + rp / 200.0)) * llm_mult)
 
     X = np.array(X_raw, dtype=np.float32)
     y = np.array(y, dtype=np.float32)

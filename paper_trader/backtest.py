@@ -54,11 +54,11 @@ WATCHLIST = [
     # Core US large-cap + semis (kept from v1 watchlist)
     "SPY", "QQQ", "NVDA", "AMD", "MU", "LITE", "AMAT", "LRCX",
     "SMH", "TSM", "INTC", "QCOM", "AAPL", "MSFT", "META", "GOOGL",
-    "AMZN", "BTC-USD", "GC=F",
+    "AMZN", "TSLA", "CRM", "SNOW", "BTC-USD", "GC=F",
     # Global / ADR
     "BABA", "ASML", "SAP", "NVO", "TM", "SONY", "HSBC", "BP", "RIO", "BHP",
     # US financials
-    "GS", "JPM", "BAC",
+    "GS", "JPM", "BAC", "BRK-B",
     # Energy / healthcare / payments
     "XOM", "CVX", "LLY", "UNH", "V", "MA",
     # Fintech / crypto-adjacent / speculative
@@ -91,20 +91,15 @@ WATCHLIST = [
 # (RSI/MACD/MA crossover/volume/52w proximity). Top 10 most-traded large caps
 # plus the index proxies.
 QUANT_SIGNAL_TICKERS = [
-    # Tech / semis
-    "SPY", "QQQ", "NVDA", "AMD", "MU", "TSM", "AAPL", "MSFT", "META", "TQQQ",
+    # Tech / semis — high-growth mega-caps
+    "SPY", "QQQ", "NVDA", "AMD", "MU", "TSM", "AAPL", "MSFT", "META",
+    "GOOGL", "TSLA", "CRM", "SNOW",
+    # Speculative growth / crypto-adjacent
+    "PLTR", "COIN", "MSTR",
+    # Single-stock 2x leveraged
+    "NVDU", "MSFU", "AMZU", "TSLL", "TSLT", "BITU",
     # Leveraged index / sector ETFs — RSI/MACD computed so they score as buy candidates
-    "SOXL", "UPRO", "SPXL", "TECL", "UDOW", "FNGU", "LABU", "FAS",
-    # Energy
-    "XLE", "XOM", "CVX", "USO", "UNG",
-    # Financials
-    "XLF", "GS", "JPM", "BAC",
-    # Healthcare
-    "XLV", "LLY", "UNH",
-    # Commodities / macro
-    "GLD", "TLT", "SLV",
-    # Industrials / defense
-    "XLI", "DFEN",
+    "TQQQ", "SOXL", "UPRO", "SPXL", "TECL", "UDOW", "URTY", "FNGU", "LABU", "FAS",
     # Consumer / retail
     "AMZN", "SHOP",
 ]
@@ -158,11 +153,12 @@ PERSONAS: dict[int, dict[str, str]] = {
     4: {
         "name": "Global Macro",
         "style": (
-            "You are a global macro trader. You think in regimes: rates, inflation, FX, "
-            "commodities, central bank policy, geopolitics. Translate macro views into "
-            "trades — long TLT when you expect rates to fall, long GLD/SLV on real-rate "
-            "compression, long USO/UNG on supply shocks, long/short FX-sensitive ADRs on "
-            "currency moves. Stocks are a vehicle for a macro thesis, not the thesis."
+            "You are a macro-aware growth rotator. Translate macro inflection points into "
+            "leveraged equity positions — pile into SOXL/TQQQ/TECL when rates fall and tech "
+            "re-rates, rotate into BITU/COIN/MSTR on dollar weakness and risk-on shifts, "
+            "buy LABU/CURE on healthcare innovation cycles. The thesis is always expressed "
+            "through growth instruments — never bonds, gold, or commodities. Macro analysis "
+            "is the edge; leveraged ETFs on high-growth sectors are the vehicle."
         ),
     },
     5: {
@@ -188,11 +184,12 @@ PERSONAS: dict[int, dict[str, str]] = {
     7: {
         "name": "Sector Rotator",
         "style": (
-            "You are a sector rotator. Capital flows between sectors as the macro cycle "
-            "turns — energy in inflation, tech in disinflation, financials when curves "
-            "steepen, defensives in slowdowns. Use ETFs (XLE, XLK, XLF, SMH, ARKK) and "
-            "sector leaders to express rotation views. Always be long *something*; cash "
-            "is the absence of a thesis. Rotate aggressively when the regime changes."
+            "You are a sector rotator. Capital flows between growth sectors as the macro "
+            "cycle turns — semis on AI capex, tech on disinflation, financials when curves "
+            "steepen, biotech on rate cuts. Use leveraged sector ETFs (SOXL, TECL, FAS, "
+            "LABU, FNGU) and growth leaders to express rotation views. Always be long "
+            "*something*; cash is the absence of a thesis. Rotate aggressively when the "
+            "regime changes — there is always a growth sector to lever."
         ),
     },
     8: {
@@ -221,10 +218,11 @@ PERSONAS: dict[int, dict[str, str]] = {
         "style": (
             "You are a high-conviction speculator. Asymmetric payoffs only — small "
             "downside, massive upside. Concentrated bets, no diversification cult. "
-            "When you see asymmetric setup (BTC-USD on macro shifts, MSTR/COIN as "
-            "crypto leverage, MU on memory super-cycles, biotech catalysts, deep OTM "
-            "macro plays via TLT/USO) — go big. 100% position sizing is fine. Cash "
-            "between trades, full send when the setup is right. No half-measures."
+            "When you see asymmetric setup (BTC-USD on macro shifts, MSTR/COIN/BITU as "
+            "crypto leverage, MU on memory super-cycles, biotech catalysts, leveraged "
+            "equity plays via SOXL/TQQQ on AI capex inflections) — go big. 100% "
+            "position sizing is fine. Cash between trades, full send when the setup "
+            "is right. No half-measures."
         ),
     },
 }
@@ -240,12 +238,11 @@ def persona_for(run_id: int) -> dict[str, str]:
 # Leveraged ETFs get strong boosts in aggressive personas — they amplify gains
 # and are the primary vehicle for outperformance in high-conviction setups.
 _PERSONA_BOOSTS: dict[int, dict[str, float]] = {
-    1: {"GLD": 2.0, "TLT": 1.5, "XLV": 1.5, "JPM": 1.0, "UNH": 1.0},      # Value
+    1: {"MSFT": 1.5, "GOOGL": 1.5, "AMZN": 1.5, "JPM": 1.0},                # Value → growth compounders
     2: {"SOXL": 4.0, "TQQQ": 3.5, "UPRO": 3.0, "SPXL": 2.5,
         "TECL": 2.0, "FNGU": 2.0, "QQQ": 1.5},                              # Momentum → 3x ETFs
-    3: {"GLD": 1.5, "TLT": 2.0, "XLV": 1.5, "SLV": 1.0, "USO": 1.0},      # Contrarian
-    4: {"GLD": 2.5, "TLT": 2.0, "USO": 2.0, "UNG": 1.5, "SLV": 1.5,
-        "XLE": 1.5, "BABA": 1.0, "NVO": 1.0},                               # Global Macro
+    3: {"COIN": 1.5, "PLTR": 2.0, "MSTR": 1.5, "AMD": 1.5, "RIVN": 1.0},    # Contrarian → beaten-down growth
+    4: {"SOXL": 2.5, "TQQQ": 2.0, "BITU": 2.0, "NVDA": 1.5, "AMD": 1.5},    # Global Macro → leveraged equities
     5: {"LLY": 2.0, "UNH": 1.5, "AMZN": 1.5, "MSFT": 1.5,
         "CURE": 1.5, "LABU": 1.0},                                           # GARP
     6: {"SOXL": 2.0, "TQQQ": 2.0, "FAS": 2.0, "LABU": 1.5,
@@ -1211,6 +1208,8 @@ def _ml_decide(
     """
     # 1. Build ticker sentiment scores from articles
     ticker_scores: dict[str, float] = {}
+    ticker_article_count: dict[str, int] = {}
+    ticker_max_urgency: dict[str, float] = {}
     for a in articles:
         raw_score = float(a.get("score", 0.0))
         if raw_score < 1.0:
@@ -1221,10 +1220,17 @@ def _ml_decide(
         for word, sym in _WORD_TO_TICKER.items():
             if word in title_lower and sym not in tickers:
                 tickers.append(sym)
+        try:
+            a_urg = float(a.get("urgency", 0.0) or 0.0)
+        except (TypeError, ValueError):
+            a_urg = 0.0
         for tk in tickers:
             if tk not in WATCHLIST:
                 continue
             ticker_scores[tk] = ticker_scores.get(tk, 0.0) + raw_score * sentiment
+            ticker_article_count[tk] = ticker_article_count.get(tk, 0) + 1
+            if a_urg > ticker_max_urgency.get(tk, 0.0):
+                ticker_max_urgency[tk] = a_urg
 
     # 2. Quant signal adjustments
     quant_tickers = sorted(set(QUANT_SIGNAL_TICKERS) | set(portfolio.positions.keys()))
@@ -1345,18 +1351,24 @@ def _ml_decide(
     if persona_idx == 3:       # CONTRARIAN — flip overbought buy to sell
         q = quant.get(buy_ticker or "", {})
         rsi_v = q.get("rsi")
-        if buy_ticker and isinstance(rsi_v, (int, float)) and rsi_v > 65:
+        # Can only SELL what we own. Swapping to a non-held ticker just
+        # produces a BLOCKED SELL and loses the buy intent for no reason.
+        if (buy_ticker and isinstance(rsi_v, (int, float)) and rsi_v > 65
+                and portfolio.positions.get(buy_ticker)):
             sell_ticker, buy_ticker = buy_ticker, None
             sell_score = best_score
 
     if sell_ticker and portfolio.positions.get(sell_ticker):
         pos = portfolio.positions[sell_ticker]
         sell_qty = round(pos["qty"] * 0.5, 4)
+        s_news_count = ticker_article_count.get(sell_ticker, 0)
+        s_news_urg = ticker_max_urgency.get(sell_ticker, 0.0)
         return {
             "action": "SELL", "ticker": sell_ticker, "qty": sell_qty,
             "reasoning": (
                 f"ML+quant: {sell_ticker} score={sell_score:.2f} regime={regime} "
-                f"RSI={quant.get(sell_ticker, {}).get('rsi', 'N/A')} — reducing"
+                f"RSI={quant.get(sell_ticker, {}).get('rsi', 'N/A')} "
+                f"news_count={s_news_count} news_urg={s_news_urg:.1f} — reducing"
             ),
         }
 
@@ -1373,6 +1385,8 @@ def _ml_decide(
         # DecisionScorer nudge: only modulate conviction once the model has seen
         # enough real outcomes (≥500 records). With fewer, it is too noisy to gate.
         q_buy = quant.get(buy_ticker, {})
+        buy_news_count = ticker_article_count.get(buy_ticker, 0)
+        buy_news_urg = ticker_max_urgency.get(buy_ticker, 0.0)
         _scorer = _get_decision_scorer()
         scorer_pred = _scorer.predict(
             ml_score=best_score,
@@ -1384,6 +1398,8 @@ def _ml_decide(
             ticker=buy_ticker,
             vol_ratio=q_buy.get("vol_ratio"),
             bb_pos=q_buy.get("bb_position"),
+            news_urgency=buy_news_urg if buy_news_count else None,
+            news_article_count=float(buy_news_count) if buy_news_count else None,
         )
         _scorer_n = getattr(_scorer, "_n_train", 0)
         if _scorer.is_trained and _scorer_n >= 500:
@@ -1414,6 +1430,7 @@ def _ml_decide(
             "reasoning": (
                 f"ML+quant: {buy_ticker} score={best_score:.2f} regime={regime} "
                 f"RSI={q_buy.get('rsi', 'N/A')} "
+                f"news_count={buy_news_count} news_urg={buy_news_urg:.1f} "
                 f"conviction={conviction:.0%}{scorer_note}"
             ),
         }
@@ -1618,7 +1635,7 @@ THE 10 COMMITTEE MEMBERS:
 1. VALUE      — P/E, fundamentals, undervalued cash-flow machines, durable moats
 2. MOMENTUM   — Buys what is going up; earnings beats + raised guidance; ride trends
 3. CONTRARIAN — Buys fear, sells greed; oversold quality; mean reversion
-4. MACRO      — Rates, FX, commodities, geopolitics; TLT/GLD/USO/UNG as macro vehicles
+4. MACRO      — Rates, FX, geopolitics expressed through leveraged equities (SOXL/TQQQ/BITU)
 5. GARP       — Growth at reasonable price; quality compounders with sane multiples
 6. QUANT      — Pure signal/catalyst reaction; news-driven, unemotional
 7. ROTATOR    — Sector rotation by macro cycle; XLE/XLK/XLF/SMH/ARKK
@@ -1632,7 +1649,7 @@ PROCESS:
   (c) Output the SINGLE consensus trade as JSON.
 
 The reasoning field MUST briefly list each member's proposal then state the consensus, e.g.:
-"VALUE: BUY HSBC. MOMENTUM: BUY NVDA. CONTRARIAN: HOLD. MACRO: BUY TLT. GARP: BUY LLY.
+"VALUE: BUY HSBC. MOMENTUM: BUY NVDA. CONTRARIAN: HOLD. MACRO: BUY SOXL. GARP: BUY LLY.
 QUANT: BUY NVDA. ROTATOR: BUY SMH. SMALLCAP: BUY LITE. ESG: BUY NVDA. SPECULATOR: BUY MSTR.
 Consensus: BUY NVDA (4 votes + highest conviction on AI compute catalyst)."
 """
@@ -1755,6 +1772,18 @@ class BacktestEngine:
         if not self.prices.trading_days:
             raise RuntimeError("PriceCache has no trading days — yfinance fetch failed")
 
+    def refresh_local_articles(self) -> int:
+        """Reload local articles from disk and atomically swap the in-memory map.
+
+        The continuous loop reuses one BacktestEngine for many hours; without
+        this, `_local_news` is frozen at engine startup and progressively misses
+        every article written after that point. Returns total article count
+        after refresh (or current count on failure)."""
+        fresh = self._load_local_articles()
+        if fresh:
+            self._local_news = fresh
+        return sum(len(v) for v in self._local_news.values())
+
     def _load_local_articles(self) -> dict[str, list[dict]]:
         """Load entire articles.db into memory, keyed by published/first_seen date (YYYY-MM-DD).
 
@@ -1771,13 +1800,13 @@ class BacktestEngine:
             # past decisions as future signals (training contamination). Mirrors
             # the live-only clause used by paper_trader/signals.py.
             rows = conn.execute(
-                "SELECT title, url, source, published, ai_score, kw_score, full_text "
+                "SELECT title, url, source, published, ai_score, kw_score, full_text, urgency "
                 "FROM articles WHERE title IS NOT NULL AND title != '' "
                 "AND (url IS NULL OR url NOT LIKE 'backtest://%') "
                 "AND (source IS NULL OR (source NOT LIKE 'backtest_%' "
                 "AND source NOT LIKE 'opus_annotation%'))"
             ).fetchall()
-            for title, url, source, published, ai_score, kw_score, full_text in rows:
+            for title, url, source, published, ai_score, kw_score, full_text, urgency in rows:
                 # Use published date if available, else skip (not useful for historical sim)
                 day_str = None
                 if published:
@@ -1798,9 +1827,14 @@ class BacktestEngine:
                     except Exception:
                         pass
                 score = float(ai_score or kw_score or 0)
+                try:
+                    urg_v = float(urgency) if urgency is not None else 0.0
+                except (TypeError, ValueError):
+                    urg_v = 0.0
                 result.setdefault(day_str, []).append({
                     "title": title, "url": url or "",
                     "source": source or "", "score": score, "snippet": snippet,
+                    "urgency": urg_v,
                 })
             print(f"[local_news] loaded {sum(len(v) for v in result.values())} articles "
                   f"across {len(result)} days from local DB")
@@ -1843,7 +1877,8 @@ class BacktestEngine:
                 seen_urls.add(url)
             _, tickers = score_article({"title": a["title"], "url": url})
             articles.append({"title": a["title"], "url": url,
-                             "score": a["score"], "tickers": tickers})
+                             "score": a["score"], "tickers": tickers,
+                             "urgency": a.get("urgency", 0.0)})
 
         # ── Tier 2: yfinance recent news (no rate limit, no API key) ─────────
         if d >= date.today() - timedelta(days=30):

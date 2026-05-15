@@ -1,18 +1,23 @@
 #!/usr/bin/env python3
-"""Continuous backtesting loop — v3 ensemble-committee edition.
+"""Continuous backtesting loop — persona-driven, scorer-trained.
 
 Each cycle:
-  1. Runs 10 fresh parallel backtests (BacktestEngine.run_all). Each run is
-     now an ENSEMBLE COMMITTEE of all 10 personas voting per decision;
-     diversity across the 10 runs comes from different random seeds (which
-     drive GDELT article sampling + selection).
-  2. Picks the top winner by total_return_pct.
-  3. Appends the winner's decisions to data/winner_training.jsonl tagged
+  1. Runs RUNS_PER_CYCLE (5) parallel year-long backtests. Each run uses
+     a distinct persona; signal differences come from per-persona ticker
+     boosts and different RNG seeds.
+  2. Sorts results by total_return_pct and keeps top TOP_RUNS_TO_TRAIN (3)
+     positive runs (or the single best if none are positive).
+  3. Appends those runs' decisions to data/winner_training.jsonl tagged
      with the cycle number. (Does NOT overwrite — accumulates forever.)
-  4. Attempts ML training from the winner JSONL (best-effort).
-  5. Sends a Discord status message.
-  6. Trims backtest_runs to the most recent 100 entries.
-  7. Sleeps 60 seconds and loops.
+  4. Computes 5-trading-day forward returns for every BUY/SELL decision
+     across ALL runs (winners and losers — losing decisions are critical
+     signal for the scorer too) and appends them to
+     data/decision_outcomes.jsonl, then retrains DecisionScorer.
+  5. Spawns a background Opus 4.7 annotator to label the top run's
+     decisions GOOD/NEUTRAL/BAD and write a trading lesson — fed back into
+     ArticleNet training.
+  6. Trims backtest_runs to the most recent KEEP_LAST_RUNS (500) entries.
+  7. Sleeps COOLDOWN_SECONDS (60) and loops.
 
 SIGTERM/SIGINT exits cleanly between cycles.
 """
@@ -138,20 +143,30 @@ def _append_top_decisions(engine: BacktestEngine, top_runs: list[BacktestRun],
 
 def _compute_decision_outcomes(engine: "BacktestEngine",
                                top_runs: list["BacktestRun"]) -> list[dict]:
-    """Compute actual 5-day forward returns for BUY/SELL decisions in top_runs.
+    """Compute actual 5-trading-day forward returns for BUY/SELL decisions.
 
     Re-uses PriceCache for returns and _get_quant_signals for features so no
     network calls are needed. Returns a list of outcome records ready to pass
     to train_scorer().
+
+    Uses a 5-trading-day forward window (not calendar days) so weekends and
+    holidays don't introduce inconsistent windows across decisions.
     """
+    import bisect
+
     outcomes: list[dict] = []
     _quant_cache: dict[tuple, dict] = {}
 
-    # Decisions whose 5-day forward window extends past the last price-cache day
-    # have no real outcome — price_on falls back to the latest available close,
-    # which is the same close used at sim_date, giving a spurious 0% return.
-    # Skip those to avoid polluting training data with fake neutrals.
-    last_data_day = engine.prices.trading_days[-1] if engine.prices.trading_days else None
+    trading_days = engine.prices.trading_days
+    if not trading_days:
+        return outcomes
+
+    def _td_index(d: date) -> int:
+        # bisect for exact-match trading-day lookup; -1 if not a trading day.
+        i = bisect.bisect_left(trading_days, d)
+        if i < len(trading_days) and trading_days[i] == d:
+            return i
+        return -1
 
     for run in top_runs:
         try:
@@ -176,12 +191,19 @@ def _compute_decision_outcomes(engine: "BacktestEngine",
             except ValueError:
                 continue
 
-            end_d = sim_d + timedelta(days=7)  # ~5 trading days
-            if last_data_day is not None and end_d > last_data_day:
+            # 5-trading-day forward window. Skip decisions whose window extends
+            # past the cached price history — otherwise price_on() falls back to
+            # the latest close, which equals sim_d's close and injects fake 0%
+            # outcomes into training.
+            idx = _td_index(sim_d)
+            if idx < 0:
                 continue
-            # returns_pct silently returns 0.0 when either price lookup misses,
-            # which would inject a fake neutral outcome into training data for
-            # tickers without coverage in this window. Skip those records.
+            target_idx = idx + 5
+            if target_idx >= len(trading_days):
+                continue
+            end_d = trading_days[target_idx]
+
+            # Both price lookups must hit real cached data for this ticker.
             if (engine.prices.price_on(ticker, sim_d) is None
                     or engine.prices.price_on(ticker, end_d) is None):
                 continue
@@ -204,13 +226,37 @@ def _compute_decision_outcomes(engine: "BacktestEngine",
             else:
                 regime_mult = 1.0
 
+            reasoning = r["reasoning"] or ""
             ml_score = 0.0
-            m = re.search(r"score=([0-9.+-]+)", r["reasoning"] or "")
+            m = re.search(r"score=([0-9.+-]+)", reasoning)
             if m:
                 try:
                     ml_score = float(m.group(1))
                 except ValueError:
                     pass
+
+            news_urgency: float | None = None
+            news_article_count: float | None = None
+            m_urg = re.search(r"news_urg=([0-9.+-]+)", reasoning)
+            if m_urg:
+                try:
+                    news_urgency = float(m_urg.group(1))
+                except ValueError:
+                    pass
+            m_cnt = re.search(r"news_count=(\d+)", reasoning)
+            if m_cnt:
+                try:
+                    news_article_count = float(m_cnt.group(1))
+                except ValueError:
+                    pass
+            # Match the inference-side convention: when there is no supporting
+            # news, fall back to the build_features neutral defaults (urg=50,
+            # cnt=1) by passing None. Otherwise training would see (0, 0) for
+            # no-news while predict sees (50, 1) — model gets two encodings
+            # of the same condition.
+            if news_article_count is not None and news_article_count <= 0:
+                news_urgency = None
+                news_article_count = None
 
             outcomes.append({
                 "run_id": run.run_id,
@@ -228,6 +274,8 @@ def _compute_decision_outcomes(engine: "BacktestEngine",
                 "regime_mult": regime_mult,
                 "vol_ratio": q.get("vol_ratio"),
                 "bb_position": q.get("bb_position"),
+                "news_urgency": news_urgency,
+                "news_article_count": news_article_count,
                 "forward_return_5d": round(fwd_ret, 4),
                 "return_pct": run.total_return_pct,
             })
@@ -569,6 +617,82 @@ def _try_train_ml() -> str:
     return _inject_and_train()
 
 
+def _llm_annotate_outcomes(
+    engine,
+    winner: "BacktestRun",
+    loser: "BacktestRun",
+    outcome_records: list[dict],
+    cycle: int,
+) -> list[dict]:
+    """Call LLM to annotate best/worst run trades with quality labels.
+
+    Endorsed trades get llm_quality_label=+1 (3x training weight).
+    Condemned trades get llm_quality_label=-1 (0.1x training weight).
+    Unlabeled records get llm_quality_label=0 (1x weight).
+
+    Returns outcome_records with llm_quality_label filled in.
+    """
+    try:
+        import anthropic
+    except ImportError:
+        return outcome_records
+
+    for r in outcome_records:
+        r.setdefault("llm_quality_label", 0)
+
+    def _summarize_run(run, label: str, max_trades: int = 5) -> str:
+        trades = []
+        run_records = [r for r in outcome_records if r.get("run_id") == run.run_id][:max_trades]
+        for r in run_records:
+            trades.append(
+                f"  {r.get('ticker','?')} {r.get('action','BUY')}: "
+                f"ml_score={r.get('ml_score', 0):.1f}, "
+                f"rsi={r.get('rsi') or '?'}, "
+                f"5d_return={r.get('forward_return_5d', 0):.1f}%"
+            )
+        return f"{label} (total return: {run.total_return_pct:.1f}%):\n" + "\n".join(trades or ["  (no trades)"])
+
+    winner_summary = _summarize_run(winner, "BEST RUN")
+    loser_summary = _summarize_run(loser, "WORST RUN")
+
+    prompt = f"""You are reviewing trades from a paper-trading backtest system.
+
+{winner_summary}
+
+{loser_summary}
+
+For each trade listed above, output one line:
+TICKER ACTION: ENDORSE or CONDEMN [one sentence reason based on whether this trade reflects good news analysis and momentum alignment]
+
+Be concise. Only output the labeled lines, no intro text."""
+
+    try:
+        client = anthropic.Anthropic()
+        resp = client.messages.create(
+            model="claude-haiku-4-5-20251001",
+            max_tokens=400,
+            messages=[{"role": "user", "content": prompt}],
+        )
+        annotation_text = resp.content[0].text.strip()
+        print(f"[continuous] LLM annotation cycle {cycle}:\n{annotation_text}")
+
+        for line in annotation_text.splitlines():
+            m = re.match(r"(\w[\w\-]+)\s+(BUY|SELL|HOLD)[:\s]+(ENDORSE|CONDEMN)", line.upper())
+            if not m:
+                continue
+            ticker, action, verdict = m.group(1), m.group(2), m.group(3)
+            label = 1 if verdict == "ENDORSE" else -1
+            for r in outcome_records:
+                if (str(r.get("ticker", "")).upper() == ticker and
+                        str(r.get("action", "")).upper() == action):
+                    r["llm_quality_label"] = label
+
+    except Exception as e:
+        print(f"[continuous] LLM annotation failed: {e}")
+
+    return outcome_records
+
+
 _STOP = False
 
 
@@ -594,6 +718,15 @@ def main() -> None:
         t0 = time.time()
         print(f"\n[continuous] {_now()} ─── cycle {cycle} start "
               f"(run_ids {start_id}..{start_id + RUNS_PER_CYCLE - 1}) ───")
+
+        # Refresh local article cache so long-running engines see new news that
+        # digital-intern wrote since the last cycle. Without this, _local_news
+        # stays frozen at engine __init__ and backtests grow progressively stale.
+        try:
+            n_arts = engine.refresh_local_articles()
+            print(f"[continuous] refreshed local_news: {n_arts} articles")
+        except Exception as e:
+            print(f"[continuous] refresh_local_articles failed: {e}")
 
         results: list[BacktestRun] = []
         try:
@@ -630,6 +763,19 @@ def main() -> None:
                       f"from {len(sorted_results)} runs")
             except Exception as e:
                 print(f"[continuous] outcome compute failed: {e}")
+
+            # LLM annotation: endorse/condemn individual trades to improve training signal
+            if outcome_records and winner and sorted_results:
+                loser = sorted_results[-1]
+                try:
+                    outcome_records = _llm_annotate_outcomes(
+                        engine, winner, loser, outcome_records, cycle
+                    )
+                    endorsed = sum(1 for r in outcome_records if r.get("llm_quality_label") == 1)
+                    condemned = sum(1 for r in outcome_records if r.get("llm_quality_label") == -1)
+                    print(f"[continuous] LLM labels: {endorsed} endorsed, {condemned} condemned")
+                except Exception as e:
+                    print(f"[continuous] LLM annotation outer failed: {e}")
 
             # Train DecisionScorer on accumulated outcomes (accumulate across cycles)
             _all_outcomes_path = ROOT / "data" / "decision_outcomes.jsonl"
