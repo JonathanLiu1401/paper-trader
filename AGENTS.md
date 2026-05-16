@@ -556,6 +556,16 @@ For automated review agents that touch ML / backtest code:
   That test also locks the **11-column INSERT alignment** (id…full_text),
   `ai_score == kw_score == min(10, ai·weight)`, hard-coded `urgency=0`, and
   `INSERT OR IGNORE` dedup by `_aid(url, title)`.
+  The same null-default class lives in `_ml_decide`'s article loop: it
+  hardens **both** `score` (`float(a.get("score") or 0.0)`) **and**
+  `tickers` (`list(a.get("tickers") or [])`). A `"tickers": null` makes
+  `list(None)` raise an uncaught `TypeError` — unlike `_inject_and_train`
+  there is **no** broad `except` here, so it kills the whole run thread
+  mid-cycle (run recorded `failed`, zero decisions), the same blast radius
+  the adjacent `score` hardening comment describes. Pinned by
+  `tests/test_ml_backtest_review.py::TestMlDecideMalformedArticles` (None
+  `tickers` ⇒ same decision as the well-formed article; None `score` ⇒
+  clean HOLD, never an exception).
 - **Hardcoded cross-repo paths must be module-level for testability** —
   `_inject_and_train` writes into digital-intern's `articles.db`. Its path
   is now the module constant `run_continuous_backtests.DIGITAL_INTERN_ARTICLES_DB`

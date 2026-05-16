@@ -1340,7 +1340,13 @@ def _ml_decide(
         if raw_score < 1.0:
             continue
         sentiment = _article_sentiment(a.get("title", ""))
-        tickers = list(a.get("tickers", []))
+        # `.get("tickers", [])` only defaults on a MISSING key — a present-but-
+        # None value (`"tickers": null` in a malformed article dict) returns
+        # None, and `list(None)` raises the SAME uncaught TypeError as the
+        # `score` case above, killing the whole run thread mid-cycle. `or []`
+        # coerces None/""/0 to the empty list. Identical behaviour for every
+        # real list value (a non-empty list is truthy; an empty list stays []).
+        tickers = list(a.get("tickers") or [])
         title_lower = (a.get("title") or "").lower()
         for word, sym in _WORD_TO_TICKER.items():
             if word in title_lower and sym not in tickers:

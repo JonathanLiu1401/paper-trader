@@ -162,6 +162,58 @@ class TestMlDecideSellAndExclude:
         assert decision["action"] == "HOLD"
 
 
+class TestMlDecideMalformedArticles:
+    """A present-but-None `tickers` (a malformed article dict) must not crash
+    `_ml_decide`. Line 1339 hardens `score` against exactly this — a None
+    there reaches `float(None)` and the uncaught TypeError kills the whole
+    run thread (run recorded 'failed', zero decisions). The very next line
+    (`list(a.get("tickers", []))`) had the IDENTICAL failure mode: a
+    `"tickers": null` makes `list(None)` raise the same uncaught TypeError.
+    These tests lock the parity: a None `tickers` (and a None `score`) must
+    be treated as absent/empty, producing the SAME decision as the
+    well-formed article, never an exception.
+    """
+
+    def test_none_tickers_does_not_crash_and_matches_wellformed(
+        self, synthetic_prices
+    ):
+        p = SimPortfolio(cash=100_000.0)
+        d = synthetic_prices.trading_days[-1]
+        title = "Nvidia beats earnings, guidance raised, semiconductor surge"
+        # Reference: well-formed article with an explicit tickers list.
+        good = _ml_decide(
+            d, SimPortfolio(cash=100_000.0),
+            [{"title": title, "score": 10.0, "tickers": ["NVDA"], "url": ""}],
+            synthetic_prices, run_id=1, rng=random.Random(42),
+        )
+        # Malformed: tickers is an explicit JSON null. Must not raise and must
+        # land on the same decision (None ⇒ treated as the empty list; the
+        # word→ticker map re-derives NVDA from the headline either way).
+        malformed = _ml_decide(
+            d, p,
+            [{"title": title, "score": 10.0, "tickers": None, "url": ""}],
+            synthetic_prices, run_id=1, rng=random.Random(42),
+        )
+        assert good["action"] == "BUY" and good["ticker"] == "NVDA"
+        assert malformed["action"] == good["action"]
+        assert malformed["ticker"] == good["ticker"]
+        assert malformed["qty"] == pytest.approx(good["qty"])
+
+    def test_none_score_and_none_tickers_together(self, synthetic_prices):
+        """Both hardened fields null on the same article: the `score or 0.0`
+        guard skips it (no signal), so the only outcome is a clean HOLD —
+        never a TypeError from either `float(None)` or `list(None)`."""
+        p = SimPortfolio(cash=100_000.0)
+        d = synthetic_prices.trading_days[-1]
+        decision = _ml_decide(
+            d, p,
+            [{"title": "Some headline", "score": None,
+              "tickers": None, "url": ""}],
+            synthetic_prices, run_id=1, rng=random.Random(42),
+        )
+        assert decision["action"] == "HOLD"
+
+
 # ───────────────────── DecisionScorer conviction gate ─────────────────────
 
 class _FakeScorer:
