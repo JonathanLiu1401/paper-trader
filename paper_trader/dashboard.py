@@ -1113,6 +1113,26 @@ TEMPLATE = r"""
       <div class="muted" id="sft-meta" style="font-size:12px;">—</div>
     </div>
 
+    <!-- ─── News source edge — which collector is worth trusting? (new 2026-05-16, agent 4) ─── -->
+    <div class="card" id="se-card" style="margin-bottom:18px;">
+      <h2 style="display:flex;justify-content:space-between;align-items:center;">
+        <span>News source edge <span class="muted" style="font-size:11px;text-transform:none;letter-spacing:normal;font-weight:normal;">— which of ~17 collectors' scored headlines actually precede the move (vs SPY)?</span></span>
+        <span id="se-state" style="font-size:12px;padding:3px 10px;border-radius:4px;background:#1f2126;color:#8b929d;">—</span>
+      </h2>
+      <div class="muted" id="se-headline" style="font-size:12px;margin-bottom:12px;">loading…</div>
+      <table style="width:100%;border-collapse:collapse;font-size:12px;">
+        <thead><tr style="text-align:left;color:#8b929d;">
+          <th style="padding:4px 6px;">collector</th>
+          <th style="padding:4px 6px;">abn% @ref</th>
+          <th style="padding:4px 6px;">hit</th>
+          <th style="padding:4px 6px;">resolved</th>
+          <th style="padding:4px 6px;">verdict</th>
+        </tr></thead>
+        <tbody id="se-rows"><tr><td colspan="5" class="muted" style="padding:6px;">—</td></tr></tbody>
+      </table>
+      <div class="muted" id="se-meta" style="font-size:12px;margin-top:10px;">—</div>
+    </div>
+
     <!-- ─── Sector Pulse ─── -->
     <div class="card" style="margin-bottom:18px;">
       <h2 style="display:flex;justify-content:space-between;align-items:center;">
@@ -4294,6 +4314,52 @@ async function refreshSignalFollowThrough() {
     + (r.lookback_days != null ? " · " + r.lookback_days + "d lookback" : "");
 }
 
+// ───────── News source edge — which collector is worth trusting? (new 2026-05-16, agent 4) ─────────
+async function refreshSourceEdge() {
+  const r = await fetchMaybeStale("/api/source-edge");
+  if (r.__unavailable) { markStale("se-state", "se-headline", "Source-edge endpoint"); return; }
+  if (r.error) { document.getElementById("se-headline").textContent = "error: " + r.error; return; }
+  const smap = {
+    EDGE_FOUND:        ["#1b5e20", "#a5d6a7"],
+    NO_EDGE:           ["#b71c1c", "#ffffff"],
+    INSUFFICIENT_DATA: ["#3a2a00", "#ffd479"],
+    NO_DATA:           ["#1f2126", "#8b929d"],
+    ERROR:             ["#b71c1c", "#ffffff"],
+  };
+  const [bg, fg] = smap[r.verdict] || smap.NO_DATA;
+  const sEl = document.getElementById("se-state");
+  sEl.textContent = (r.verdict || "—").replace(/_/g, " ");
+  sEl.style.background = bg; sEl.style.color = fg;
+  document.getElementById("se-headline").textContent = r.verdict_reason || "";
+  const ref = String(r.reference_horizon || 3);
+  const vmap = {
+    EXPLOITABLE:  "#4caf50", WEAK: "#ffa726",
+    NEGATIVE:     "#ff4455", INSUFFICIENT: "#8b929d",
+  };
+  const rows = (r.sources || []).slice(0, 10).map(s => {
+    const h = (s.horizons || {})[ref] || {};
+    const abn = h.mean_abnormal_pct;
+    const hit = h.abnormal_hit_rate;
+    return "<tr style='border-top:1px solid #1f2126;'>"
+      + "<td style='padding:4px 6px;'>" + s.source + "</td>"
+      + "<td style='padding:4px 6px;color:" + _plColor(abn) + ";'>"
+        + (abn != null ? _sgn(abn) + fmt(abn, 2) + "%" : "—") + "</td>"
+      + "<td style='padding:4px 6px;'>" + (hit != null ? fmt(hit, 0) + "%" : "—") + "</td>"
+      + "<td style='padding:4px 6px;'>" + (s.n_resolved != null ? s.n_resolved : "—") + "</td>"
+      + "<td style='padding:4px 6px;color:" + (vmap[s.verdict] || "#8b929d") + ";'>"
+        + (s.verdict || "—") + "</td></tr>";
+  });
+  document.getElementById("se-rows").innerHTML =
+    rows.length ? rows.join("") : "<tr><td colspan='5' class='muted' style='padding:6px;'>no collector resolved a watchlist move yet</td></tr>";
+  document.getElementById("se-meta").textContent =
+    "ref " + (r.reference_horizon != null ? r.reference_horizon + "d" : "—")
+    + " · " + (r.n_resolved != null ? r.n_resolved : "—") + " resolved / "
+    + (r.n_scored != null ? r.n_scored : "—") + " scored"
+    + " · " + (r.n_tickers_priced != null ? r.n_tickers_priced : "—") + " tickers priced"
+    + (r.spy_adjusted ? " · SPY-adjusted" : " · raw only")
+    + (r.lookback_days != null ? " · " + r.lookback_days + "d lookback" : "");
+}
+
 // ───────── boot ─────────
 refresh();
 refreshSignals();
@@ -4327,6 +4393,7 @@ refreshFundedSuggestions();
 refreshSignalFollowThrough();
 refreshChurn();
 refreshThesisDrift();
+refreshSourceEdge();
 refreshGlobalStale();
 setInterval(refresh, 15_000);
 setInterval(refreshSignals, 30_000);
@@ -4360,6 +4427,7 @@ setInterval(refreshFundedSuggestions, 45_000);
 setInterval(refreshSignalFollowThrough, 300_000);
 setInterval(refreshChurn, 60_000);
 setInterval(refreshThesisDrift, 60_000);
+setInterval(refreshSourceEdge, 300_000);
 setInterval(refreshGlobalStale, 60_000);
 showTab(INITIAL_TAB || "trader");
 </script>
@@ -6704,6 +6772,66 @@ def signal_followthrough_api():
     except Exception as e:
         return jsonify({"error": str(e), "verdict": "ERROR",
                         "acted": {}, "ignored": {}}), 500
+
+
+@app.route("/api/source-edge")
+def source_edge_api():
+    """Which of digital-intern's ~17 collectors is worth trusting?
+
+    news-edge grades the *score* (8.0 vs 3.0 headline); signal-followthrough
+    grades whether the bot *acted*. Neither answers the operator's question:
+    of the *sources* feeding the pipeline, whose scored headlines actually
+    precede abnormal moves and which are noise to cut/down-weight? This bins
+    every scored live article by collector family (the dirty `source` column
+    normalised once, see source_edge._source_family) and reports the 1/3/5d
+    forward return, raw + SPY-abnormal, pooled across score bands per family.
+    Pooled (not per-band) because digital-intern's live news is only days-deep
+    — the pooled view is both the actionable one (cut a collector) and the one
+    that reaches a usable sample first. ``?days=`` (lookback, default 30) /
+    ``?min_score=`` (default 2.0). Verdict matures with history exactly like
+    news-edge (NO_DATA → INSUFFICIENT_DATA → EDGE_FOUND/NO_EDGE). Pure
+    composition reusing news_edge resolution helpers (single source of truth).
+    Advisory only — never gates Opus, adds no caps (invariants #2/#12)."""
+    try:
+        from .analytics.source_edge import (
+            _fetch_source_articles,
+            build_source_edge,
+        )
+        from .strategy import WATCHLIST
+
+        days = max(7, min(120, int(request.args.get("days", 30))))
+        min_score = float(request.args.get("min_score", 2.0))
+
+        path = _articles_db_path()
+        if path is None:
+            return jsonify({"error": "articles.db not found",
+                            "sources": [], "verdict": "NO_DATA"}), 200
+
+        since = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
+        arts = _fetch_source_articles(str(path), since, min_score=min_score)
+
+        # Price only the watchlist tickers that actually appear, most-frequent
+        # first, capped — same cold-start guard as news-edge.
+        freq: dict[str, int] = {}
+        pats = {tk: re.compile(rf"(?:\$|\b){re.escape(tk)}\b") for tk in WATCHLIST}
+        for a in arts:
+            up = a["text"].upper()
+            for tk, pat in pats.items():
+                if pat.search(up):
+                    freq[tk] = freq.get(tk, 0) + 1
+        wanted = [tk for tk, _ in sorted(freq.items(), key=lambda kv: -kv[1])][:30]
+
+        price_history = {tk: _daily_history_cached(tk) for tk in wanted}
+        spy_history = _daily_history_cached("SPY")
+
+        result = build_source_edge(arts, price_history, spy_history, WATCHLIST)
+        result["lookback_days"] = days
+        result["n_tickers_priced"] = len([tk for tk in wanted
+                                          if price_history.get(tk)])
+        return jsonify(result)
+    except Exception as e:
+        return jsonify({"error": str(e), "sources": [],
+                        "verdict": "ERROR"}), 500
 
 
 def run(host: str = "0.0.0.0", port: int = 8090):
