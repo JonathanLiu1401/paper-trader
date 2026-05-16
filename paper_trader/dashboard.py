@@ -5695,6 +5695,54 @@ def decision_drought_api():
         return jsonify({"error": str(e)}), 500
 
 
+@app.route("/api/capital-paralysis")
+def capital_paralysis_api():
+    """Trap + cost + unlock — why the book is stuck and the way out.
+
+    /api/liquidity sees the trap (no dry powder), /api/decision-drought sees
+    the cost (alpha bled while pinned), /api/suggestions lists ideas it can't
+    fund — none connect them. This composes liquidity + decision-drought
+    (single source of truth, no re-derived metrics) and adds the unlock
+    ladder: positions ranked in desk cut-priority (biggest loser first), each
+    rung showing the cash a sale frees, deployed-% after, and whether that
+    single sale restores the ability to act on a fresh signal. Advisory only —
+    never gates Opus, adds no caps (AGENTS.md invariant #2)."""
+    try:
+        from .analytics.capital_paralysis import build_capital_paralysis
+        store = get_store()
+        return jsonify(build_capital_paralysis(
+            store.get_portfolio(),
+            store.open_positions(),
+            store.recent_trades(200),
+            store.recent_decisions(limit=3000),
+            store.equity_curve(limit=5000),
+        ))
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/open-attribution")
+def open_attribution_api():
+    """Selection-vs-market on the *open* book — the bot's dominant return.
+
+    /api/analytics & /api/performance-attribution cover *closed* round-trips,
+    but the live trader mostly HOLDs, so its return is dominated by open
+    drift vs SPY — invisible until now. Per open stock position: return since
+    opened_at, SPY return over the same window (anchored to the equity curve's
+    sp500_price at-or-after entry), and alpha in % and $. Options are flagged
+    and skipped (alpha-vs-SPY doesn't fit Greeks — /api/backtests/compare
+    precedent)."""
+    try:
+        from .analytics.open_attribution import build_open_attribution
+        store = get_store()
+        return jsonify(build_open_attribution(
+            store.open_positions(),
+            store.equity_curve(limit=5000),
+        ))
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
 # Daily-bar history cache for the news-edge endpoint. Keyed by ticker; daily
 # bars don't change intraday in a way that matters for forward-return analysis
 # of *past* articles, so a generous TTL keeps the endpoint snappy after the
