@@ -91,7 +91,7 @@ review:
 | `test_core_store.py` | cash bookkeeping, position upsert/blend/close, trade & equity ordering |
 | `test_core_market.py` | weekend / pre-open / after-close / holiday gating, price-cache TTL, option chain lookup |
 | `test_core_signals.py` | top-signal score threshold + sort order, backtest-row filter, urgent ai_score=NULL coercion, ticker regex word-boundary |
-| `test_core_strategy.py` | JSON parse w/ fences + trailing prose, RSI/EMA/MACD math, SELL-exceeds-held blocking, BUY insufficient cash blocking, **ambiguous option close blocking** |
+| `test_core_strategy.py` | JSON parse w/ fences + trailing prose, RSI/EMA/MACD math, SELL-exceeds-held blocking, BUY insufficient cash blocking, **ambiguous option close blocking**, **expired-option settlement** (`_option_expired` boundary incl. expiry-day-still-live; `_expired_intrinsic` ITM/OTM/no-underlying; `_portfolio_snapshot` marks expired contracts to intrinsic/0 not premium; live-option transient-None still → avg_cost; `SELL_CALL` on a dead contract settles at intrinsic) |
 | `test_core_runner.py` | `_maybe_daily_close` weekend/time gating + once-per-day flag + retry-on-failure, `_maybe_hourly` 3600s gating + retry-on-failure |
 | `test_core_reporter.py` | openclaw missing → False, timeout/nonzero exit → False, trade alert + decision log + portfolio line formatting |
 | `test_round_trips.py` | `build_round_trips` arithmetic: simple/partial/re-entry round-trips, option ×100, distinct (ticker,type,strike,expiry) keys, open-lot exclusion, orphan SELL, zero-cost `pnl_pct=None`, negative/unparseable `hold_days`, sub-cent rounding |
@@ -217,6 +217,41 @@ review:
    scope of this rule. Locked by
    `tests/test_core_analytics.py::TestCalmarBaseline`.
 
+13. **Expired options settle at intrinsic, never at premium** — yfinance has
+   no option chain past expiry, so `market.get_option_price` returns `None`
+   for a held-to-expiry contract. The old `cur = cur or p["avg_cost"]` in
+   `strategy._portfolio_snapshot` then marked a (usually worthless) expired
+   contract at its full purchase premium **forever**, never closing it —
+   silently inflating `total_value` and every reported P/L. The system
+   prompt explicitly tells Opus it "can hold options through expiry", so
+   this is reachable *by design*, not an accident. Fixed at two sites:
+   `_portfolio_snapshot` (the mark) and `_execute`'s `SELL_CALL`/`SELL_PUT`
+   close path. Both now route an expired contract through
+   `strategy._expired_intrinsic(ticker, otype, strike)` =
+   `max(0, underlying−strike)` (call) / `max(0, strike−underlying)` (put),
+   falling back to **0.0** (never avg_cost) when the underlying price is
+   unavailable. The `or`→`is not None` change on the mark fallback is
+   load-bearing: a legitimate `0.0` intrinsic must survive, and `0.0 or
+   avg_cost` would clobber it straight back to premium. `_option_expired`
+   uses `<` (an option is live *on* its expiry date).
+   **This is a *valuation* fix, not a risk limit.** It does not violate the
+   "no hard risk limits / Opus has full autonomy" invariant (#2) — that
+   invariant governs *gating decisions*, not *valuing instruments*. Do not
+   read this as an autonomy violation and revert it. Full auto-settlement
+   (recording a synthetic SELL + closing the row at expiry) was
+   *deliberately deferred*: it would make `_portfolio_snapshot` state-
+   mutating for every caller (it is currently a pure mark), which is too
+   invasive for a surgical pass and risks the parse-retry tests that
+   monkeypatch it. The conservative fix removes the phantom-equity harm; an
+   expired contract simply marks to its true value and stays an open row
+   until Opus closes it (and closing it now also settles correctly). The
+   live `paper_trader.db` has had **zero** option positions to date, so
+   this is latent, not active — but the bug is real code-path and the test
+   suite locks the desired behaviour. Locked by
+   `tests/test_core_strategy.py::TestOptionExpired` /
+   `::TestExpiredIntrinsic` / `::TestPortfolioSnapshotExpiredOptions` /
+   `::TestExecuteCloseExpiredOption`.
+
 ### Dashboard API endpoints (port 8090)
 
 All endpoints serve `application/json`. CORS is wide open (`*`) so the
@@ -268,6 +303,7 @@ Digital Intern dashboard on `:8080` can cross-fetch.
 | Discord posts stop entirely | `openclaw` binary missing / auth expired | `which openclaw`; `openclaw message send --channel discord ...` manually |
 | Live cross-dashboard (`:8080` → `:8090`) shows blanks | CORS or paper-trader process down | `curl http://localhost:8090/api/portfolio` |
 | Strategy returns `HOLD` constantly even with strong signals | Opus is being conservative — by design, no threshold gating to override | Inspect the prompt context in `strategy.py::_build_payload`; if the watchlist has stale prices yfinance is rate-limited |
+| Equity / P/L looks too high and won't come down; an option position never closes | Pre-fix `_portfolio_snapshot` marked an expired contract at avg_cost forever (no live chain past expiry). Fixed — see invariant #13. If you see this on an old `:8090` process, check `/api/build-info` `stale` and restart | `strategy._option_expired` / `_expired_intrinsic`; `SELECT * FROM positions WHERE type IN ('call','put') AND closed_at IS NULL AND expiry < date('now')` |
 
 For ML / backtest-side failures, see the ML section below and `CLAUDE.md` §11.
 

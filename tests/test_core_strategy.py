@@ -336,3 +336,153 @@ class TestExecuteOtherActions:
             {"action": "TELEPORT", "ticker": "NVDA", "qty": 1, "reasoning": ""}, snap, fresh_store)
         assert status == "BLOCKED"
         assert "unknown action" in detail.lower()
+
+
+# ─────────────────────────── expired-option settlement ───────────────────────────
+# Regression: yfinance has no option chain past expiry, so get_option_price
+# returns None. The old `cur = cur or p["avg_cost"]` then marked an expired
+# (often worthless) contract at full purchase premium *forever*, never closing
+# it — silently inflating equity and every reported P/L. The system prompt
+# explicitly tells Opus it "can hold options through expiry", so this is
+# reachable by design, not an accident. Expired options must settle at
+# intrinsic against the underlying (0.0 when OTM or the underlying is
+# unavailable), never at avg_cost.
+
+from datetime import date as _date  # noqa: E402
+
+
+class TestOptionExpired:
+    def test_past_date_is_expired(self):
+        assert strategy._option_expired("2020-01-17", today=_date(2026, 5, 16)) is True
+
+    def test_expiry_day_itself_is_not_expired(self):
+        # An option is still live and tradeable *on* its expiry date.
+        assert strategy._option_expired("2026-05-16", today=_date(2026, 5, 16)) is False
+
+    def test_future_date_is_not_expired(self):
+        assert strategy._option_expired("2026-12-19", today=_date(2026, 5, 16)) is False
+
+    def test_none_expiry_is_not_expired(self):
+        assert strategy._option_expired(None) is False
+
+    def test_malformed_expiry_is_not_expired(self):
+        # A garbage expiry must not crash the mark loop nor be treated as
+        # expired (which would zero a live position).
+        assert strategy._option_expired("not-a-date") is False
+
+    def test_datetime_prefixed_expiry_parses(self):
+        assert strategy._option_expired("2020-01-17T00:00:00", today=_date(2026, 5, 16)) is True
+
+
+class TestExpiredIntrinsic:
+    def test_call_in_the_money(self, monkeypatch):
+        monkeypatch.setattr(market, "get_price", lambda t: 650.0)
+        assert strategy._expired_intrinsic("NVDA", "call", 600.0) == 50.0
+
+    def test_call_out_of_the_money_is_zero(self, monkeypatch):
+        monkeypatch.setattr(market, "get_price", lambda t: 550.0)
+        assert strategy._expired_intrinsic("NVDA", "call", 600.0) == 0.0
+
+    def test_put_in_the_money(self, monkeypatch):
+        monkeypatch.setattr(market, "get_price", lambda t: 80.0)
+        assert strategy._expired_intrinsic("AMD", "put", 100.0) == 20.0
+
+    def test_put_out_of_the_money_is_zero(self, monkeypatch):
+        monkeypatch.setattr(market, "get_price", lambda t: 120.0)
+        assert strategy._expired_intrinsic("AMD", "put", 100.0) == 0.0
+
+    def test_underlying_unavailable_is_zero_not_premium(self, monkeypatch):
+        # The crux: no underlying price must NOT become avg_cost. 0.0.
+        monkeypatch.setattr(market, "get_price", lambda t: None)
+        assert strategy._expired_intrinsic("NVDA", "call", 600.0) == 0.0
+
+    def test_nonpositive_underlying_is_zero(self, monkeypatch):
+        monkeypatch.setattr(market, "get_price", lambda t: 0.0)
+        assert strategy._expired_intrinsic("NVDA", "call", 600.0) == 0.0
+
+
+class TestPortfolioSnapshotExpiredOptions:
+    def test_expired_otm_option_marked_to_zero_not_premium(self, fresh_store, monkeypatch):
+        # Bought a call for $5.00 premium; it expired OTM. Must mark to 0,
+        # realizing the full -$500 loss — NOT sit at avg_cost showing $0 P/L.
+        monkeypatch.setattr(market, "get_price", lambda t: 550.0)  # OTM vs 600 strike
+        monkeypatch.setattr(market, "get_option_price",
+                            lambda *a, **k: pytest.fail("must not query a dead chain"))
+        fresh_store.upsert_position("NVDA", "call", qty=1, avg_cost=5.0,
+                                    expiry="2020-01-17", strike=600.0)
+        snap = strategy._portfolio_snapshot(fresh_store)
+        assert len(snap["positions"]) == 1
+        pos = snap["positions"][0]
+        assert pos["current_price"] == 0.0
+        assert pos["unrealized_pl"] == pytest.approx(-500.0)  # (0 - 5) * 1 * 100
+        assert snap["open_value"] == 0.0
+
+    def test_expired_itm_option_settles_at_intrinsic(self, fresh_store, monkeypatch):
+        monkeypatch.setattr(market, "get_price", lambda t: 650.0)  # ITM vs 600
+        fresh_store.upsert_position("NVDA", "call", qty=2, avg_cost=5.0,
+                                    expiry="2020-01-17", strike=600.0)
+        snap = strategy._portfolio_snapshot(fresh_store)
+        pos = snap["positions"][0]
+        assert pos["current_price"] == 50.0          # 650 - 600
+        assert pos["unrealized_pl"] == pytest.approx((50.0 - 5.0) * 2 * 100)
+        assert snap["open_value"] == pytest.approx(50.0 * 2 * 100)
+
+    def test_expired_option_no_underlying_does_not_inflate_equity(self, fresh_store, monkeypatch):
+        # The phantom-equity regression: underlying price unavailable AND
+        # chain dead → still 0.0, never the $5 premium.
+        monkeypatch.setattr(market, "get_price", lambda t: None)
+        fresh_store.upsert_position("NVDA", "call", qty=1, avg_cost=5.0,
+                                    expiry="2020-01-17", strike=600.0)
+        snap = strategy._portfolio_snapshot(fresh_store)
+        assert snap["positions"][0]["current_price"] == 0.0
+        assert snap["open_value"] == 0.0
+
+    def test_live_option_still_uses_chain_price(self, fresh_store, monkeypatch):
+        monkeypatch.setattr(market, "get_option_price", lambda t, e, s, ot: 7.5)
+        fresh_store.upsert_position("NVDA", "call", qty=1, avg_cost=5.0,
+                                    expiry="2026-12-19", strike=600.0)
+        snap = strategy._portfolio_snapshot(fresh_store)
+        assert snap["positions"][0]["current_price"] == 7.5
+
+    def test_live_option_transient_none_still_falls_back_to_avg_cost(self, fresh_store, monkeypatch):
+        # Behaviour preserved for *non-expired* options: a transient yfinance
+        # miss (None) on a live contract still marks at avg_cost, not 0.
+        monkeypatch.setattr(market, "get_option_price", lambda t, e, s, ot: None)
+        fresh_store.upsert_position("NVDA", "call", qty=1, avg_cost=5.0,
+                                    expiry="2026-12-19", strike=600.0)
+        snap = strategy._portfolio_snapshot(fresh_store)
+        assert snap["positions"][0]["current_price"] == 5.0
+
+
+class TestExecuteCloseExpiredOption:
+    def test_sell_call_on_expired_contract_settles_at_intrinsic(self, fresh_store, monkeypatch):
+        # Closing an expired ITM call must credit cash the intrinsic value,
+        # not the avg_cost breakeven the old `or match["avg_cost"]` produced.
+        monkeypatch.setattr(market, "get_option_price", lambda *a, **k: None)
+        monkeypatch.setattr(market, "get_price", lambda t: 650.0)  # ITM vs 600
+        fresh_store.upsert_position("NVDA", "call", qty=1, avg_cost=5.0,
+                                    expiry="2020-01-17", strike=600.0)
+        positions = [{"ticker": "NVDA", "type": "call", "qty": 1, "avg_cost": 5.0,
+                      "strike": 600.0, "expiry": "2020-01-17"}]
+        snap = {"cash": 100.0, "total_value": 600.0, "positions": positions}
+        decision = {"action": "SELL_CALL", "ticker": "NVDA", "qty": 1,
+                    "strike": 600, "expiry": "2020-01-17", "reasoning": ""}
+        status, _ = strategy._execute(decision, snap, fresh_store)
+        assert status == "FILLED"
+        # cash 100 + intrinsic 50 * 1 * 100 = 5100  (NOT 100 + 5*100 = 600)
+        assert fresh_store.get_portfolio()["cash"] == pytest.approx(5100.0)
+
+    def test_sell_call_on_expired_otm_contract_settles_at_zero(self, fresh_store, monkeypatch):
+        monkeypatch.setattr(market, "get_option_price", lambda *a, **k: None)
+        monkeypatch.setattr(market, "get_price", lambda t: 500.0)  # OTM vs 600
+        fresh_store.upsert_position("NVDA", "call", qty=1, avg_cost=5.0,
+                                    expiry="2020-01-17", strike=600.0)
+        positions = [{"ticker": "NVDA", "type": "call", "qty": 1, "avg_cost": 5.0,
+                      "strike": 600.0, "expiry": "2020-01-17"}]
+        snap = {"cash": 100.0, "total_value": 600.0, "positions": positions}
+        decision = {"action": "SELL_CALL", "ticker": "NVDA", "qty": 1,
+                    "strike": 600, "expiry": "2020-01-17", "reasoning": ""}
+        status, _ = strategy._execute(decision, snap, fresh_store)
+        assert status == "FILLED"
+        # Worthless settlement → no cash credit (NOT the $500 avg_cost breakeven).
+        assert fresh_store.get_portfolio()["cash"] == pytest.approx(100.0)

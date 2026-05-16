@@ -6,7 +6,7 @@ import json
 import re
 import shutil
 import subprocess
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 
 from . import market, signals
 from .store import Store, get_store
@@ -366,6 +366,37 @@ def _parse_decision(raw: str) -> dict | None:
     return None
 
 
+def _option_expired(expiry: str | None, today: date | None = None) -> bool:
+    """True if the option's expiry date is strictly before today (UTC). An
+    option is still live *on* its expiry date, so the comparison is `<`."""
+    if not expiry:
+        return False
+    try:
+        exp = date.fromisoformat(str(expiry)[:10])
+    except (TypeError, ValueError):
+        return False
+    return exp < (today or datetime.now(timezone.utc).date())
+
+
+def _expired_intrinsic(ticker: str, otype: str, strike: float) -> float:
+    """Cash-settlement value (per share) of an *expired* option: its intrinsic
+    value against the current underlying. 0.0 when out-of-the-money or the
+    underlying price is unavailable. An expired option is never worth its
+    purchase premium — falling back to avg_cost would mark a worthless
+    contract at full cost forever and silently inflate equity."""
+    try:
+        und = market.get_price(ticker)
+    except Exception:
+        und = None
+    if not und or und <= 0:
+        return 0.0
+    try:
+        k = float(strike)
+    except (TypeError, ValueError):
+        return 0.0
+    return max(0.0, und - k) if otype == "call" else max(0.0, k - und)
+
+
 def _portfolio_snapshot(store: Store) -> dict:
     """Mark-to-market every open position, write back to DB, return summary."""
     positions = store.open_positions()
@@ -377,12 +408,20 @@ def _portfolio_snapshot(store: Store) -> dict:
     open_value = 0.0
     for p in positions:
         if p["type"] in ("call", "put"):
-            cur = market.get_option_price(p["ticker"], p["expiry"], p["strike"], p["type"])
             multiplier = 100
+            # An expired contract has no live chain — yfinance returns nothing,
+            # so settle it at intrinsic against the underlying instead of
+            # letting the avg_cost fallback below mark it at full premium.
+            if _option_expired(p["expiry"]):
+                cur = _expired_intrinsic(p["ticker"], p["type"], p["strike"])
+            else:
+                cur = market.get_option_price(p["ticker"], p["expiry"], p["strike"], p["type"])
         else:
             cur = prices.get(p["ticker"])
             multiplier = 1
-        cur = cur or p["avg_cost"]
+        # `is not None`, not `or`: a legitimate 0.0 (expired worthless option)
+        # must survive — `cur or avg_cost` would clobber it back to premium.
+        cur = cur if cur is not None else p["avg_cost"]
         pl = (cur - p["avg_cost"]) * p["qty"] * multiplier
         pl_pct = ((cur - p["avg_cost"]) / p["avg_cost"]) * 100 if p["avg_cost"] else 0.0
         marks[p["id"]] = (cur, pl)
@@ -583,7 +622,15 @@ def _execute(decision: dict, snapshot: dict, store: Store) -> tuple[str, str]:
                 f"sell qty {qty} exceeds held {match['qty']} for "
                 f"{ticker} {match['strike']}{otype[0].upper()} {match['expiry']}"
             )
-        opt_px = market.get_option_price(ticker, match["expiry"], match["strike"], otype) or match["avg_cost"]
+        live_px = market.get_option_price(ticker, match["expiry"], match["strike"], otype)
+        if live_px is not None:
+            opt_px = live_px
+        elif _option_expired(match["expiry"]):
+            # Closing an expired contract settles at intrinsic, never at the
+            # avg_cost breakeven the old `or match["avg_cost"]` produced.
+            opt_px = _expired_intrinsic(ticker, otype, match["strike"])
+        else:
+            opt_px = match["avg_cost"]
         notional = opt_px * qty * 100
         store.record_trade(ticker, action, qty, opt_px, reason,
                            expiry=match["expiry"], strike=match["strike"], option_type=otype)
