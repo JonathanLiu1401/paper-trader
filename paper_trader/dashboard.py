@@ -7073,21 +7073,34 @@ def feed_health_api():
                 seen.add(ps)
                 cand_paths.append(ps)
 
+        # What a process still running the pre-freshness-aware resolver would
+        # read (existence-first). When it differs from the freshly-resolved DB
+        # and is materially staler, a stale runner/dashboard process
+        # (/api/build-info `stale`) is blind and needs a RESTART — the
+        # canonical split-brain shape now that _db_path() is freshness-aware.
+        legacy_str = str(_sig._legacy_choice())
+
         candidates = []
+        probe_by_path: dict[str, dict] = {}
         resolved_probe = {"exists": False, "newest": None,
                           "live_2h": 0, "live_24h": 0}
         for ps in cand_paths:
             probe = _feed_db_probe(ps, want_counts=(ps == resolved_str))
+            probe_by_path[ps] = probe
             candidates.append({"path": ps, "exists": probe["exists"],
                                "newest": probe["newest"]})
             if ps == resolved_str:
                 resolved_probe = probe
 
+        legacy_probe = probe_by_path.get(legacy_str)
         feed = {
             "resolved_path": resolved_str if resolved_probe["exists"] else None,
             "resolved_newest": resolved_probe["newest"],
             "resolved_live_2h": resolved_probe["live_2h"],
             "resolved_live_24h": resolved_probe["live_24h"],
+            "legacy_path": (legacy_str if legacy_probe
+                            and legacy_probe["exists"] else None),
+            "legacy_newest": legacy_probe["newest"] if legacy_probe else None,
             "candidates": candidates,
         }
         store = get_store()

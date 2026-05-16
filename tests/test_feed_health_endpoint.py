@@ -103,13 +103,18 @@ def test_endpoint_flags_blind_split_brain(split_brain_client):
     r = split_brain_client.get("/api/feed-health")
     assert r.status_code == 200
     d = r.get_json()
-    assert d["verdict"] == "BLIND"
+    assert d["verdict"] == "BLIND"               # 5-decision 0-signal streak
     assert d["blind_streak"] == 5
     assert d["split_brain"] is True
     assert d["restart_recommended"] is True
-    assert d["resolved_path"].endswith("usb_articles.db")
-    assert d["fresher_path"].endswith("local_articles.db")
-    # ~19.8h, NOT ~0.05h → the fresher backtest:// row was correctly excluded
-    assert d["resolved_newest_age_h"] >= 19.0
-    assert d["resolved_live_2h"] == 0
+    # Post freshness-aware _db_path(): the trader now resolves the FRESH local
+    # DB (the bug fix). The hazard moved to "a process still on the old
+    # existence-first resolver reads the stale USB" — surfaced via legacy_*.
+    assert d["resolved_path"].endswith("local_articles.db")
+    assert d["resolved_newest_age_h"] < 2.0      # fresh local feed
+    assert d["legacy_path"].endswith("usb_articles.db")
+    # ~19.8h, NOT ~0.05h → the fresher backtest:// row on USB was correctly
+    # excluded by the live-only MAX(first_seen) probe.
+    assert d["legacy_newest_age_h"] >= 19.0
+    assert d["resolved_live_2h"] == 1            # the fresh DB does carry news
     assert "split-brain" in d["headline"]

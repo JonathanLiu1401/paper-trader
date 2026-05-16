@@ -148,16 +148,41 @@ def build_feed_health(decisions: list[dict], feed: dict,
         if fresher_age is None or cage < fresher_age:
             fresher_age, fresher_path = cage, cpath
 
-    # Split-brain: the trader's resolved DB is stale (or has no live article at
-    # all) AND another candidate is materially fresher — the two halves of the
-    # system resolved articles.db with different precedence.
     resolved_stale = resolved_age is None or resolved_age >= STALE_HOURS
-    split_brain = bool(
+
+    # Split-brain has two shapes, both meaning "a trader process is reading a
+    # materially staler feed than a fresher copy that exists":
+    #
+    #  (a) legacy-resolution split — the canonical one since signals._db_path()
+    #      became freshness-aware. The fixed resolver now picks the FRESH copy,
+    #      but a runner/dashboard process that booted before that commit
+    #      (/api/build-info `stale`) still runs the old existence-first
+    #      resolver and reads `legacy_path`. The endpoint supplies
+    #      signals._legacy_choice() as `legacy_path`; if it differs from the
+    #      freshly-resolved DB and is ≥GAP staler, that stale process is blind
+    #      and a RESTART (not a mount fix) is what reconverges it.
+    #
+    #  (b) resolved-stale split — the pre-fix shape: the resolved DB itself is
+    #      stale while another candidate is materially fresher. Still asserted
+    #      by the pure builder fixtures (which pass no `legacy_path`), so this
+    #      term stays exactly as it was and is inert unless it fires on its own.
+    legacy_path = feed.get("legacy_path")
+    legacy_age = _age_h(feed.get("legacy_newest"), now)
+    stale_process_split = bool(
+        legacy_path
+        and resolved_path
+        and legacy_path != resolved_path
+        and legacy_age is not None
+        and resolved_age is not None
+        and legacy_age - resolved_age >= SPLIT_BRAIN_GAP_H
+    )
+    resolved_stale_split = bool(
         resolved_path
         and resolved_stale
         and fresher_age is not None
         and (resolved_age is None or resolved_age - fresher_age >= SPLIT_BRAIN_GAP_H)
     )
+    split_brain = stale_process_split or resolved_stale_split
 
     # Verdict precedence (locked by a dedicated test class). BLIND outranks
     # STALE_FEED because a proven streak of 0-signal *decisions* is the
@@ -178,13 +203,22 @@ def build_feed_health(decisions: list[dict], feed: dict,
     age_txt = (f"{resolved_age:.1f}h old" if resolved_age is not None
                else "no live article ever")
     split_clause = ""
-    if split_brain:
+    if resolved_stale_split:
         split_clause = (
             f" — split-brain: {fresher_path} is only {fresher_age:.1f}h old, "
             f"but the trader resolves {resolved_path} (signals._db_path() "
             f"prefers the USB mount; the daemon writes the local copy). "
             f"Restart the paper-trader runner / fix the mount so its signal "
             f"source reconverges.")
+    elif stale_process_split:
+        split_clause = (
+            f" — split-brain: signals._db_path() now resolves the FRESH "
+            f"{resolved_path} ({resolved_age:.1f}h old), but a trader process "
+            f"that booted before the freshness-aware resolver still runs the "
+            f"old existence-first code and reads the stale {legacy_path} "
+            f"({legacy_age:.1f}h old). The on-disk fix does not rescue a "
+            f"running process — RESTART the paper-trader so it reads the "
+            f"fresh feed (check /api/build-info `stale`).")
 
     if verdict == "NO_DATA":
         headline = (
@@ -222,6 +256,8 @@ def build_feed_health(decisions: list[dict], feed: dict,
         "resolved_live_2h": live_2h,
         "resolved_live_24h": live_24h,
         "split_brain": split_brain,
+        "legacy_path": legacy_path,
+        "legacy_newest_age_h": legacy_age,
         "fresher_path": fresher_path,
         "fresher_age_h": fresher_age,
         "candidates": cand_out,

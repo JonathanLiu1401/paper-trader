@@ -384,3 +384,203 @@ class TestGetHistoricalSignals:
         monkeypatch.setattr(signals, "HISTORICAL_GZ", gz)
         out = signals.get_historical_signals(min_score=4.0)
         assert [r["id"] for r in out] == ["ok1", "ok2"]
+
+
+# ───────────────────────── freshness-aware DB resolver ─────────────────────
+# `_db_path()` historically returned the USB copy whenever it merely
+# `exists()`. The digital-intern daemon falls back to writing the LOCAL copy
+# when the USB mount is unavailable, leaving a stale USB mirror that still
+# exists — and the live trader then read day-old news while every other
+# surface read the fresh LOCAL DB ("split brain"; detected by /api/feed-health
+# but never root-fixed). These tests pin the freshness-aware replacement and
+# the advisor's full decision matrix with exact expectations.
+
+def _iso_ago(hours: float) -> str:
+    return (datetime.now(timezone.utc) - timedelta(hours=hours)).isoformat()
+
+
+def _make_db(path: Path, live_ago_h: float | None, backtest_ago_h: float | None = None):
+    """Build an articles.db whose newest *live* row is `live_ago_h` old, with
+    an optional NEWER `backtest://` row that the live-only filter must ignore."""
+    rows = []
+    if live_ago_h is not None:
+        rows.append({"id": 1, "url": "https://x/a", "title": "live", "source": "rss",
+                     "ai_score": 8.0, "urgency": 0, "first_seen": _iso_ago(live_ago_h)})
+    if backtest_ago_h is not None:
+        rows.append({"id": 2, "url": "backtest://run_1/2026-05-16/BUY/NVDA",
+                     "title": "synthetic", "source": "backtest_run_1_winner",
+                     "ai_score": 5.0, "urgency": 0, "first_seen": _iso_ago(backtest_ago_h)})
+    _build_articles_db(path, rows)
+
+
+@pytest.fixture
+def two_dbs(tmp_path, monkeypatch):
+    """USB + LOCAL temp paths wired into the resolver, cache reset each test."""
+    usb = tmp_path / "usb" / "articles.db"
+    local = tmp_path / "local" / "articles.db"
+    usb.parent.mkdir()
+    local.parent.mkdir()
+    monkeypatch.setattr(signals, "USB_DB", usb)
+    monkeypatch.setattr(signals, "LOCAL_DB", local)
+    signals._reset_resolver_cache()
+    yield usb, local
+    signals._reset_resolver_cache()
+
+
+class TestChoosePure:
+    """`_choose` is the pure decision given a freshness map — no IO."""
+
+    def test_tie_prefers_usb(self, two_dbs):
+        usb, local = two_dbs
+        ts = _iso_ago(1)
+        assert signals._choose({usb: ts, local: ts}) == usb   # strict > keeps USB on equality
+
+    def test_fresher_local_wins(self, two_dbs):
+        usb, local = two_dbs
+        assert signals._choose({usb: _iso_ago(30), local: _iso_ago(1)}) == local
+
+    def test_fresher_usb_wins(self, two_dbs):
+        usb, local = two_dbs
+        assert signals._choose({usb: _iso_ago(1), local: _iso_ago(30)}) == usb
+
+    def test_single_candidate_returned(self, two_dbs):
+        usb, local = two_dbs
+        assert signals._choose({local: _iso_ago(5)}) == local
+        assert signals._choose({usb: _iso_ago(5)}) == usb
+
+    def test_both_unreadable_falls_back_to_usb_first(self, two_dbs):
+        usb, local = two_dbs
+        # Both exist but neither yielded a timestamp → legacy USB-first order.
+        assert signals._choose({usb: None, local: None}) == usb
+
+    def test_neither_exists_returns_local(self, two_dbs):
+        # Empty freshness map → preserve the legacy "neither → LOCAL_DB" contract.
+        _, local = two_dbs
+        assert signals._choose({}) == local
+
+
+class TestDbPathFreshness:
+    """End-to-end resolver over real temp DBs — the bug-fix matrix."""
+
+    def test_stale_usb_loses_to_fresh_local_and_ignores_backtest_rows(self, two_dbs):
+        usb, local = two_dbs
+        # USB: live row 30h old, but a *newer* backtest row 0.1h old that the
+        # live-only filter MUST exclude (else the stale mirror wins falsely).
+        _make_db(usb, live_ago_h=30, backtest_ago_h=0.1)
+        _make_db(local, live_ago_h=1)
+        assert signals._db_path() == local
+
+    def test_both_fresh_prefers_usb(self, two_dbs):
+        usb, local = two_dbs
+        _make_db(usb, live_ago_h=1)
+        _make_db(local, live_ago_h=2)
+        assert signals._db_path() == usb
+
+    def test_usb_only_present(self, two_dbs):
+        usb, _ = two_dbs
+        _make_db(usb, live_ago_h=3)            # local path never created
+        assert signals._db_path() == usb
+
+    def test_local_only_present(self, two_dbs):
+        _, local = two_dbs
+        _make_db(local, live_ago_h=3)
+        assert signals._db_path() == local
+
+    def test_cache_keyed_on_candidates_not_just_time(self, two_dbs, tmp_path, monkeypatch):
+        usb, local = two_dbs
+        _make_db(usb, live_ago_h=1)
+        assert signals._db_path() == usb       # resolves + caches on (usb, local)
+        # Repoint the candidates at a DIFFERENT path (what every other signals
+        # test does — each gets a unique tmp LOCAL_DB) WITHOUT resetting the
+        # cache. A TTL cache keyed only on time would wrongly keep returning
+        # the stale `usb` for 120s and cross-contaminate sibling tests; keyed
+        # on the candidate tuple it must re-resolve to the new DB.
+        other = tmp_path / "other" / "articles.db"
+        other.parent.mkdir()
+        _make_db(other, live_ago_h=1)
+        monkeypatch.setattr(signals, "USB_DB", other.parent / "missing.db")
+        monkeypatch.setattr(signals, "LOCAL_DB", other)
+        assert signals._db_path() == other     # re-resolved, not time-cached
+
+
+class TestAgeHours:
+    def test_offset_and_z_and_naive_and_garbage(self):
+        now = datetime.now(timezone.utc)
+        off = (now - timedelta(hours=2)).isoformat()                 # ...+00:00
+        z = (now - timedelta(hours=2)).strftime("%Y-%m-%dT%H:%M:%SZ")
+        naive = (now - timedelta(hours=2)).replace(tzinfo=None).isoformat()
+        assert abs(signals._age_hours(off) - 2.0) < 0.05
+        assert abs(signals._age_hours(z) - 2.0) < 0.05
+        assert abs(signals._age_hours(naive) - 2.0) < 0.05           # assumed UTC
+        assert signals._age_hours("not-a-date") is None
+        assert signals._age_hours(None) is None
+        assert signals._age_hours("") is None
+
+
+class TestFeedStatusAndWarn:
+    def test_split_brain_flags_restart_needed(self, two_dbs):
+        usb, local = two_dbs
+        _make_db(usb, live_ago_h=30)           # what legacy resolver would pick
+        _make_db(local, live_ago_h=0.2)        # what the fix picks
+        st = signals.feed_status()
+        assert st["chosen"] == str(local)
+        assert st["legacy_choice"] == str(usb)
+        assert st["split_brain"] is True       # actionable: a stale process is blind
+        assert st["stale"] is False            # the freshest copy itself is current
+
+    def test_all_stale_is_stale_not_split_brain(self, two_dbs):
+        usb, local = two_dbs
+        _make_db(usb, live_ago_h=30)
+        _make_db(local, live_ago_h=40)
+        st = signals.feed_status()
+        assert st["chosen"] == str(usb)        # USB is the freshest of the two
+        assert st["legacy_choice"] == str(usb)
+        assert st["split_brain"] is False      # legacy == chosen
+        assert st["stale"] is True             # pipeline down — restart won't help
+
+    def test_warn_fires_once_then_dedups(self, two_dbs, capfd):
+        usb, local = two_dbs
+        _make_db(usb, live_ago_h=30)
+        fresh = {usb: _iso_ago(30)}
+        signals._maybe_warn_stale(usb, fresh)
+        first = capfd.readouterr().err
+        signals._maybe_warn_stale(usb, fresh)  # same path → deduped, silent
+        second = capfd.readouterr().err
+        assert "WARNING reading STALE feed" in first
+        assert "30.0h old" in first
+        assert second == ""
+
+    def test_no_warn_when_fresh(self, two_dbs, capfd):
+        usb, _ = two_dbs
+        signals._maybe_warn_stale(usb, {usb: _iso_ago(1)})
+        assert capfd.readouterr().err == ""
+
+
+class TestCheckFreshnessCLI:
+    """`_print_freshness_report` is the `--check-freshness` body; its return
+    value is the shell exit code (3 split-brain, 2 stale, 0 ok)."""
+
+    def test_exit_3_on_split_brain(self, two_dbs, capsys):
+        usb, local = two_dbs
+        _make_db(usb, live_ago_h=30)
+        _make_db(local, live_ago_h=0.2)
+        rc = signals._print_freshness_report()
+        out = capsys.readouterr().out
+        assert rc == 3
+        assert "SPLIT-BRAIN" in out and "RESTART" in out
+
+    def test_exit_2_on_all_stale(self, two_dbs, capsys):
+        usb, local = two_dbs
+        _make_db(usb, live_ago_h=30)
+        _make_db(local, live_ago_h=40)
+        rc = signals._print_freshness_report()
+        assert rc == 2
+        assert "STALE" in capsys.readouterr().out
+
+    def test_exit_0_when_fresh(self, two_dbs, capsys):
+        usb, local = two_dbs
+        _make_db(usb, live_ago_h=0.5)
+        _make_db(local, live_ago_h=1)
+        rc = signals._print_freshness_report()
+        assert rc == 0
+        assert "OK" in capsys.readouterr().out
