@@ -12,6 +12,7 @@ unavailable.
 """
 from __future__ import annotations
 
+import math
 import pickle
 from pathlib import Path
 
@@ -99,7 +100,17 @@ def _to_float(v, default: float) -> float:
     # a bare isinstance(v, (int, float)) check silently drops np.float32 values
     # (which come back from pandas/numpy operations) to the default. Add a
     # numpy fallback explicitly.
-    if isinstance(v, (int, float)) and v == v:  # excludes NaN
+    #
+    # math.isfinite rejects BOTH NaN and ±inf. A bare `v == v` only excluded
+    # NaN: `float('inf') == float('inf')` is True, so an inf leaked straight
+    # through. That broke the "always finite" contract predict_with_meta
+    # advertises and — worse — a single decision_outcomes.jsonl row with a
+    # non-finite forward_return_5d made train_scorer raise inside
+    # MLPRegressor.fit, which _train_decision_scorer swallows, silently
+    # wedging scorer retraining for that cycle and every cycle after (the
+    # poisoned row persists in the 5000-record tail). The numpy branch below
+    # already used np.isfinite; this aligns the Python branch with it.
+    if isinstance(v, (int, float)) and math.isfinite(v):
         return float(v)
     if isinstance(v, np.generic) and np.isfinite(v):
         return float(v)

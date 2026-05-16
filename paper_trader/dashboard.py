@@ -11,7 +11,7 @@ from pathlib import Path
 
 from flask import Flask, jsonify, render_template_string, request
 
-from .store import get_store
+from .store import INITIAL_CASH, get_store
 
 app = Flask(__name__)
 
@@ -3580,7 +3580,6 @@ def state():
 @app.route("/api/portfolio")
 def portfolio_api():
     """Compact public read of the portfolio — consumed by Digital Intern's dashboard."""
-    from .store import INITIAL_CASH
     store = get_store()
     pf = store.get_portfolio()
     return jsonify({
@@ -4054,7 +4053,10 @@ def analytics_api():
         # Meaningless on <20 trading days of history, so gate it hard.
         calmar = None
         if len(daily_returns) >= 20 and max_dd_pct and max_dd_pct > 0:
-            total_return_pct = (total_value / 1000.0 - 1.0) * 100.0
+            # Baseline must come from the store constant, not a hardcoded
+            # 1000.0 — a literal here silently desyncs Calmar if INITIAL_CASH
+            # ever moves (same desync class fixed in reporter.py, commit 2a154df).
+            total_return_pct = (total_value / INITIAL_CASH - 1.0) * 100.0
             years = len(day_keys) / 252.0
             if years > 0:
                 calmar = round((total_return_pct / years) / max_dd_pct, 2)

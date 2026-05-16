@@ -119,3 +119,67 @@ class TestAnalyticsRoundTripMetrics:
             assert data["realized_pl_usd"] == 0.0
         finally:
             s.close()
+
+
+class TestCalmarBaseline:
+    """Calmar's annualized-return numerator must derive its baseline from the
+    store INITIAL_CASH constant, never a hardcoded 1000.0. A literal there
+    silently desyncs Calmar the moment INITIAL_CASH moves (the same
+    hardcoded-baseline desync class fixed in reporter.py, commit 2a154df).
+
+    This pins the *number*, not just the import: the test patches the baseline
+    to a non-1000 value, so a future re-hardcode of `1000.0` makes the endpoint
+    disagree with the expected formula and this test fails.
+    """
+
+    def test_calmar_uses_store_initial_cash_baseline(self, tmp_path, monkeypatch):
+        db = tmp_path / "calmar.db"
+        monkeypatch.setattr(store_mod, "DB_PATH", db)
+        monkeypatch.setattr(store_mod, "_singleton", None)
+        s = Store()
+
+        # 22 distinct calendar days of equity → 21 daily returns (Calmar needs
+        # >= 20). First point is the global peak (1200); the post-peak trough
+        # is exactly 900 → max drawdown = (1200-900)/1200 = 25.00%. No later
+        # point exceeds the peak, so the running-peak max-DD scan is exact.
+        values = [1200, 1150, 1100, 1050, 1000, 950, 900, 950, 1000, 1020,
+                  1030, 1040, 1050, 1060, 1070, 1080, 1085, 1090, 1093, 1096,
+                  1098, 1100]
+        assert len(values) == 22
+        rows = [
+            (f"2026-01-{day:02d}T20:00:00+00:00", float(v), float(v), None)
+            for day, v in enumerate(values, start=1)
+        ]
+        s.conn.executemany(
+            "INSERT INTO equity_curve (timestamp, total_value, cash, sp500_price) "
+            "VALUES (?,?,?,?)",
+            rows,
+        )
+        s.conn.commit()
+        # Final mark-to-market equity = last curve point.
+        s.update_portfolio(cash=1100.0, total_value=1100.0, positions=[])
+
+        from paper_trader import dashboard
+
+        # Patch the baseline to a value that is NOT 1000 so a re-hardcoded
+        # literal would produce a different total_return_pct → different Calmar.
+        BASELINE = 500.0
+        monkeypatch.setattr(dashboard, "INITIAL_CASH", BASELINE)
+
+        try:
+            with dashboard.app.test_client() as client:
+                data = client.get("/api/analytics").get_json()
+        finally:
+            s.close()
+
+        assert "error" not in data, data
+        assert data["max_drawdown_pct"] == 25.0
+        assert data["n_trading_days"] == 21  # 22 days → 21 returns
+
+        # Recompute Calmar with the same formula analytics_api uses, but with
+        # the patched baseline — exactly what a correct implementation yields.
+        total_return_pct = (1100.0 / BASELINE - 1.0) * 100.0   # 120.0
+        years = 22 / 252.0                                     # day_keys = 22
+        expected_calmar = round((total_return_pct / years) / 25.0, 2)
+        assert expected_calmar == 54.98  # sanity-pin the literal too
+        assert data["calmar_ratio"] == expected_calmar

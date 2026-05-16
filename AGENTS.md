@@ -188,6 +188,18 @@ review:
    is required to apply committed scorer/code fixes; locked by
    `tests/test_build_info.py`.
 
+12. **One source of truth for the $1000 baseline** — every starting-equity /
+   P&L-% denominator must read `store.INITIAL_CASH`, never a hardcoded
+   `1000.0`. `reporter._INITIAL_EQUITY`, `dashboard.portfolio_api`
+   (`starting_value`), and `dashboard.analytics_api` (Calmar's
+   `total_return_pct`) all reference the constant. A literal silently
+   desyncs the moment `INITIAL_CASH` moves (fixed in `reporter.py`,
+   commit `2a154df`; the analytics Calmar leak fixed in this pass). The
+   backtest-side `1000.0` in `backtest_compare`'s empty-curve fallback is a
+   *separate* baseline (`backtest.py`'s own `INITIAL_CASH`) and is out of
+   scope of this rule. Locked by
+   `tests/test_core_analytics.py::TestCalmarBaseline`.
+
 ### Dashboard API endpoints (port 8090)
 
 All endpoints serve `application/json`. CORS is wide open (`*`) so the
@@ -411,7 +423,15 @@ For automated review agents that touch ML / backtest code:
   by deleting the pickle before the next continuous-loop cycle.
 - **`_to_float` and numpy types** — `np.float32` is *not* a Python `float`
   subclass (`np.float64` is). `_to_float` falls back to a `np.generic`
-  check; if you add new numpy inputs, verify they pass through.
+  check; if you add new numpy inputs, verify they pass through. It rejects
+  every non-finite value (NaN **and** ±inf) on both the Python and numpy
+  branches via `math.isfinite` / `np.isfinite` — this is load-bearing: a
+  single `decision_outcomes.jsonl` row with a non-finite `forward_return_5d`
+  poisons `train_scorer`'s `y` vector, `MLPRegressor.fit` raises, and
+  `_train_decision_scorer` swallows it — silently wedging scorer retraining
+  for that cycle and every cycle after (the row persists in the 5000-record
+  tail). Pinned by `tests/test_decision_scorer.py::TestToFloat` +
+  `::TestTrainScorer::test_handles_non_finite_forward_return`.
 - **Forward leakage** — anything that reads news must filter on
   `url NOT LIKE 'backtest://%'` and `source NOT LIKE 'backtest_%'` /
   `'opus_annotation%'`. The live `signals.py` and the backtest

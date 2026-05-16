@@ -151,6 +151,21 @@ class TestToFloat:
     def test_nan_returns_default(self):
         assert _to_float(float("nan"), 7.0) == 7.0
 
+    def test_inf_returns_default(self):
+        # Regression: `float('inf') == float('inf')` is True, so the old
+        # `v == v` NaN filter let ±inf leak straight through. A non-finite
+        # value violates predict_with_meta's "always finite" contract and a
+        # single inf forward_return_5d row wedged train_scorer (see
+        # TestTrainScorer.test_handles_non_finite_forward_return).
+        assert _to_float(float("inf"), 50.0) == 50.0
+        assert _to_float(float("-inf"), 50.0) == 50.0
+
+    def test_numpy_inf_returns_default(self):
+        # The numpy branch already used np.isfinite; lock it alongside the
+        # Python-float fix so both paths stay consistent.
+        assert _to_float(np.float32("inf"), 50.0) == 50.0
+        assert _to_float(np.float64("-inf"), 50.0) == 50.0
+
     def test_bool_returns_default(self):
         # bool is a subclass of int — must NOT become 1.0 / 0.0.
         assert _to_float(True, 99.0) == 99.0
@@ -322,6 +337,24 @@ class TestTrainScorer:
         # Must not crash — _to_float coerces None → 0.0.
         result = train_scorer(recs)
         assert result["status"] == "ok"
+
+    def test_handles_non_finite_forward_return(self):
+        # Regression: a single decision_outcomes.jsonl row with a non-finite
+        # forward_return_5d (inf / -inf) used to pass _to_float untouched,
+        # poison the y vector, and make MLPRegressor.fit raise
+        # "Input y contains infinity". _train_decision_scorer swallows that
+        # exception, so the scorer silently stopped retraining for that cycle
+        # AND every cycle after (the poisoned row persists in the 5000-record
+        # tail). With the fix, inf/-inf coerce to 0.0 and training completes.
+        recs = [_synthetic_outcome(sim_date=f"2025-06-{i+1:02d}")
+                for i in range(35)]
+        recs[5]["forward_return_5d"] = float("inf")
+        recs[6]["forward_return_5d"] = float("-inf")
+        result = train_scorer(recs)
+        assert result["status"] == "ok"
+        # val_rmse must be a real finite number, not nan/inf from a poisoned fit.
+        vr = result["val_rmse"]
+        assert vr == vr and abs(vr) < 1e6
 
     def test_persists_to_scorer_path(self, tmp_path, monkeypatch):
         """After training, the pickle must exist and contain {model, scaler, n_train}."""
