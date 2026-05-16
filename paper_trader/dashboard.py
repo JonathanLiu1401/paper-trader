@@ -1005,6 +1005,46 @@ TEMPLATE = r"""
       </table>
     </div>
 
+    <!-- ─── Decision reliability — true current-regime parse-fail rate (new 2026-05-16, agent 4) ─── -->
+    <div class="card" id="dr-card" style="margin-bottom:18px;">
+      <h2 style="display:flex;justify-content:space-between;align-items:center;">
+        <span>Decision reliability <span class="muted" style="font-size:11px;text-transform:none;letter-spacing:normal;font-weight:normal;">— headline NO_DECISION % vs the true post-restart rate</span></span>
+        <span id="dr-state" style="font-size:12px;padding:3px 10px;border-radius:4px;background:#1f2126;color:#8b929d;">—</span>
+      </h2>
+      <div class="muted" id="dr-headline" style="font-size:12px;margin-bottom:12px;">loading…</div>
+      <div class="stat-row" style="margin-bottom:14px;">
+        <div class="stat"><div class="l">current-regime fail</div><div class="v" id="dr-cur">—</div></div>
+        <div class="stat"><div class="l">headline fail (legacy-incl)</div><div class="v" id="dr-head">—</div></div>
+        <div class="stat"><div class="l">current sample / total</div><div class="v" id="dr-n">—</div></div>
+        <div class="stat"><div class="l">legacy dead rows</div><div class="v" id="dr-legacy">—</div></div>
+        <div class="stat"><div class="l">dead cycles / day</div><div class="v" id="dr-dead">—</div></div>
+      </div>
+      <div class="muted" id="dr-mode" style="font-size:12px;">—</div>
+    </div>
+
+    <!-- ─── Funded suggestions — which idea is fundable, and the sale that funds it (new 2026-05-16, agent 4) ─── -->
+    <div class="card" id="fund-card" style="margin-bottom:18px;">
+      <h2 style="display:flex;justify-content:space-between;align-items:center;">
+        <span>Funded suggestions <span class="muted" style="font-size:11px;text-transform:none;letter-spacing:normal;font-weight:normal;">— which BUY/ADD idea is fundable, and the sale that unlocks it</span></span>
+        <span id="fund-state" style="font-size:12px;padding:3px 10px;border-radius:4px;background:#1f2126;color:#8b929d;">—</span>
+      </h2>
+      <div class="muted" id="fund-headline" style="font-size:12px;margin-bottom:12px;">loading…</div>
+      <div class="stat-row" style="margin-bottom:14px;">
+        <div class="stat"><div class="l">actionable ideas</div><div class="v" id="fund-n">—</div></div>
+        <div class="stat"><div class="l">funded now</div><div class="v" id="fund-funded">—</div></div>
+        <div class="stat"><div class="l">unlockable via sale</div><div class="v" id="fund-unlock">—</div></div>
+        <div class="stat"><div class="l">unfundable</div><div class="v" id="fund-unfund">—</div></div>
+        <div class="stat"><div class="l">pairing</div><div class="v" id="fund-pair">—</div></div>
+      </div>
+      <table id="fund-rows" style="font-size:12px;">
+        <thead><tr>
+          <th>idea</th><th class="num">conv</th><th class="num">notional $</th>
+          <th>fundability</th><th>sell to fund</th><th class="num">frees $</th>
+        </tr></thead>
+        <tbody><tr><td colspan="6" class="muted">loading…</td></tr></tbody>
+      </table>
+    </div>
+
     <!-- ─── Sector Pulse ─── -->
     <div class="card" style="margin-bottom:18px;">
       <h2 style="display:flex;justify-content:space-between;align-items:center;">
@@ -3951,6 +3991,89 @@ async function refreshOpenAttribution() {
   }).join("") : `<tr><td colspan="5" class="muted">no anchorable open stock positions</td></tr>`;
 }
 
+async function refreshDecisionReliability() {
+  const r = await fetchMaybeStale("/api/decision-reliability");
+  if (r.__unavailable) { markStale("dr-state", "dr-headline", "Decision-reliability endpoint"); return; }
+  if (r.error) { document.getElementById("dr-headline").textContent = "error: " + r.error; return; }
+  const smap = {
+    CRITICAL:               ["#b71c1c", "#ffffff"],
+    DEGRADED:               ["#b8860b", "#000000"],
+    HEALTHY:                ["#1b5e20", "#a5d6a7"],
+    STALE_LEGACY_DOMINATED: ["#3a2a00", "#ffd479"],
+    INSUFFICIENT:           ["#1f2126", "#8b929d"],
+    NO_DATA:                ["#1f2126", "#8b929d"],
+  };
+  const [bg, fg] = smap[r.state] || smap.NO_DATA;
+  const sEl = document.getElementById("dr-state");
+  sEl.textContent = (r.state || "—").replace(/_/g, " ");
+  sEl.style.background = bg; sEl.style.color = fg;
+  document.getElementById("dr-headline").textContent =
+    (r.restart_recommended ? "⚠ RESTART RECOMMENDED — " : "") + (r.headline || "");
+  const cur = document.getElementById("dr-cur");
+  cur.textContent = r.current_failure_rate_pct != null
+    ? fmt(r.current_failure_rate_pct, 1) + "% (" + (r.current_failures || 0) + "/" + (r.current_total || 0) + ")"
+    : "—";
+  cur.style.color = (r.current_failure_rate_pct >= 50) ? "#ff4455"
+                    : (r.current_failure_rate_pct >= 25) ? "#ffa726" : "#4caf50";
+  document.getElementById("dr-head").textContent =
+    r.headline_failure_rate_pct != null ? fmt(r.headline_failure_rate_pct, 1) + "%" : "—";
+  document.getElementById("dr-n").textContent =
+    (r.current_total != null ? r.current_total : "—") + " / " + (r.n_decisions != null ? r.n_decisions : "—");
+  const lg = document.getElementById("dr-legacy");
+  lg.textContent = r.legacy_failures != null
+    ? r.legacy_failures + " (" + fmt(r.legacy_share_pct, 1) + "%)" : "—";
+  lg.style.color = (r.legacy_share_pct || 0) >= 50 ? "#ffa726" : "#8b929d";
+  const dd = document.getElementById("dr-dead");
+  dd.textContent = r.dead_cycles_per_day != null ? fmt(r.dead_cycles_per_day, 2) : "—";
+  dd.style.color = (r.dead_cycles_per_day || 0) > 0 ? "#ff4455" : "#8b929d";
+  const mm = (r.current_mode_mix || []).slice(0, 3)
+    .map(m => m.mode.replace(/_/g, " ") + " " + m.n + " (" + fmt(m.pct, 0) + "%)").join(" · ");
+  document.getElementById("dr-mode").textContent =
+    mm ? "current failure modes: " + mm
+       : (r.regime_boundary ? "regime boundary: " + r.regime_boundary
+                            : "no current-regime failures recorded");
+}
+
+async function refreshFundedSuggestions() {
+  const r = await fetchMaybeStale("/api/funded-suggestions");
+  if (r.__unavailable) { markStale("fund-state", "fund-headline", "Funded-suggestions endpoint"); return; }
+  if (r.error) { document.getElementById("fund-headline").textContent = "error: " + r.error; return; }
+  const smap = {
+    FREE:    ["#1b5e20", "#a5d6a7"],
+    PINNED:  ["#b71c1c", "#ffffff"],
+    EMPTY:   ["#b71c1c", "#ffffff"],
+    NO_DATA: ["#1f2126", "#8b929d"],
+  };
+  const [bg, fg] = smap[r.state] || smap.NO_DATA;
+  const sEl = document.getElementById("fund-state");
+  sEl.textContent = r.state || "—"; sEl.style.background = bg; sEl.style.color = fg;
+  document.getElementById("fund-headline").textContent = r.headline || "";
+  document.getElementById("fund-n").textContent = r.n_actionable != null ? r.n_actionable : "—";
+  const fF = document.getElementById("fund-funded");
+  fF.textContent = r.n_funded != null ? r.n_funded : "—";
+  fF.style.color = (r.n_funded || 0) > 0 ? "#4caf50" : "#8b929d";
+  const fU = document.getElementById("fund-unlock");
+  fU.textContent = r.n_unlockable != null ? r.n_unlockable : "—";
+  fU.style.color = (r.n_unlockable || 0) > 0 ? "#ffa726" : "#8b929d";
+  const fX = document.getElementById("fund-unfund");
+  fX.textContent = r.n_unfundable != null ? r.n_unfundable : "—";
+  fX.style.color = (r.n_unfundable || 0) > 0 ? "#ff4455" : "#8b929d";
+  const pr = r.recommended_pairing;
+  document.getElementById("fund-pair").textContent =
+    pr ? ("sell " + pr.sell + " → buy " + pr.buy) : "—";
+  const fmap = { FUNDED: "#4caf50", UNLOCKABLE: "#ffa726", UNFUNDABLE: "#ff4455" };
+  const rows = r.ideas || [];
+  const tb = document.querySelector("#fund-rows tbody");
+  tb.innerHTML = rows.length ? rows.map(i => `<tr>
+      <td>${i.action} ${i.ticker}</td>
+      <td class="num">${fmt(i.conviction, 2)}</td>
+      <td class="num">$${fmt(i.suggested_notional_usd)}</td>
+      <td style="color:${fmap[i.fundability] || '#8b929d'};font-weight:bold;">${i.fundability}${i.enough === false && i.fundability === 'UNFUNDABLE' ? '' : ''}</td>
+      <td>${(i.funded_by && i.funded_by.length) ? i.funded_by.join(' + ') : '<span class="muted">—</span>'}</td>
+      <td class="num">${i.frees_usd ? '$' + fmt(i.frees_usd) : '—'}</td>
+    </tr>`).join("") : `<tr><td colspan="6" class="muted">no actionable BUY/ADD ideas</td></tr>`;
+}
+
 // ───────── boot ─────────
 refresh();
 refreshSignals();
@@ -3979,6 +4102,8 @@ refreshValidation();
 refreshTradeAsymmetry();
 refreshCapitalParalysis();
 refreshOpenAttribution();
+refreshDecisionReliability();
+refreshFundedSuggestions();
 setInterval(refresh, 15_000);
 setInterval(refreshSignals, 30_000);
 setInterval(refreshAnalytics, 30_000);
@@ -4006,6 +4131,8 @@ setInterval(refreshValidation, 120_000);
 setInterval(refreshTradeAsymmetry, 60_000);
 setInterval(refreshCapitalParalysis, 45_000);
 setInterval(refreshOpenAttribution, 60_000);
+setInterval(refreshDecisionReliability, 60_000);
+setInterval(refreshFundedSuggestions, 45_000);
 showTab(INITIAL_TAB || "trader");
 </script>
 </div><!-- /.page-content -->
@@ -6118,6 +6245,72 @@ def news_edge_api():
     except Exception as e:
         return jsonify({"error": str(e), "bands": [],
                         "verdict": "ERROR"}), 500
+
+
+# ───────── Decision-reliability + funded-suggestions (2026-05-16, agent 4) ─────────
+# Appended at the tail of the route section (not interleaved) so a concurrent
+# core-review pass editing existing endpoints doesn't collide on merge.
+
+
+@app.route("/api/decision-reliability")
+def decision_reliability_api():
+    """The *true current-regime* NO_DECISION rate, not the inflated headline.
+
+    decision-health/forensics/drought measure the rate / why / cost, but the
+    headline % is dominated by legacy pre-diagnostics rows that stop accruing
+    once the runner restarts onto diagnostic code. This partitions the log at
+    the newest legacy failure and reports the post-restart rate with explicit
+    sample-size honesty + a restart-recommended signal. Pure composition of
+    build_decision_forensics + build_decision_drought (single source of truth,
+    no re-derived metrics). Advisory only — never gates Opus (invariants
+    #2/#12)."""
+    try:
+        from .analytics.decision_reliability import build_decision_reliability
+        store = get_store()
+        return jsonify(build_decision_reliability(
+            store.recent_decisions(limit=3000),
+            store.equity_curve(limit=5000),
+        ))
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/funded-suggestions")
+def funded_suggestions_api():
+    """Pair each unfundable BUY/ADD idea with the sale that funds it.
+
+    Composes the existing /api/suggestions list with build_capital_paralysis'
+    unlock ladder (single source of truth, no re-derived metrics — neither is
+    refactored). When PINNED, attaches the minimum prefix of desk-cut-priority
+    sales whose cumulative freed cash covers an advisory suggested notional.
+    Advisory only — never gates Opus, sizes nothing, adds no caps
+    (invariants #2/#12)."""
+    try:
+        from .analytics.capital_paralysis import build_capital_paralysis
+        from .analytics.funded_suggestions import build_funded_suggestions
+
+        # Reuse the existing suggestions view verbatim (no refactor).
+        resp = suggestions_api()
+        if isinstance(resp, tuple):
+            resp = resp[0]
+        sug_payload = resp.get_json(silent=True) or {}
+        suggestions = sug_payload.get("suggestions", [])
+
+        store = get_store()
+        paralysis = build_capital_paralysis(
+            store.get_portfolio(),
+            store.open_positions(),
+            store.recent_trades(200),
+            store.recent_decisions(limit=3000),
+            store.equity_curve(limit=5000),
+        )
+        out = build_funded_suggestions(suggestions, paralysis)
+        # Surface a suggestions-side error rather than masking it as "no ideas".
+        if sug_payload.get("error"):
+            out["suggestions_error"] = sug_payload["error"]
+        return jsonify(out)
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
 
 
 def run(host: str = "0.0.0.0", port: int = 8090):
