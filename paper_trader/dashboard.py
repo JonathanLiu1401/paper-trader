@@ -935,6 +935,76 @@ TEMPLATE = r"""
       <div id="an-sector-legend" style="display:flex;flex-wrap:wrap;gap:14px;font-size:12px;color:#dde1e7;"></div>
     </div>
 
+    <!-- ─── Trade Asymmetry / Behavioural Edge (new 2026-05-16, agent 4) ─── -->
+    <div class="card" id="ta-card" style="margin-bottom:18px;">
+      <h2 style="display:flex;justify-content:space-between;align-items:center;">
+        <span>Behavioural edge <span class="muted" style="font-size:11px;text-transform:none;letter-spacing:normal;font-weight:normal;">— payoff ratio, breakeven win-rate, the disposition effect</span></span>
+        <span id="ta-verdict" style="font-size:12px;padding:3px 10px;border-radius:4px;background:#1f2126;color:#8b929d;">—</span>
+      </h2>
+      <div class="muted" id="ta-headline" style="font-size:12px;margin-bottom:12px;">loading…</div>
+      <div class="stat-row" style="margin-bottom:14px;">
+        <div class="stat"><div class="l">expectancy / trade</div><div class="v" id="ta-exp">—</div></div>
+        <div class="stat"><div class="l">payoff ratio</div><div class="v" id="ta-payoff">—</div></div>
+        <div class="stat"><div class="l">win-rate (actual)</div><div class="v" id="ta-wr">—</div></div>
+        <div class="stat"><div class="l">breakeven win-rate</div><div class="v" id="ta-be">—</div></div>
+        <div class="stat"><div class="l">realized P/L</div><div class="v" id="ta-real">—</div></div>
+      </div>
+      <div class="stat-row">
+        <div class="stat"><div class="l">round-trips (W/L)</div><div class="v" id="ta-n">—</div></div>
+        <div class="stat"><div class="l">avg winner</div><div class="v" id="ta-avgw">—</div></div>
+        <div class="stat"><div class="l">avg loser</div><div class="v" id="ta-avgl">—</div></div>
+        <div class="stat"><div class="l">winner / loser hold</div><div class="v" id="ta-hold">—</div></div>
+        <div class="stat"><div class="l">disposition gap</div><div class="v" id="ta-disp">—</div></div>
+      </div>
+    </div>
+
+    <!-- ─── Capital Paralysis & Unlock Ladder (wired 2026-05-16, agent 4) ─── -->
+    <div class="card" id="cp-card" style="margin-bottom:18px;">
+      <h2 style="display:flex;justify-content:space-between;align-items:center;">
+        <span>Capital paralysis <span class="muted" style="font-size:11px;text-transform:none;letter-spacing:normal;font-weight:normal;">— the trap, its cost, and the single sale that unlocks it</span></span>
+        <span id="cp-state" style="font-size:12px;padding:3px 10px;border-radius:4px;background:#1f2126;color:#8b929d;">—</span>
+      </h2>
+      <div class="muted" id="cp-headline" style="font-size:12px;margin-bottom:12px;">loading…</div>
+      <div class="stat-row" style="margin-bottom:14px;">
+        <div class="stat"><div class="l">cash</div><div class="v" id="cp-cash">—</div></div>
+        <div class="stat"><div class="l">deployed</div><div class="v" id="cp-dep">—</div></div>
+        <div class="stat"><div class="l">can act?</div><div class="v" id="cp-canact">—</div></div>
+        <div class="stat"><div class="l">cycles since fill</div><div class="v" id="cp-stuck">—</div></div>
+        <div class="stat"><div class="l">alpha bled</div><div class="v" id="cp-bleed">—</div></div>
+      </div>
+      <div style="font-size:12px;color:#dde1e7;margin-bottom:6px;text-transform:uppercase;letter-spacing:0.5px;">Unlock ladder — desk cut-priority (biggest loser first)</div>
+      <table id="cp-ladder" style="font-size:12px;">
+        <thead><tr>
+          <th>ticker</th><th class="num">weight%</th><th class="num">P/L%</th>
+          <th class="num">frees $</th><th class="num">cash if sold alone</th><th>unlocks?</th>
+        </tr></thead>
+        <tbody><tr><td colspan="6" class="muted">loading…</td></tr></tbody>
+      </table>
+    </div>
+
+    <!-- ─── Open-Book Alpha — selection vs market (wired 2026-05-16, agent 4) ─── -->
+    <div class="card" id="oa-card" style="margin-bottom:18px;">
+      <h2 style="display:flex;justify-content:space-between;align-items:center;">
+        <span>Open-book alpha <span class="muted" style="font-size:11px;text-transform:none;letter-spacing:normal;font-weight:normal;">— how much of the open P&amp;L is selection vs just SPY</span></span>
+        <span id="oa-status" style="font-size:12px;padding:3px 10px;border-radius:4px;background:#1f2126;color:#8b929d;">—</span>
+      </h2>
+      <div class="muted" id="oa-headline" style="font-size:12px;margin-bottom:12px;">loading…</div>
+      <div class="stat-row" style="margin-bottom:14px;">
+        <div class="stat"><div class="l">book alpha vs SPY</div><div class="v" id="oa-alpha">—</div></div>
+        <div class="stat"><div class="l">net excess $</div><div class="v" id="oa-excess">—</div></div>
+        <div class="stat"><div class="l">unrealized $</div><div class="v" id="oa-unreal">—</div></div>
+        <div class="stat"><div class="l">SPY-equiv $</div><div class="v" id="oa-spyeq">—</div></div>
+        <div class="stat"><div class="l">anchored names</div><div class="v" id="oa-n">—</div></div>
+      </div>
+      <table id="oa-rows" style="font-size:12px;">
+        <thead><tr>
+          <th>ticker</th><th class="num">pos %</th><th class="num">SPY %</th>
+          <th class="num">alpha %</th><th class="num">excess $</th>
+        </tr></thead>
+        <tbody><tr><td colspan="5" class="muted">loading…</td></tr></tbody>
+      </table>
+    </div>
+
     <!-- ─── Sector Pulse ─── -->
     <div class="card" style="margin-bottom:18px;">
       <h2 style="display:flex;justify-content:space-between;align-items:center;">
@@ -3719,6 +3789,168 @@ async function refreshDisagreement() {
   }
 }
 
+// ───────── Behavioural edge + orphaned-endpoint panels (2026-05-16, agent 4) ─────────
+// All three endpoints are absent on a paper-trader process that booted before
+// their commit (trade-asymmetry is brand new; capital-paralysis &
+// open-attribution shipped in c994cba). Degrade to an explicit "restart to
+// apply" message instead of a silent console error — mirrors the /api/build-info
+// stale-banner contract rather than looking broken.
+async function fetchMaybeStale(path) {
+  try {
+    const resp = await fetch(API_PREFIX + path);
+    if (!resp.ok) return { __unavailable: true, __code: resp.status };
+    const ct = resp.headers.get("content-type") || "";
+    if (!ct.includes("json")) return { __unavailable: true };
+    return await resp.json();
+  } catch (e) { return { __unavailable: true }; }
+}
+function markStale(badgeId, headlineId, what) {
+  const b = document.getElementById(badgeId);
+  if (b) { b.textContent = "UNAVAILABLE"; b.style.background = "#3a2a00"; b.style.color = "#ffd479"; }
+  const h = document.getElementById(headlineId);
+  if (h) h.textContent = what + " not on the running process — restart paper-trader to apply (see /api/build-info `stale`).";
+}
+const _sgn = v => (v == null ? "" : v >= 0 ? "+" : "");
+const _plColor = v => (v == null ? "#8b929d" : v > 0 ? "#4caf50" : v < 0 ? "#ff4455" : "#dde1e7");
+
+async function refreshTradeAsymmetry() {
+  const r = await fetchMaybeStale("/api/trade-asymmetry");
+  if (r.__unavailable) { markStale("ta-verdict", "ta-headline", "Behavioural-edge endpoint"); return; }
+  if (r.error) { document.getElementById("ta-headline").textContent = "error: " + r.error; return; }
+  const vmap = {
+    PAYOFF_TRAP:       ["#b71c1c", "#ffffff"],
+    DISPOSITION_BLEED: ["#b8860b", "#000000"],
+    EDGE_POSITIVE:     ["#1b5e20", "#a5d6a7"],
+    FLAT:              ["#1f2126", "#8b929d"],
+  };
+  const stateBadge = { STABLE: null, EMERGING: ["#3a2a00", "#ffd479"], NO_DATA: ["#1f2126", "#8b929d"] };
+  const vEl = document.getElementById("ta-verdict");
+  if (r.state === "STABLE" && r.verdict) {
+    const [bg, fg] = vmap[r.verdict] || vmap.FLAT;
+    vEl.textContent = r.verdict.replace(/_/g, " ");
+    vEl.style.background = bg; vEl.style.color = fg;
+  } else {
+    const [bg, fg] = stateBadge[r.state] || stateBadge.NO_DATA;
+    vEl.textContent = r.state;
+    vEl.style.background = bg; vEl.style.color = fg;
+  }
+  document.getElementById("ta-headline").textContent = r.headline || "";
+  const exp = document.getElementById("ta-exp");
+  exp.textContent = r.expectancy_usd != null ? _sgn(r.expectancy_usd) + "$" + fmt(Math.abs(r.expectancy_usd)) : "—";
+  exp.style.color = _plColor(r.expectancy_usd);
+  document.getElementById("ta-payoff").textContent = r.payoff_ratio != null ? fmt(r.payoff_ratio) : "—";
+  const wr = document.getElementById("ta-wr");
+  wr.textContent = r.actual_win_rate_pct != null ? fmt(r.actual_win_rate_pct, 1) + "%" : "—";
+  // Red when the actual win-rate cannot carry the payoff ratio (the trap).
+  wr.style.color = (r.actual_win_rate_pct != null && r.breakeven_win_rate_pct != null
+                    && r.actual_win_rate_pct < r.breakeven_win_rate_pct) ? "#ff4455" : "#dde1e7";
+  document.getElementById("ta-be").textContent = r.breakeven_win_rate_pct != null ? fmt(r.breakeven_win_rate_pct, 1) + "%" : "—";
+  const real = document.getElementById("ta-real");
+  real.textContent = r.realized_pl_usd != null ? _sgn(r.realized_pl_usd) + "$" + fmt(Math.abs(r.realized_pl_usd)) : "—";
+  real.style.color = _plColor(r.realized_pl_usd);
+  document.getElementById("ta-n").textContent =
+    r.n_round_trips + " (" + r.n_wins + "W/" + r.n_losses + "L" + (r.n_washes ? "/" + r.n_washes + "≈" : "") + ")";
+  const aw = document.getElementById("ta-avgw");
+  aw.textContent = r.avg_winner_usd != null ? "+$" + fmt(r.avg_winner_usd) : "—"; aw.style.color = "#4caf50";
+  const al = document.getElementById("ta-avgl");
+  al.textContent = r.avg_loser_usd != null ? "-$" + fmt(Math.abs(r.avg_loser_usd)) : "—"; al.style.color = "#ff4455";
+  document.getElementById("ta-hold").textContent =
+    (r.avg_winner_hold_days != null ? fmt(r.avg_winner_hold_days, 2) + "d" : "—") + " / " +
+    (r.avg_loser_hold_days != null ? fmt(r.avg_loser_hold_days, 2) + "d" : "—");
+  const dg = document.getElementById("ta-disp");
+  dg.textContent = r.disposition_gap_days != null ? _sgn(r.disposition_gap_days) + fmt(r.disposition_gap_days, 2) + "d" : "—";
+  // Negative gap = winners cut faster than losers = the disposition effect.
+  dg.style.color = (r.disposition_gap_days != null && r.disposition_gap_days < 0) ? "#ff4455" : _plColor(r.disposition_gap_days);
+}
+
+async function refreshCapitalParalysis() {
+  const r = await fetchMaybeStale("/api/capital-paralysis");
+  if (r.__unavailable) { markStale("cp-state", "cp-headline", "Capital-paralysis endpoint"); return; }
+  if (r.error) { document.getElementById("cp-headline").textContent = "error: " + r.error; return; }
+  const smap = {
+    PINNED:  ["#b71c1c", "#ffffff"],
+    EMPTY:   ["#b71c1c", "#ffffff"],
+    FREE:    ["#1b5e20", "#a5d6a7"],
+    NO_DATA: ["#1f2126", "#8b929d"],
+  };
+  const [bg, fg] = smap[r.state] || smap.NO_DATA;
+  const sEl = document.getElementById("cp-state");
+  sEl.textContent = r.state || "—"; sEl.style.background = bg; sEl.style.color = fg;
+  document.getElementById("cp-headline").textContent = r.headline || "";
+  document.getElementById("cp-cash").textContent =
+    r.cash != null ? "$" + fmt(r.cash) + " (" + fmt(r.cash_pct, 1) + "%)" : "—";
+  document.getElementById("cp-dep").textContent = r.deployed_pct != null ? fmt(r.deployed_pct, 1) + "%" : "—";
+  const ca = document.getElementById("cp-canact");
+  ca.textContent = r.can_act_on_signal ? "yes" : "no";
+  ca.style.color = r.can_act_on_signal ? "#4caf50" : "#ff4455";
+  document.getElementById("cp-stuck").textContent = r.cycles_since_last_fill != null ? r.cycles_since_last_fill : "—";
+  const bleed = r.paralysis ? r.paralysis.involuntary_alpha_bleed_pct : null;
+  const bEl = document.getElementById("cp-bleed");
+  bEl.textContent = bleed != null ? fmt(bleed, 2) + "%" : "—";
+  bEl.style.color = (bleed || 0) <= -1.0 ? "#ff4455" : (bleed || 0) < 0 ? "#ffa726" : "#4caf50";
+  const lad = r.unlock_ladder || [];
+  const recT = r.recommended_unlock ? r.recommended_unlock.ticker : null;
+  const tb = document.querySelector("#cp-ladder tbody");
+  tb.innerHTML = lad.length ? lad.map(p => {
+    const rec = p.ticker === recT;
+    const plc = _plColor(p.pl_pct);
+    return `<tr${rec ? ' style="background:#15240f;"' : ''}>
+      <td>${rec ? '★ ' : ''}${p.ticker}<span class="muted">${p.type && p.type !== 'stock' ? ' ' + p.type : ''}</span></td>
+      <td class="num">${fmt(p.weight_pct, 1)}</td>
+      <td class="num" style="color:${plc};">${_sgn(p.pl_pct)}${fmt(p.pl_pct, 1)}</td>
+      <td class="num">$${fmt(p.frees_usd)}</td>
+      <td class="num">$${fmt(p.cash_if_sold_alone)}</td>
+      <td style="color:${p.restores_action_alone ? '#4caf50' : '#8b929d'};font-weight:${p.restores_action_alone ? 'bold' : 'normal'};">${p.restores_action_alone ? 'unlocks ✓' : '—'}</td>
+    </tr>`;
+  }).join("") : `<tr><td colspan="6" class="muted">no open positions to ladder</td></tr>`;
+}
+
+async function refreshOpenAttribution() {
+  const r = await fetchMaybeStale("/api/open-attribution");
+  if (r.__unavailable) { markStale("oa-status", "oa-headline", "Open-attribution endpoint"); return; }
+  if (r.error) { document.getElementById("oa-headline").textContent = "error: " + r.error; return; }
+  const smap = {
+    SELECTION_ADDING: ["#1b5e20", "#a5d6a7"],
+    SELECTION_DRAG:   ["#b71c1c", "#ffffff"],
+    FLAT_VS_SPY:      ["#1f2126", "#8b929d"],
+    NO_BENCHMARK:     ["#3a2a00", "#ffd479"],
+    NO_DATA:          ["#1f2126", "#8b929d"],
+  };
+  const [bg, fg] = smap[r.status] || smap.NO_DATA;
+  const sEl = document.getElementById("oa-status");
+  sEl.textContent = (r.status || "—").replace(/_/g, " ");
+  sEl.style.background = bg; sEl.style.color = fg;
+  document.getElementById("oa-headline").textContent = r.headline || "";
+  const al = document.getElementById("oa-alpha");
+  al.textContent = r.book_open_alpha_pct != null ? _sgn(r.book_open_alpha_pct) + fmt(r.book_open_alpha_pct, 2) + "%" : "—";
+  al.style.color = _plColor(r.book_open_alpha_pct);
+  const ex = document.getElementById("oa-excess");
+  ex.textContent = r.net_excess_usd != null ? _sgn(r.net_excess_usd) + "$" + fmt(Math.abs(r.net_excess_usd)) : "—";
+  ex.style.color = _plColor(r.net_excess_usd);
+  const ur = document.getElementById("oa-unreal");
+  ur.textContent = r.total_unrealized_usd != null ? _sgn(r.total_unrealized_usd) + "$" + fmt(Math.abs(r.total_unrealized_usd)) : "—";
+  ur.style.color = _plColor(r.total_unrealized_usd);
+  document.getElementById("oa-spyeq").textContent =
+    r.total_spy_equivalent_usd != null ? _sgn(r.total_spy_equivalent_usd) + "$" + fmt(Math.abs(r.total_spy_equivalent_usd)) : "—";
+  document.getElementById("oa-n").textContent =
+    (r.n_anchored != null ? r.n_anchored : "—") + (r.n_positions != null ? " / " + r.n_positions : "");
+  const rows = r.positions || [];
+  const tb = document.querySelector("#oa-rows tbody");
+  tb.innerHTML = rows.length ? rows.map(p => {
+    if (!p.anchored) {
+      return `<tr><td>${p.ticker}</td><td class="num">${fmt(p.position_return_pct, 2)}</td>
+        <td class="num muted" colspan="3">unanchored — no SPY level at/after entry</td></tr>`;
+    }
+    return `<tr>
+      <td>${p.ticker}</td>
+      <td class="num" style="color:${_plColor(p.position_return_pct)};">${_sgn(p.position_return_pct)}${fmt(p.position_return_pct, 2)}</td>
+      <td class="num" style="color:${_plColor(p.spy_return_pct)};">${_sgn(p.spy_return_pct)}${fmt(p.spy_return_pct, 2)}</td>
+      <td class="num" style="color:${_plColor(p.alpha_pct)};font-weight:bold;">${_sgn(p.alpha_pct)}${fmt(p.alpha_pct, 2)}</td>
+      <td class="num" style="color:${_plColor(p.excess_usd)};">${_sgn(p.excess_usd)}$${fmt(Math.abs(p.excess_usd))}</td>
+    </tr>`;
+  }).join("") : `<tr><td colspan="5" class="muted">no anchorable open stock positions</td></tr>`;
+}
+
 // ───────── boot ─────────
 refresh();
 refreshSignals();
@@ -3744,6 +3976,9 @@ refreshScorerConfidence();
 refreshDisagreement();
 refreshDataFeed();
 refreshValidation();
+refreshTradeAsymmetry();
+refreshCapitalParalysis();
+refreshOpenAttribution();
 setInterval(refresh, 15_000);
 setInterval(refreshSignals, 30_000);
 setInterval(refreshAnalytics, 30_000);
@@ -3768,6 +4003,9 @@ setInterval(refreshScorerConfidence, 120_000);
 setInterval(refreshDisagreement, 60_000);
 setInterval(refreshDataFeed, 60_000);
 setInterval(refreshValidation, 120_000);
+setInterval(refreshTradeAsymmetry, 60_000);
+setInterval(refreshCapitalParalysis, 45_000);
+setInterval(refreshOpenAttribution, 60_000);
 showTab(INITIAL_TAB || "trader");
 </script>
 </div><!-- /.page-content -->
