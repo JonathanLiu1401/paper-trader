@@ -796,6 +796,57 @@ TEMPLATE = r"""
       </table>
     </div>
 
+    <!-- ─── Decision Drought Drift (new 2026-05-16, agent 4) ─── -->
+    <div class="card" id="dd-card" style="margin-bottom:18px;">
+      <h2 style="display:flex;justify-content:space-between;align-items:center;">
+        <span>Decision drought drift <span class="muted" style="font-size:11px;text-transform:none;letter-spacing:normal;font-weight:normal;">— what the bot's <em>inaction</em> cost: portfolio vs S&amp;P while it wasn't trading</span></span>
+        <span id="dd-verdict" style="font-size:12px;padding:3px 10px;border-radius:4px;background:#1f2126;color:#8b929d;">—</span>
+      </h2>
+      <div class="muted" id="dd-reason" style="font-size:12px;margin-bottom:12px;">loading…</div>
+      <div class="stat-row" style="margin-bottom:14px;">
+        <div class="stat"><div class="l">fills / cycles</div><div class="v" id="dd-fills">—</div></div>
+        <div class="stat"><div class="l">droughts</div><div class="v" id="dd-n">—</div></div>
+        <div class="stat"><div class="l">paralysis droughts</div><div class="v" id="dd-npar">—</div></div>
+        <div class="stat"><div class="l">involuntary alpha bleed</div><div class="v" id="dd-bleed">—</div></div>
+      </div>
+      <div id="dd-current" style="font-size:12px;background:#0d1117;border:1px solid #1f2126;border-radius:6px;padding:10px 12px;margin-bottom:14px;color:#8b929d;">loading…</div>
+      <div style="font-size:12px;color:#dde1e7;margin-bottom:6px;text-transform:uppercase;letter-spacing:0.5px;">Droughts (newest first) — alpha = portfolio% − S&amp;P% over the idle window</div>
+      <table id="dd-tape" style="font-size:12px;">
+        <thead><tr>
+          <th>start</th><th class="num">hrs</th><th class="num">cyc</th><th>kind</th>
+          <th class="num">ND%</th><th class="num">port%</th><th class="num">spy%</th><th class="num">alpha%</th>
+        </tr></thead>
+        <tbody><tr><td colspan="8" class="muted">loading…</td></tr></tbody>
+      </table>
+    </div>
+
+    <!-- ─── News Edge (new 2026-05-16, agent 4) ─── -->
+    <div class="card" id="ne-card" style="margin-bottom:18px;">
+      <h2 style="display:flex;justify-content:space-between;align-items:center;">
+        <span>News edge <span class="muted" style="font-size:11px;text-transform:none;letter-spacing:normal;font-weight:normal;">— does a high ai_score headline actually predict the move? (SPY-abnormal)</span></span>
+        <span id="ne-verdict" style="font-size:12px;padding:3px 10px;border-radius:4px;background:#1f2126;color:#8b929d;">—</span>
+      </h2>
+      <div class="muted" id="ne-reason" style="font-size:12px;margin-bottom:12px;">loading…</div>
+      <div class="stat-row" style="margin-bottom:14px;">
+        <div class="stat"><div class="l">lookback</div><div class="v" id="ne-days">—</div></div>
+        <div class="stat"><div class="l">articles</div><div class="v" id="ne-narts">—</div></div>
+        <div class="stat"><div class="l">resolved</div><div class="v" id="ne-nres">—</div></div>
+        <div class="stat"><div class="l">tickers priced</div><div class="v" id="ne-ntk">—</div></div>
+        <div class="stat"><div class="l">ref horizon</div><div class="v" id="ne-ref">—</div></div>
+      </div>
+      <div style="font-size:12px;color:#dde1e7;margin-bottom:6px;text-transform:uppercase;letter-spacing:0.5px;">Forward return by ai_score band — mean abnormal % (raw in muted)</div>
+      <table id="ne-bands" style="font-size:12px;margin-bottom:14px;">
+        <thead><tr>
+          <th>ai_score band</th><th class="num">n@ref</th>
+          <th class="num">1d abn</th><th class="num">3d abn</th><th class="num">5d abn</th>
+          <th class="num">ref hit%</th>
+        </tr></thead>
+        <tbody><tr><td colspan="6" class="muted">loading…</td></tr></tbody>
+      </table>
+      <div style="font-size:12px;color:#dde1e7;margin-bottom:6px;text-transform:uppercase;letter-spacing:0.5px;">Urgent vs normal — 3d abnormal %</div>
+      <div id="ne-urg" style="font-size:12px;color:#8b929d;">—</div>
+    </div>
+
     <!-- ─── Scorer Reliability + Confidence Intervals (new 2026-05-15, agent 4) ─── -->
     <div class="card" id="scrl-card" style="margin-bottom:18px;">
       <h2 style="display:flex;justify-content:space-between;align-items:center;">
@@ -3320,6 +3371,135 @@ async function refreshDecisionForensics() {
   } catch (e) { console.error("decision-forensics:", e); }
 }
 
+// ───────── Decision drought drift (new 2026-05-16, agent 4) ─────────
+async function refreshDecisionDrought() {
+  try {
+    const r = await fetch(API_PREFIX + "/api/decision-drought").then(r => r.json());
+    if (r.error) { document.getElementById("dd-reason").textContent = "error: " + r.error; return; }
+    const vmap = {
+      OK:          ["#1b5e20", "#a5d6a7"],
+      NEVER_TRADED:["#b8860b", "#000000"],
+      STUCK:       ["#b8860b", "#000000"],
+      BLEEDING:    ["#b71c1c", "#ffffff"],
+      NO_DATA:     ["#1f2126", "#8b929d"],
+    };
+    const [bg, fg] = vmap[r.verdict] || vmap.NO_DATA;
+    const vEl = document.getElementById("dd-verdict");
+    vEl.textContent = r.verdict || "—";
+    vEl.style.background = bg; vEl.style.color = fg;
+    document.getElementById("dd-reason").textContent = r.verdict_reason || "";
+    document.getElementById("dd-fills").textContent =
+      (r.n_fills != null ? r.n_fills : "—") + " / " + (r.n_cycles != null ? r.n_cycles : "—");
+    document.getElementById("dd-n").textContent = r.n_droughts != null ? r.n_droughts : "—";
+    document.getElementById("dd-npar").textContent =
+      r.n_paralysis_droughts != null ? r.n_paralysis_droughts : "—";
+    const bEl = document.getElementById("dd-bleed");
+    const bleed = r.involuntary_alpha_bleed_pct;
+    bEl.textContent = bleed != null ? fmt(bleed, 2) + "%" : "—";
+    bEl.style.color = (bleed || 0) <= -1.0 ? "#ff4455" : (bleed || 0) < 0 ? "#ffa726" : "#4caf50";
+
+    const cur = r.current_drought;
+    const cEl = document.getElementById("dd-current");
+    if (!cur) {
+      cEl.textContent = "no ongoing drought — last cycle was a fill";
+      cEl.style.borderColor = "#1f2126";
+    } else {
+      const para = cur.kind === "PARALYSIS";
+      cEl.style.borderColor = para ? "#ff4455" : "#2b3038";
+      const a = cur.alpha_pct;
+      cEl.innerHTML = `<b style="color:${para?'#ff6b6b':'#dde1e7'};">ONGOING ${cur.kind}</b> — `
+        + `${fmt(cur.duration_hours,1)}h, ${cur.n_cycles} cycles `
+        + `(${cur.n_no_decision} NO_DECISION / ${cur.n_hold} HOLD). `
+        + `portfolio ${cur.portfolio_pct!=null?fmt(cur.portfolio_pct,2)+'%':'—'}, `
+        + `S&P ${cur.spy_pct!=null?fmt(cur.spy_pct,2)+'%':'—'}, `
+        + `<b style="color:${a!=null&&a<0?'#ff4455':'#4caf50'};">alpha ${a!=null?fmt(a,2)+'%':'—'}</b>`;
+    }
+
+    const kindCol = { PARALYSIS:"#ff4455", DELIBERATE_HOLD:"#4caf50", MIXED:"#ffa726" };
+    const tape = r.droughts || [];
+    const tb = document.querySelector("#dd-tape tbody");
+    tb.innerHTML = tape.length ? tape.map(d => {
+      const t = d.start ? d.start.replace("T"," ").slice(5,16) : "—";
+      const a = d.alpha_pct;
+      const acol = a == null ? "#8b929d" : a < 0 ? "#ff4455" : "#4caf50";
+      return `<tr>
+        <td class="muted">${t}${d.ongoing?' <span style="color:#ffd479;">●live</span>':''}</td>
+        <td class="num">${d.duration_hours!=null?fmt(d.duration_hours,1):'—'}</td>
+        <td class="num">${d.n_cycles}</td>
+        <td><span style="color:${kindCol[d.kind]||'#8b929d'};font-weight:bold;">${d.kind.replace(/_/g," ")}</span></td>
+        <td class="num">${fmt(d.no_decision_pct,0)}</td>
+        <td class="num">${d.portfolio_pct!=null?fmt(d.portfolio_pct,2):'—'}</td>
+        <td class="num">${d.spy_pct!=null?fmt(d.spy_pct,2):'—'}</td>
+        <td class="num" style="color:${acol};font-weight:bold;">${a!=null?fmt(a,2):'—'}</td>
+      </tr>`;
+    }).join("") : `<tr><td colspan="8" class="muted">no multi-cycle droughts</td></tr>`;
+  } catch (e) { console.error("decision-drought:", e); }
+}
+
+// ───────── News edge (new 2026-05-16, agent 4) ─────────
+async function refreshNewsEdge() {
+  try {
+    const r = await fetch(API_PREFIX + "/api/news-edge").then(r => r.json());
+    if (r.error) { document.getElementById("ne-reason").textContent = "error: " + r.error; return; }
+    const vmap = {
+      EDGE_CONFIRMED:    ["#1b5e20", "#a5d6a7"],
+      WEAK_EDGE:         ["#b8860b", "#000000"],
+      NO_EDGE:           ["#b71c1c", "#ffffff"],
+      INSUFFICIENT_DATA: ["#1f2126", "#8b929d"],
+      NO_DATA:           ["#1f2126", "#8b929d"],
+      ERROR:             ["#b71c1c", "#ffffff"],
+    };
+    const [bg, fg] = vmap[r.verdict] || vmap.NO_DATA;
+    const vEl = document.getElementById("ne-verdict");
+    vEl.textContent = (r.verdict || "—").replace(/_/g," ");
+    vEl.style.background = bg; vEl.style.color = fg;
+    document.getElementById("ne-reason").textContent = r.verdict_reason || "";
+    document.getElementById("ne-days").textContent =
+      r.lookback_days != null ? r.lookback_days + "d" : "—";
+    document.getElementById("ne-narts").textContent = r.n_articles != null ? r.n_articles : "—";
+    document.getElementById("ne-nres").textContent = r.n_resolved != null ? r.n_resolved : "—";
+    document.getElementById("ne-ntk").textContent =
+      r.n_tickers_priced != null ? r.n_tickers_priced : "—";
+    document.getElementById("ne-ref").textContent =
+      r.reference_horizon != null ? r.reference_horizon + "d" : "—";
+
+    const cell = (h) => {
+      if (!h || h.mean_abnormal_pct == null) return '<span class="muted">—</span>';
+      const v = h.mean_abnormal_pct;
+      const col = v > 0 ? "#4caf50" : v < 0 ? "#ff4455" : "#8b929d";
+      const raw = h.mean_raw_pct != null ? ` <span class="muted">(${fmt(h.mean_raw_pct,1)})</span>` : "";
+      return `<span style="color:${col};font-weight:bold;">${fmt(v,2)}</span>${raw}`;
+    };
+    const refH = String(r.reference_horizon || 3);
+    const bands = r.bands || [];
+    const tb = document.querySelector("#ne-bands tbody");
+    tb.innerHTML = bands.length ? bands.map(b => {
+      const h = b.horizons || {};
+      // n + hit% track the adaptive reference horizon (the one the verdict is
+      // judged on) — not a hardcoded 3d, which would read 0 while the 1d cell
+      // shows real numbers in early/low-history data.
+      const hr = h[refH] || {};
+      const nRef = hr.n || 0;
+      const hit = hr.abnormal_hit_rate;
+      return `<tr>
+        <td><b>${b.band}</b></td>
+        <td class="num">${nRef}</td>
+        <td class="num">${cell(h["1"])}</td>
+        <td class="num">${cell(h["3"])}</td>
+        <td class="num">${cell(h["5"])}</td>
+        <td class="num">${hit!=null?fmt(hit,0)+'%':'—'}</td>
+      </tr>`;
+    }).join("") : `<tr><td colspan="6" class="muted">no priced articles in window</td></tr>`;
+
+    const u = r.by_urgency || {};
+    const ur = (u.urgent||{})["3"] || {}, no = (u.normal||{})["3"] || {};
+    const fmtAbn = (x) => x.mean_abnormal_pct != null
+      ? `${fmt(x.mean_abnormal_pct,2)}% (n=${x.n||0})` : "—";
+    document.getElementById("ne-urg").innerHTML =
+      `urgent: <b style="color:#ffd479;">${fmtAbn(ur)}</b> &nbsp;·&nbsp; normal: <b>${fmtAbn(no)}</b>`;
+  } catch (e) { console.error("news-edge:", e); }
+}
+
 // ───────── Scorer reliability + confidence intervals (new 2026-05-15, agent 4) ─────────
 async function refreshScorerConfidence() {
   try {
@@ -3463,6 +3643,8 @@ refreshCalibration();
 refreshDecisionHealth();
 refreshLiquidity();
 refreshDecisionForensics();
+refreshDecisionDrought();
+refreshNewsEdge();
 refreshScorerConfidence();
 refreshDataFeed();
 refreshValidation();
@@ -3484,6 +3666,8 @@ setInterval(refreshCalibration, 120_000);
 setInterval(refreshDecisionHealth, 60_000);
 setInterval(refreshLiquidity, 30_000);
 setInterval(refreshDecisionForensics, 60_000);
+setInterval(refreshDecisionDrought, 60_000);
+setInterval(refreshNewsEdge, 300_000);
 setInterval(refreshScorerConfidence, 120_000);
 setInterval(refreshDataFeed, 60_000);
 setInterval(refreshValidation, 120_000);
@@ -5401,6 +5585,132 @@ def liquidity_api():
         ))
     except Exception as e:
         return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/decision-drought")
+def decision_drought_api():
+    """What the live trader's *inaction* cost — drift during decision droughts.
+
+    decision-health gives the NO_DECISION rate; decision-forensics gives the
+    WHY. This gives the COST: between FILLED trades, segment cycles into
+    droughts, price each one's portfolio drift vs the S&P from the equity
+    curve, and split involuntary (NO_DECISION/parse-failure) PARALYSIS from
+    DELIBERATE_HOLD. The negative alpha of the paralysis droughts is
+    'involuntary alpha bleed' — the parse-failure problem in P&L terms."""
+    try:
+        from .analytics.decision_drought import build_decision_drought
+        store = get_store()
+        return jsonify(build_decision_drought(
+            store.recent_decisions(limit=3000),
+            store.equity_curve(limit=5000),
+        ))
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+# Daily-bar history cache for the news-edge endpoint. Keyed by ticker; daily
+# bars don't change intraday in a way that matters for forward-return analysis
+# of *past* articles, so a generous TTL keeps the endpoint snappy after the
+# first build without re-hammering yfinance every refresh.
+_NEWS_EDGE_PX_CACHE: dict[str, tuple[list[tuple[str, float]], float]] = {}
+_NEWS_EDGE_PX_TTL = 1800.0  # 30 min
+
+
+def _daily_history_cached(ticker: str, period: str = "3mo") -> list[tuple[str, float]]:
+    import time as _t
+    hit = _NEWS_EDGE_PX_CACHE.get(ticker)
+    if hit and _t.time() - hit[1] < _NEWS_EDGE_PX_TTL:
+        return hit[0]
+    try:
+        import yfinance as yf
+        h = yf.Ticker(ticker).history(period=period, auto_adjust=False)
+        bars = [(idx.strftime("%Y-%m-%d"), float(c))
+                for idx, c in zip(h.index, h["Close"]) if c == c]
+    except Exception:
+        bars = []
+    _NEWS_EDGE_PX_CACHE[ticker] = (bars, _t.time())
+    return bars
+
+
+@app.route("/api/news-edge")
+def news_edge_api():
+    """Does digital-intern's scored news actually predict moves?
+
+    For every live (non-backtest) scored article that names a watchlist
+    ticker, look at that ticker's 1/3/5-trading-day forward return, both raw
+    and SPY-abnormal, banded by ai_score. The verdict is judged on abnormal
+    return only — a flat or inverted score→return curve means the score is
+    noise. ``?days=`` (lookback, default 30) and ``?min_score=`` (default 2.0)
+    are tunable. Validates the core premise of the whole stack."""
+    try:
+        from .analytics.news_edge import build_news_edge
+        from .strategy import WATCHLIST
+
+        days = max(7, min(120, int(request.args.get("days", 30))))
+        min_score = float(request.args.get("min_score", 2.0))
+
+        path = _articles_db_path()
+        if path is None:
+            return jsonify({"error": "articles.db not found", "bands": [],
+                            "verdict": "NO_DATA"}), 200
+
+        since = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
+        conn = sqlite3.connect(f"file:{path}?mode=ro", uri=True, timeout=8)
+        conn.row_factory = sqlite3.Row
+        try:
+            rows = conn.execute(
+                "SELECT title, full_text, ai_score, urgency, first_seen "
+                "FROM articles WHERE ai_score >= ? AND first_seen >= ? "
+                "AND url NOT LIKE 'backtest://%' "
+                "AND source NOT LIKE 'backtest_%' "
+                "AND source NOT LIKE 'opus_annotation%' "
+                "ORDER BY first_seen DESC LIMIT 4000",
+                (min_score, since),
+            ).fetchall()
+        finally:
+            conn.close()
+
+        arts = []
+        for r in rows:
+            body = ""
+            try:
+                if r["full_text"]:
+                    body = zlib.decompress(r["full_text"]).decode(
+                        "utf-8", errors="replace")
+            except Exception:
+                body = ""
+            arts.append({
+                "text": f"{r['title'] or ''} {body}",
+                "ai_score": r["ai_score"],
+                "urgency": r["urgency"],
+                "published": r["first_seen"],
+            })
+
+        # Only fetch prices for watchlist tickers that actually appear, most
+        # frequent first, capped so a cold request can't stall on dozens of
+        # yfinance round-trips.
+        freq: dict[str, int] = {}
+        pats = {tk: re.compile(rf"(?:\$|\b){re.escape(tk)}\b") for tk in WATCHLIST}
+        for a in arts:
+            up = a["text"].upper()
+            for tk, pat in pats.items():
+                if pat.search(up):
+                    freq[tk] = freq.get(tk, 0) + 1
+        wanted = [tk for tk, _ in sorted(
+            freq.items(), key=lambda kv: -kv[1])][:30]
+
+        price_history = {tk: _daily_history_cached(tk) for tk in wanted}
+        spy_history = _daily_history_cached("SPY")
+
+        result = build_news_edge(arts, price_history, spy_history, WATCHLIST)
+        result["lookback_days"] = days
+        result["min_score"] = min_score
+        result["n_tickers_priced"] = len([tk for tk in wanted
+                                          if price_history.get(tk)])
+        return jsonify(result)
+    except Exception as e:
+        return jsonify({"error": str(e), "bands": [],
+                        "verdict": "ERROR"}), 500
 
 
 def run(host: str = "0.0.0.0", port: int = 8090):
