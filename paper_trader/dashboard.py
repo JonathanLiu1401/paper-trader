@@ -2142,7 +2142,6 @@ function runEra(r) {
 }
 
 // ───────── Scatter: duration (X) vs annualized return (Y), colored by era ─────────
-let btScatter;
 function drawScatterChart() {
   const completed = btRuns.filter(r => r.status === "complete" && r.duration_days && r.annualized_return_pct != null);
   if (!completed.length) return;
