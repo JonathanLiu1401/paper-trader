@@ -518,7 +518,14 @@ isolation), `test_decision_scorer.py` (`_to_float`, `build_features`,
 (`_pick_window`, `_trim_history`, `_append_top_decisions`,
 `_compute_decision_outcomes`, `_query_news_context`, `_train_decision_scorer`),
 `test_validation.py` (temporal split / OOS / permutation),
-`test_ml_backtest_review.py` (this pass — see above).
+`test_ml_backtest_review.py` (a prior pass — see above),
+`test_ml_backtest_coverage.py` (`_market_regime` bull/bear/sideways/unknown
+classification — the `regime_mult` source for `_ml_decide` and
+`_compute_decision_outcomes`; and `train_scorer`'s numpy weighted-lstsq
+fallback — pickle round-trip, finite/clamped predictions, batch shape,
+monotone ranking, non-finite-label guard — the entire scorer path on a
+sklearn-less host, otherwise unexercised because every other
+`TestTrainScorer` runs with sklearn present).
 
 > A non-network collection error from an *untracked, out-of-scope* test
 > file (e.g. one a parallel review agent left mid-flight that imports a
