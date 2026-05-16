@@ -662,6 +662,26 @@ TEMPLATE = r"""
       </table>
     </div>
 
+    <!-- ─── Capital Deployment & Liquidity (new 2026-05-15, agent 4) ─── -->
+    <div class="card" id="liq-card" style="margin-bottom:18px;">
+      <h2 style="display:flex;justify-content:space-between;align-items:center;">
+        <span>Capital deployment &amp; liquidity <span class="muted" style="font-size:11px;text-transform:none;letter-spacing:normal;font-weight:normal;">— is the book pinned with no dry powder?</span></span>
+        <span id="liq-status" style="font-size:12px;padding:3px 10px;border-radius:4px;background:#1f2126;color:#8b929d;">—</span>
+      </h2>
+      <div class="muted" id="liq-headline" style="font-size:12px;margin-bottom:12px;">loading…</div>
+      <div class="stat-row" style="margin-bottom:12px;">
+        <div class="stat"><div class="l">cash</div><div class="v" id="liq-cash">—</div></div>
+        <div class="stat"><div class="l">deployed</div><div class="v" id="liq-deployed">—</div></div>
+        <div class="stat"><div class="l">positions</div><div class="v" id="liq-npos">—</div></div>
+        <div class="stat"><div class="l">top weight</div><div class="v" id="liq-top">—</div></div>
+        <div class="stat"><div class="l">unrealized P/L</div><div class="v" id="liq-upl">—</div></div>
+        <div class="stat"><div class="l">last entry</div><div class="v" id="liq-entry">—</div></div>
+      </div>
+      <div id="liq-bar" style="display:flex;height:18px;border-radius:6px;overflow:hidden;background:#0d1117;border:1px solid #1f2126;margin-bottom:6px;"></div>
+      <div class="muted" id="liq-bar-legend" style="font-size:11px;margin-bottom:12px;">—</div>
+      <div id="liq-flags" style="font-size:12px;color:#dde1e7;"></div>
+    </div>
+
     <!-- ─── Decision Pipeline Health (new 2026-05-15, agent 4) ─── -->
     <div class="card" id="dh-card" style="margin-bottom:18px;">
       <h2 style="display:flex;justify-content:space-between;align-items:center;">
@@ -686,6 +706,35 @@ TEMPLATE = r"""
           <th class="num">conf</th><th class="num">signals</th>
         </tr></thead>
         <tbody><tr><td colspan="5" class="muted">loading…</td></tr></tbody>
+      </table>
+    </div>
+
+    <!-- ─── Decision Failure Forensics (new 2026-05-15, agent 4) ─── -->
+    <div class="card" id="df-card" style="margin-bottom:18px;">
+      <h2 style="display:flex;justify-content:space-between;align-items:center;">
+        <span>Decision failure forensics <span class="muted" style="font-size:11px;text-transform:none;letter-spacing:normal;font-weight:normal;">— WHY a cycle produced no decision, with the raw Opus excerpt</span></span>
+        <span id="df-verdict" style="font-size:12px;padding:3px 10px;border-radius:4px;background:#1f2126;color:#8b929d;">—</span>
+      </h2>
+      <div class="muted" id="df-reason" style="font-size:12px;margin-bottom:6px;">loading…</div>
+      <div id="df-hint" style="font-size:12px;color:#ffd479;margin-bottom:12px;"></div>
+      <div class="stat-row" style="margin-bottom:14px;">
+        <div class="stat"><div class="l">failures</div><div class="v" id="df-nfail">—</div></div>
+        <div class="stat"><div class="l">rate (24h)</div><div class="v" id="df-rate">—</div></div>
+        <div class="stat"><div class="l">retry-exhausted</div><div class="v" id="df-retry">—</div></div>
+        <div class="stat"><div class="l">dominant mode</div><div class="v" id="df-dom" style="font-size:14px;">—</div></div>
+        <div class="stat"><div class="l">open mkt fail%</div><div class="v" id="df-open">—</div></div>
+        <div class="stat"><div class="l">closed mkt fail%</div><div class="v" id="df-closed">—</div></div>
+      </div>
+      <div style="font-size:12px;color:#dde1e7;margin-bottom:6px;text-transform:uppercase;letter-spacing:0.5px;">Failure modes</div>
+      <div id="df-mix" style="margin-bottom:12px;"><div class="muted">loading…</div></div>
+      <div style="font-size:12px;color:#dde1e7;margin-bottom:6px;text-transform:uppercase;letter-spacing:0.5px;">Hourly parse-fail (last 24h)</div>
+      <div id="df-hourly" style="display:flex;align-items:flex-end;gap:3px;height:46px;margin-bottom:14px;"><div class="muted">—</div></div>
+      <div style="font-size:12px;color:#dde1e7;margin-bottom:6px;text-transform:uppercase;letter-spacing:0.5px;">Recent failures — raw Opus excerpt</div>
+      <table id="df-tape" style="font-size:12px;">
+        <thead><tr>
+          <th>time</th><th>mode</th><th>mkt</th><th>excerpt</th>
+        </tr></thead>
+        <tbody><tr><td colspan="4" class="muted">loading…</td></tr></tbody>
       </table>
     </div>
 
@@ -3082,6 +3131,137 @@ async function refreshDecisionHealth() {
   } catch (e) { console.error("decision-health:", e); }
 }
 
+// ───────── Capital deployment & liquidity (new 2026-05-15, agent 4) ─────────
+async function refreshLiquidity() {
+  try {
+    const r = await fetch(API_PREFIX + "/api/liquidity").then(r => r.json());
+    if (r.error) { document.getElementById("liq-headline").textContent = "error: " + r.error; return; }
+    const smap = {
+      NO_DRY_POWDER: ["#b71c1c", "#ffffff"],
+      DRY_POWDER_LOW:["#b8860b", "#000000"],
+      CASH_HEAVY:    ["#1565c0", "#ffffff"],
+      BALANCED:      ["#1b5e20", "#a5d6a7"],
+      NO_DATA:       ["#1f2126", "#8b929d"],
+    };
+    const [bg, fg] = smap[r.status] || smap.NO_DATA;
+    const sEl = document.getElementById("liq-status");
+    sEl.textContent = (r.status || "—").replace(/_/g, " ");
+    sEl.style.background = bg; sEl.style.color = fg;
+    document.getElementById("liq-headline").textContent = r.headline || "";
+    document.getElementById("liq-cash").textContent =
+      dollar(r.cash) + (r.cash_pct != null ? ` (${fmt(r.cash_pct,1)}%)` : "");
+    const dEl = document.getElementById("liq-deployed");
+    dEl.textContent = r.deployed_pct != null ? fmt(r.deployed_pct,1) + "%" : "—";
+    dEl.style.color = (r.deployed_pct || 0) >= 98 ? "#ff4455"
+                    : (r.deployed_pct || 0) >= 90 ? "#ffa726" : "#dde1e7";
+    document.getElementById("liq-npos").textContent =
+      (r.n_positions != null ? r.n_positions : "—") +
+      (r.n_losers != null ? ` · ${r.n_losers}↓` : "");
+    document.getElementById("liq-top").textContent =
+      r.top_weight_pct != null ? fmt(r.top_weight_pct,1) + "%" +
+        (r.largest_position ? ` ${r.largest_position}` : "") : "—";
+    const uEl = document.getElementById("liq-upl");
+    uEl.textContent = r.unrealized_pl != null
+      ? dollar(r.unrealized_pl) + (r.unrealized_pl_pct != null ? ` (${fmt(r.unrealized_pl_pct,1)}%)` : "")
+      : "—";
+    uEl.style.color = (r.unrealized_pl || 0) < 0 ? "#ff4455"
+                    : (r.unrealized_pl || 0) > 0 ? "#4caf50" : "#dde1e7";
+    document.getElementById("liq-entry").textContent =
+      r.days_since_last_entry != null ? fmt(r.days_since_last_entry,1) + "d ago" : "—";
+    const dep = Math.max(0, Math.min(100, r.deployed_pct || 0));
+    document.getElementById("liq-bar").innerHTML =
+      `<div style="width:${dep}%;background:#5c6bc0;height:100%;"></div>` +
+      `<div style="width:${100-dep}%;background:#2e7d32;height:100%;"></div>`;
+    document.getElementById("liq-bar-legend").textContent =
+      `deployed ${fmt(dep,1)}%  ·  cash ${fmt(100-dep,1)}%` +
+      (r.can_act_on_signal === false ? "  ·  ⚠ cannot act on a new BUY" : "");
+    const fl = r.flags || [];
+    document.getElementById("liq-flags").innerHTML = fl.length
+      ? fl.map(f => `<div style="margin:3px 0;">• ${f.replace(/</g,"&lt;")}</div>`).join("")
+      : '<span class="muted">no liquidity flags</span>';
+  } catch (e) { console.error("liquidity:", e); }
+}
+
+// ───────── Decision failure forensics (new 2026-05-15, agent 4) ─────────
+async function refreshDecisionForensics() {
+  try {
+    const r = await fetch(API_PREFIX + "/api/decision-forensics").then(r => r.json());
+    if (r.error) { document.getElementById("df-reason").textContent = "error: " + r.error; return; }
+    const vmap = {
+      HEALTHY:  ["#1b5e20", "#a5d6a7"],
+      DEGRADED: ["#b8860b", "#000000"],
+      CRITICAL: ["#b71c1c", "#ffffff"],
+      NO_DATA:  ["#1f2126", "#8b929d"],
+    };
+    const [bg, fg] = vmap[r.verdict] || vmap.NO_DATA;
+    const vEl = document.getElementById("df-verdict");
+    vEl.textContent = r.verdict + (r.verdict_window ? ` (${r.verdict_window})` : "");
+    vEl.style.background = bg; vEl.style.color = fg;
+    document.getElementById("df-reason").textContent = r.verdict_reason || "";
+    document.getElementById("df-hint").textContent = r.hint || "";
+    document.getElementById("df-nfail").textContent =
+      (r.n_failures != null ? r.n_failures : "—") +
+      (r.failure_rate_pct != null ? ` (${fmt(r.failure_rate_pct,0)}% all)` : "");
+    const rEl = document.getElementById("df-rate");
+    rEl.textContent = r.failure_rate_24h_pct != null ? fmt(r.failure_rate_24h_pct,0) + "%" : "—";
+    rEl.style.color = (r.failure_rate_24h_pct || 0) >= 50 ? "#ff4455"
+                    : (r.failure_rate_24h_pct || 0) >= 25 ? "#ffa726" : "#4caf50";
+    document.getElementById("df-retry").textContent =
+      r.retry_exhausted != null ? r.retry_exhausted : "—";
+    document.getElementById("df-dom").textContent =
+      (r.dominant_mode || "—").replace(/_/g, " ");
+    const bm = r.by_market || {};
+    document.getElementById("df-open").textContent =
+      bm.open ? fmt(bm.open.fail_pct,0) + "%" : "—";
+    document.getElementById("df-closed").textContent =
+      bm.closed ? fmt(bm.closed.fail_pct,0) + "%" : "—";
+
+    const modeColors = {
+      TIMEOUT_EMPTY:"#ff4455", TRUNCATED:"#ff7043", NO_JSON:"#ab47bc",
+      FENCED:"#ffa726", PROSE_WRAPPED:"#ffca28", MALFORMED_JSON:"#ef5350",
+      EMPTY:"#8b929d", LEGACY_UNKNOWN:"#5c6bc0", OTHER:"#8b929d",
+    };
+    const mix = r.mode_mix || [];
+    const mixEl = document.getElementById("df-mix");
+    mixEl.innerHTML = mix.length ? mix.map(m => `
+      <div style="display:flex;align-items:center;gap:8px;margin:3px 0;font-size:12px;">
+        <span style="width:128px;color:#dde1e7;">${m.mode.replace(/_/g," ")}</span>
+        <div style="flex:1;background:#1f2126;border-radius:3px;height:14px;overflow:hidden;">
+          <div style="width:${m.pct}%;height:100%;background:${modeColors[m.mode]||"#8b929d"};"></div>
+        </div>
+        <span class="muted" style="width:84px;text-align:right;">${m.n} · ${fmt(m.pct,0)}%</span>
+      </div>`).join("") : '<div class="muted">no NO_DECISION cycles 🎉</div>';
+
+    const hrs = r.hourly || [];
+    const hEl = document.getElementById("df-hourly");
+    if (!hrs.length) {
+      hEl.innerHTML = '<div class="muted">no cycles in last 24h</div>';
+    } else {
+      hEl.innerHTML = hrs.map(h => {
+        const ph = Math.max(4, Math.round((h.fail_pct||0) * 0.42));
+        const col = (h.fail_pct||0) >= 50 ? "#ff4455" : (h.fail_pct||0) >= 25 ? "#ffa726" : "#4caf50";
+        const lbl = (h.hour||"").slice(11,16);
+        return `<div title="${lbl}  ${h.failures}/${h.total} failed (${fmt(h.fail_pct,0)}%)"
+          style="flex:1;min-width:5px;height:${ph}px;background:${col};border-radius:2px 2px 0 0;"></div>`;
+      }).join("");
+    }
+
+    const tape = r.recent_failures || [];
+    const tb = document.querySelector("#df-tape tbody");
+    tb.innerHTML = tape.length ? tape.map(d => {
+      const t = d.timestamp ? d.timestamp.replace("T"," ").slice(5,16) : "—";
+      const col = modeColors[d.mode] || "#8b929d";
+      const ex = (d.excerpt || "—").replace(/</g,"&lt;").slice(0,200);
+      return `<tr>
+        <td class="muted">${t}</td>
+        <td><span style="color:${col};font-weight:bold;">${d.mode.replace(/_/g," ")}</span></td>
+        <td class="muted">${d.market_open ? "open" : "—"}</td>
+        <td style="font-family:monospace;color:#aab;max-width:380px;word-break:break-all;">${ex}</td>
+      </tr>`;
+    }).join("") : `<tr><td colspan="4" class="muted">no failures recorded</td></tr>`;
+  } catch (e) { console.error("decision-forensics:", e); }
+}
+
 // ───────── Scorer reliability + confidence intervals (new 2026-05-15, agent 4) ─────────
 async function refreshScorerConfidence() {
   try {
@@ -3223,6 +3403,8 @@ refreshThesis();
 refreshDrawdown();
 refreshCalibration();
 refreshDecisionHealth();
+refreshLiquidity();
+refreshDecisionForensics();
 refreshScorerConfidence();
 refreshDataFeed();
 refreshValidation();
@@ -3242,6 +3424,8 @@ setInterval(refreshThesis, 60_000);
 setInterval(refreshDrawdown, 30_000);
 setInterval(refreshCalibration, 120_000);
 setInterval(refreshDecisionHealth, 60_000);
+setInterval(refreshLiquidity, 30_000);
+setInterval(refreshDecisionForensics, 60_000);
 setInterval(refreshScorerConfidence, 120_000);
 setInterval(refreshDataFeed, 60_000);
 setInterval(refreshValidation, 120_000);
@@ -5115,6 +5299,42 @@ def decision_health_api():
         from .analytics.decision_health import build_decision_health
         decisions = get_store().recent_decisions(limit=2000)
         return jsonify(build_decision_health(decisions))
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/decision-forensics")
+def decision_forensics_api():
+    """*Why* the live trader produces no decision — failure-mode taxonomy.
+
+    decision-health says HOW OFTEN parsing fails; this says WHY: timeout vs
+    truncation vs prose-wrapping vs fenced vs malformed, the open/closed-market
+    split, an hourly trend, retry-exhausted count, an actionable hint, and the
+    raw model excerpts strategy.py captured but nothing else surfaces."""
+    try:
+        from .analytics.decision_forensics import build_decision_forensics
+        decisions = get_store().recent_decisions(limit=2000)
+        return jsonify(build_decision_forensics(decisions))
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/liquidity")
+def liquidity_api():
+    """Capital deployment & liquidity — is the book pinned with no dry powder?
+
+    Cash vs deployed %, position weights, unrealized P/L, days since the last
+    opening trade, and a status (NO_DRY_POWDER / DRY_POWDER_LOW / BALANCED /
+    CASH_HEAVY) with human flags. Complements /api/risk (concentration) with
+    the 'can the trader still act on a signal?' view."""
+    try:
+        from .analytics.liquidity import build_liquidity
+        store = get_store()
+        return jsonify(build_liquidity(
+            store.get_portfolio(),
+            store.open_positions(),
+            store.recent_trades(200),
+        ))
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
