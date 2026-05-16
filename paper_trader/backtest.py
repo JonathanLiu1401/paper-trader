@@ -1628,11 +1628,17 @@ def _enforce_risk_exits(portfolio: SimPortfolio, prices: PriceCache,
     n = 0
     if not portfolio.positions:
         return 0
+    # Membership of `prices.trading_days` (a list, up to ~2500 entries for a
+    # 10-year continuous-loop window) is tested once per calendar day in the
+    # scan below. `cur not in <list>` is O(len) — for long windows the
+    # continuous loop ran this list-scan tens of millions of times per run.
+    # Snapshot to a set once: O(1) membership, identical result.
+    trading_days_set = set(prices.trading_days)
     cur = from_day + timedelta(days=1)
     while cur <= to_day:
         if not portfolio.positions:
             break
-        if cur not in prices.trading_days:
+        if cur not in trading_days_set:
             cur += timedelta(days=1)
             continue
         for ticker in list(portfolio.positions.keys()):

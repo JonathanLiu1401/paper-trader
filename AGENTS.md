@@ -446,6 +446,16 @@ pins the conviction arm with exact expected values (a regression that drops
 the conviction formula, update both tests deliberately — they assert exact
 numbers, not ranges, by design.
 
+The five **scorer-gate arms** themselves are now exact-value locked in
+`tests/test_ml_backtest_review.py::TestMlDecideScorerGate`: with the module
+`_DECISION_SCORER` singleton swapped for a fake returning a fixed prediction,
+each arm's effect on a base conviction of 0.25 is asserted as an exact share
+qty (`p<-10 → 75.0`, `-10≤p<0 → 106.25`, `0≤p≤5 → 125.0`, `5<p≤10 → 143.75`,
+`p>10 → 162.5`), plus the **n_train ≥ 500 gate** (a trained scorer with
+`_n_train = 100` must NOT modulate, even on a -50 prediction — locks invariant
+#5). Any change to the gate thresholds or multipliers must update these
+assertions deliberately.
+
 ### Tests (ML + backtest section)
 
 ```bash
@@ -460,7 +470,28 @@ cd /home/zeph/paper-trader && python3 -m pytest tests/ -v
 
 # A single class
 cd /home/zeph/paper-trader && python3 -m pytest tests/test_decision_scorer.py::TestTrainScorer -v
+
+# This review pass's regression locks (risk-exit semantics, _ml_decide
+# SELL/exclude, scorer-gate arms, outcome parsing, inject SQL + null hardening)
+cd /home/zeph/paper-trader && python3 -m pytest tests/test_ml_backtest_review.py -v
 ```
+
+ML/backtest test files (all offline, all deterministic):
+`test_backtest.py` (PriceCache / SimPortfolio / risk-exits / indicators /
+heuristic scorer / `_ml_decide` smoke + position-size caps / store
+isolation), `test_decision_scorer.py` (`_to_float`, `build_features`,
+`train_scorer`, prediction clamp / honesty), `test_continuous.py`
+(`_pick_window`, `_trim_history`, `_append_top_decisions`,
+`_compute_decision_outcomes`, `_query_news_context`, `_train_decision_scorer`),
+`test_validation.py` (temporal split / OOS / permutation),
+`test_ml_backtest_review.py` (this pass — see above).
+
+> A non-network collection error from an *untracked, out-of-scope* test
+> file (e.g. one a parallel review agent left mid-flight that imports a
+> not-yet-created module) will abort `pytest tests/` collection for the
+> whole directory. It is **not** an ML/backtest regression — verify your
+> own work with `--ignore=tests/<that_file>.py` and leave the file for its
+> owner; never `git add -A` it into an unrelated review commit.
 
 All tests are offline — `tests/conftest.py` redirects `SCORER_PATH`,
 `PRICE_CACHE_PATH`, `BACKTEST_DB`, and the various cache paths to
@@ -509,6 +540,37 @@ For automated review agents that touch ML / backtest code:
   for that cycle and every cycle after (the row persists in the 5000-record
   tail). Pinned by `tests/test_decision_scorer.py::TestToFloat` +
   `::TestTrainScorer::test_handles_non_finite_forward_return`.
+- **`dict.get(k, default)` does NOT default a JSON `null`** — it only
+  substitutes the default when the key is *absent*; an explicit `null`
+  value still returns `None`. `_inject_and_train` reads
+  `winner_training.jsonl` (which mixes top-decision, opus-lesson and
+  opus-trade-label record shapes) and a single line with `"ai_score": null`
+  or `"weight": null` reaching `float(None)` raises `TypeError` — caught by
+  the function's broad outer `except`, which returns `"inject err: …"` and
+  injects **zero** rows that cycle, so ArticleNet never retrains. The fix
+  is the codebase's standard `float(rec.get("ai_score") or 0.0)` /
+  `… or 1.0` idiom (same class as the `_ml_decide`
+  `float(a.get("score") or 0.0)` hardening). Pinned by
+  `tests/test_ml_backtest_review.py::TestInjectAndTrain::test_null_ai_score_and_weight_do_not_abort_batch`.
+  That test also locks the **11-column INSERT alignment** (id…full_text),
+  `ai_score == kw_score == min(10, ai·weight)`, hard-coded `urgency=0`, and
+  `INSERT OR IGNORE` dedup by `_aid(url, title)`.
+- **Hardcoded cross-repo paths must be module-level for testability** —
+  `_inject_and_train` writes into digital-intern's `articles.db`. Its path
+  is now the module constant `run_continuous_backtests.DIGITAL_INTERN_ARTICLES_DB`
+  (was a function-local string, untestable). Tests monkeypatch it +
+  `WINNER_JSONL` + `subprocess.run` to exercise the injection offline. Keep
+  any new cross-repo path at module scope for the same reason.
+- **`_enforce_risk_exits` trading-day membership is O(1)** —
+  `cur not in prices.trading_days` was a list scan inside a per-calendar-day
+  loop; over a 1–10yr continuous-loop window that is tens of millions of
+  comparisons per run. It now snapshots `set(prices.trading_days)` once at
+  function entry (behavior-identical — no PriceCache change, so the
+  `synthetic_prices` fixture that builds `PriceCache` via `__new__` is
+  unaffected). The SL/TP exit semantics it guards (stop-loss priority via
+  `if sl … elif tp …`, full-qty liquidation, no double-fire after close)
+  are locked by
+  `tests/test_ml_backtest_review.py::TestEnforceRiskExitsSemantics`.
 - **Forward leakage** — anything that reads news must filter on
   `url NOT LIKE 'backtest://%'` and `source NOT LIKE 'backtest_%'` /
   `'opus_annotation%'`. The live `signals.py` and the backtest

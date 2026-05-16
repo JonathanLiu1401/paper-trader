@@ -52,6 +52,9 @@ MAX_OUTCOMES_FOR_TRAINING = 5000  # cap decision_outcomes.jsonl tail used per re
 COOLDOWN_SECONDS = 60
 DISCORD_CHANNEL = "channel:1496099475838603324"
 WINNER_JSONL = ROOT / "data" / "winner_training.jsonl"
+# digital-intern's article DB that `_inject_and_train` writes winner rows into.
+# Module-level (not a function local) so it can be redirected in tests.
+DIGITAL_INTERN_ARTICLES_DB = "/home/zeph/digital-intern/data/articles.db"
 
 # How often to run the validation suite (label audit + permutation test) on the
 # current cycle's engine. Validation is *expensive* (one full backtest per
@@ -650,7 +653,7 @@ def _inject_and_train() -> str:
     import hashlib
     import zlib
 
-    DB_PATH = "/home/zeph/digital-intern/data/articles.db"
+    DB_PATH = DIGITAL_INTERN_ARTICLES_DB
 
     def _compress(text: str) -> bytes:
         return zlib.compress(text.encode("utf-8", errors="replace"), level=6)
@@ -689,8 +692,16 @@ def _inject_and_train() -> str:
         aconn = sqlite3.connect(DB_PATH, timeout=15)
         inserted = 0
         for rec in records:
-            ai = float(rec.get("ai_score", 0))
-            w = float(rec.get("weight", 1.0))
+            # `.get(k, default)` only substitutes the default when the key is
+            # ABSENT — an explicit JSON `null` value still returns None, and
+            # `float(None)` raises TypeError. A single such line in
+            # winner_training.jsonl would abort the whole injection batch via
+            # the outer `except` (returning "inject err: …"), so ArticleNet
+            # never retrains that cycle. `or` coerces None/0/"" to the safe
+            # default, matching the hardening idiom already used in
+            # backtest._ml_decide and _opus_annotate.
+            ai = float(rec.get("ai_score") or 0.0)
+            w = float(rec.get("weight") or 1.0)
             eff = min(10.0, ai * w)
             title = rec.get("title", "")
             ticker = rec.get("ticker", "")
