@@ -174,6 +174,23 @@ class TestToFloat:
     def test_numpy_float(self):
         assert _to_float(np.float32(2.5), 0.0) == 2.5
 
+    def test_numpy_string_returns_default_without_crashing(self):
+        # Regression: the guard was `isinstance(v, np.generic)`, which also
+        # matches np.str_. `np.isfinite(np.str_("bullish"))` raises an
+        # *unhandled* TypeError ("ufunc 'isfinite' not supported"), which
+        # would propagate out of build_features and crash train_scorer.
+        # np.number is the precise numeric guard — numpy strings must fall
+        # through to the safe default exactly like Python strings do.
+        assert _to_float(np.str_("bullish"), 50.0) == 50.0
+        assert _to_float(np.str_("42"), 0.0) == 0.0
+
+    def test_numpy_bool_returns_default(self):
+        # np.bool_ is np.generic but NOT np.number — it must reach the safe
+        # default, consistent with Python `bool` already being excluded at
+        # the top of _to_float (a boolean is not a meaningful RSI/MACD value).
+        assert _to_float(np.bool_(True), 99.0) == 99.0
+        assert _to_float(np.bool_(False), 99.0) == 99.0
+
 
 # ─────────────────────── build_features ───────────────────────────
 

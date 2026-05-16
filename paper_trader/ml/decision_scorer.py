@@ -112,7 +112,14 @@ def _to_float(v, default: float) -> float:
     # already used np.isfinite; this aligns the Python branch with it.
     if isinstance(v, (int, float)) and math.isfinite(v):
         return float(v)
-    if isinstance(v, np.generic) and np.isfinite(v):
+    # Guard on np.number, NOT np.generic. np.generic also covers np.str_ /
+    # np.bool_ / np.object_, and np.isfinite raises an *unhandled* TypeError
+    # on a numpy string ("ufunc 'isfinite' not supported") — that would
+    # propagate straight out of build_features and crash train_scorer. np.number
+    # is the precise numeric guard, mirroring the (int, float) check above; a
+    # numpy bool/string falls through to the safe default just like a Python
+    # bool/str already does.
+    if isinstance(v, np.number) and np.isfinite(v):
         return float(v)
     return default
 

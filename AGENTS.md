@@ -423,8 +423,12 @@ For automated review agents that touch ML / backtest code:
   case during a feature rollout). After a feature change, force a retrain
   by deleting the pickle before the next continuous-loop cycle.
 - **`_to_float` and numpy types** — `np.float32` is *not* a Python `float`
-  subclass (`np.float64` is). `_to_float` falls back to a `np.generic`
-  check; if you add new numpy inputs, verify they pass through. It rejects
+  subclass (`np.float64` is). `_to_float` falls back to an **`np.number`**
+  check (NOT `np.generic`: `np.generic` also matches `np.str_`/`np.bool_`,
+  and `np.isfinite(np.str_("x"))` raises an *unhandled* `TypeError` that
+  would propagate out of `build_features` and crash `train_scorer`; numpy
+  strings/bools must take the safe default like Python `str`/`bool` do).
+  If you add new numpy inputs, verify they pass through. It rejects
   every non-finite value (NaN **and** ±inf) on both the Python and numpy
   branches via `math.isfinite` / `np.isfinite` — this is load-bearing: a
   single `decision_outcomes.jsonl` row with a non-finite `forward_return_5d`
