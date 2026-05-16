@@ -35,6 +35,7 @@ import sys
 import time
 import traceback
 from datetime import date, datetime, timedelta, timezone
+from pathlib import Path
 
 from paper_trader.backtest import (
     BacktestEngine,

@@ -392,6 +392,15 @@ For automated review agents that touch ML / backtest code:
   shared across run threads and the background `_opus_annotate` thread.
   Every read / write must hold `store._lock`. If you add a new query path,
   copy the locking pattern from `_trim_history` / `_append_top_decisions`.
+- **Resolve module-global paths at call time, not as default args** —
+  `def __init__(self, path=BACKTEST_DB)` binds the global's *value* at
+  import, so conftest's `monkeypatch.setattr(bt, "BACKTEST_DB", tmp)` is a
+  no-op for that call and the no-arg `BacktestStore()` silently hits the
+  real persistent DB (this caused an order-dependent flaky test). Use
+  `path=None` then `path = path or BACKTEST_DB` inside the body. Same rule
+  for any new constructor that touches `SCORER_PATH` / `CACHE_DIR` / a
+  cache path the conftest redirects. Locked by
+  `tests/test_backtest.py::TestBacktestStoreIsolation`.
 - **`SAMPLE_EVERY_N_DAYS = 1`** — backtests sample every trading day.
   Don't change this casually; the continuous loop's timing budget
   assumes a year-long sim completes in ~minutes per run.

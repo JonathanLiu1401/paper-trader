@@ -354,7 +354,16 @@ CREATE INDEX IF NOT EXISTS idx_bt_dec_run ON backtest_decisions(run_id);
 
 
 class BacktestStore:
-    def __init__(self, path: Path = BACKTEST_DB):
+    def __init__(self, path: Path | None = None):
+        # Resolve BACKTEST_DB at call time, not at def time. A
+        # `path: Path = BACKTEST_DB` default binds the module global's value
+        # when backtest.py is imported, so a later
+        # `monkeypatch.setattr(bt, "BACKTEST_DB", tmp)` (conftest test
+        # isolation) had no effect — every BacktestStore()/BacktestEngine()
+        # silently connected to the real persistent backtest.db, polluting it
+        # across tests and producing order-dependent flaky failures.
+        if path is None:
+            path = BACKTEST_DB
         path.parent.mkdir(parents=True, exist_ok=True)
         self.conn = sqlite3.connect(str(path), timeout=30, check_same_thread=False)
         self.conn.row_factory = sqlite3.Row

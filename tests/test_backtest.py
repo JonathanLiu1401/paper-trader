@@ -464,3 +464,57 @@ class TestMlDecide:
             notional = decision["qty"] * price
             # Must not exceed 95% of cash.
             assert notional <= 100.0 * 0.95 + 0.01  # tiny rounding allowance
+
+
+# ─────────────────────── BacktestStore isolation ───────────────────────────
+
+class TestBacktestStoreIsolation:
+    """Regression guard: BacktestStore() must resolve BACKTEST_DB at call time,
+    not capture it as an import-time default parameter.
+
+    A `def __init__(self, path=BACKTEST_DB)` default binds the module global's
+    value when backtest.py is imported, so conftest's
+    `monkeypatch.setattr(bt, "BACKTEST_DB", tmp)` was silently ineffective —
+    every BacktestStore()/BacktestEngine() connected to the real persistent
+    backtest.db, polluting it across tests and causing order-dependent flaky
+    failures. This test fails on the pre-fix code and passes after.
+    """
+
+    def test_no_arg_store_respects_monkeypatched_backtest_db(self, tmp_path,
+                                                              monkeypatch):
+        import paper_trader.backtest as bt
+
+        target = tmp_path / "isolated" / "backtest.db"
+        monkeypatch.setattr(bt, "BACKTEST_DB", target, raising=False)
+
+        store = bt.BacktestStore()  # no arg — must honor the monkeypatch
+        try:
+            # The connection must point at the monkeypatched path, NOT the
+            # real repo-root backtest.db.
+            db_files = store.conn.execute("PRAGMA database_list").fetchall()
+            main_file = [r for r in db_files if r[1] == "main"][0][2]
+            assert main_file == str(target), (
+                f"BacktestStore() connected to {main_file!r}, "
+                f"expected the monkeypatched {target!r}"
+            )
+            assert target.exists()
+            # And a write/read round-trips on that isolated DB.
+            store.upsert_run(run_id=7, seed=1, status="running",
+                             start=date(2021, 1, 4), end=date(2021, 6, 30))
+            row = store.conn.execute(
+                "SELECT start_date FROM backtest_runs WHERE run_id=7"
+            ).fetchone()
+            assert row is not None
+            assert row["start_date"] == "2021-01-04"
+        finally:
+            store.conn.close()
+
+    def test_explicit_path_still_honored(self, tmp_path):
+        import paper_trader.backtest as bt
+
+        explicit = tmp_path / "explicit.db"
+        store = bt.BacktestStore(explicit)
+        try:
+            assert explicit.exists()
+        finally:
+            store.conn.close()

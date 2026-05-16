@@ -31,13 +31,13 @@ class TestPickWindow:
         windows = {_pick_window(s) for s in range(10)}
         assert len(windows) > 1, "Different seeds should diverge"
 
-    def test_duration_is_1_to_5_years(self):
+    def test_duration_is_1_to_10_years(self):
         for seed in range(50):
             start, end = _pick_window(seed)
             days = (end - start).days
-            # 1 yr = 365, 5 yr = 1825. Allow exact range.
-            assert 365 <= days <= 5 * 365, (
-                f"seed {seed}: duration {days}d not in [365, 1825]"
+            # 1 yr = 365, 10 yr = 3650. Allow exact range.
+            assert 365 <= days <= 10 * 365, (
+                f"seed {seed}: duration {days}d not in [365, 3650]"
             )
 
     def test_window_ends_at_least_6_months_before_today(self):
@@ -48,11 +48,12 @@ class TestPickWindow:
                 f"seed {seed}: end {end} not at least 6mo before today {date.today()}"
             )
 
-    def test_window_starts_no_earlier_than_1996(self):
+    def test_window_starts_no_earlier_than_earliest(self):
+        # Earliest start is SPY inception, 1993-02-01.
         for seed in range(50):
             start, _end = _pick_window(seed)
-            assert start >= date(1996, 1, 1), (
-                f"seed {seed}: start {start} before 1996-01-01"
+            assert start >= date(1993, 2, 1), (
+                f"seed {seed}: start {start} before 1993-02-01"
             )
 
 
