@@ -269,3 +269,43 @@ class TestClassifyAction:
         assert notes[0] == "URGENT news"
         assert action == "WATCH"
         assert conv == pytest.approx(0.24)  # 0.2 + 0.2*0.2
+
+
+class TestTemplateIdsUnique:
+    """Regression lock for the duplicate-DOM-id collision bug.
+
+    Successive feature agents added the 'Drawdown anatomy' card (2026-05-15)
+    and the 'Decision drought drift' card (2026-05-16). The drought card
+    reused the drawdown card's `dd-` id prefix, so `id="dd-card"` and
+    `id="dd-current"` each appeared twice. `getElementById("dd-current")`
+    resolves to the *first* element in document order (the drawdown card's
+    "current equity" stat), so `refreshDecisionDrought()` wrote its status
+    into the wrong card and the drought card's own status box never left
+    "loading…". Every static `id="..."` in TEMPLATE must be globally unique
+    or a co-pilot panel silently corrupts another panel's DOM.
+    """
+
+    @staticmethod
+    def _static_ids():
+        import re
+        # Only static ids matter for getElementById collisions — exclude any
+        # id containing Jinja interpolation ({...}), which is never queried by
+        # a literal getElementById.
+        return re.findall(r'\bid="([^"{}]+)"', dashboard.TEMPLATE)
+
+    def test_no_duplicate_static_element_ids(self):
+        from collections import Counter
+        dups = {k: v for k, v in Counter(self._static_ids()).items() if v > 1}
+        assert dups == {}, f"duplicate element id(s) in TEMPLATE: {dups}"
+
+    def test_drought_and_drawdown_cards_do_not_share_ids(self):
+        """The specific fix: drought card → `drought-*`, drawdown keeps `dd-*`."""
+        ids = set(self._static_ids())
+        # Drawdown anatomy card retains the original `dd-` namespace.
+        assert "dd-card" in ids and "dd-current" in ids
+        # Decision drought card was renamed off the collision.
+        assert "drought-card" in ids and "drought-current" in ids
+        # And the JS that drives the drought card targets the renamed id,
+        # not the drawdown stat it used to clobber.
+        assert 'getElementById("drought-current")' in dashboard.TEMPLATE
+        assert 'getElementById("dd-current")' in dashboard.TEMPLATE  # drawdown's own

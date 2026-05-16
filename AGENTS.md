@@ -96,7 +96,7 @@ review:
 | `test_core_reporter.py` | openclaw missing → False, timeout/nonzero exit → False, trade alert + decision log + portfolio line formatting, **daily-close P/L baseline label tracks `_INITIAL_EQUITY` not a hardcoded `$1000`** |
 | `test_round_trips.py` | `build_round_trips` arithmetic: simple/partial/re-entry round-trips, option ×100, distinct (ticker,type,strike,expiry) keys, open-lot exclusion, orphan SELL, zero-cost `pnl_pct=None`, negative/unparseable `hold_days`, sub-cent rounding |
 | `test_core_analytics.py` | `/api/analytics` end-to-end via Flask test client: exact `win_rate_pct` / `profit_factor` / `avg_holding_days` / `realized_pl_usd` / `n_round_trips` for a fixed ledger; open positions excluded; empty ledger → null metrics |
-| `test_core_dashboard_helpers.py` | Pure dashboard helpers with no prior coverage: `_scorer_verdict` 5-way boundary bucketing; `_position_ages_from_trades` open-lot state machine (partial-sell keeps entry, full-sell→re-buy resets, option trades ignored); `_next_market_open` open/close/weekend/holiday arithmetic; `_classify_action` co-pilot selection incl. the **EXIT-before-TRIM** ordering regression and "never BUY without a technical confirm" |
+| `test_core_dashboard_helpers.py` | Pure dashboard helpers with no prior coverage: `_scorer_verdict` 5-way boundary bucketing; `_position_ages_from_trades` open-lot state machine (partial-sell keeps entry, full-sell→re-buy resets, option trades ignored); `_next_market_open` open/close/weekend/holiday arithmetic; `_classify_action` co-pilot selection incl. the **EXIT-before-TRIM** ordering regression and "never BUY without a technical confirm"; **`TestTemplateIdsUnique` — no duplicate static `id="..."` in `dashboard.TEMPLATE`** (regression lock for the `dd-`/`drought-` card-id collision, invariant #14) |
 | `test_decision_drought.py` | `build_decision_drought` segmentation: `_classify` fill/block/hold/no-decision; two-drought scenario with exact portfolio/SPY/alpha %; PARALYSIS vs DELIBERATE_HOLD split; ongoing drought detection; `involuntary_alpha_bleed_pct` counts PARALYSIS-only negative alpha; min-reportable-cycles filter; NEVER_TRADED / NO_DATA verdicts; alpha=None when SPY missing |
 | `test_news_edge.py` | `build_news_edge`: `_index_at_or_after` exact/gap/overflow; EDGE_CONFIRMED with exact raw means; **SPY-abnormal subtraction is applied** (raw 2.0, spy +1.0 → abnormal 1.0); NO_EDGE on a falling top-band ticker; INSUFFICIENT_DATA under `_MIN_BAND_N`; `$TK`/word-boundary resolution incl. "AMDOCS" must not match AMD; **adaptive reference horizon degrades to 1d when only a 1d forward window exists** (the live-data early-history case) |
 
@@ -251,6 +251,22 @@ review:
    `tests/test_core_strategy.py::TestOptionExpired` /
    `::TestExpiredIntrinsic` / `::TestPortfolioSnapshotExpiredOptions` /
    `::TestExecuteCloseExpiredOption`.
+
+14. **`dashboard.TEMPLATE` element IDs must be globally unique** — every
+   panel is a separate card in one giant HTML document, and the JS drives
+   them with bare `getElementById("…")`, which resolves to the *first*
+   element in document order. Two cards sharing an id ⇒ one panel silently
+   writes into the other's DOM. This actually happened: the **Decision
+   drought drift** card (2026-05-16) reused the **Drawdown anatomy** card's
+   (2026-05-15) `dd-` prefix, so `id="dd-card"`/`id="dd-current"` each
+   appeared twice — `refreshDecisionDrought()` wrote its status into the
+   drawdown card's "current equity" stat and the drought card's own status
+   box stayed stuck on "loading…" forever. Fixed by renaming the *newer*
+   (intruding) card to a `drought-*` namespace; the original `dd-*` owner
+   is left untouched. When you add a card, pick a fresh id prefix — don't
+   extend a neighbour's. Locked by
+   `tests/test_core_dashboard_helpers.py::TestTemplateIdsUnique`
+   (`test_no_duplicate_static_element_ids` would have failed pre-fix).
 
 ### Dashboard API endpoints (port 8090)
 

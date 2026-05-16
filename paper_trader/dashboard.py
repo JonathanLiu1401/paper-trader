@@ -807,7 +807,7 @@ TEMPLATE = r"""
     </div>
 
     <!-- ─── Decision Drought Drift (new 2026-05-16, agent 4) ─── -->
-    <div class="card" id="dd-card" style="margin-bottom:18px;">
+    <div class="card" id="drought-card" style="margin-bottom:18px;">
       <h2 style="display:flex;justify-content:space-between;align-items:center;">
         <span>Decision drought drift <span class="muted" style="font-size:11px;text-transform:none;letter-spacing:normal;font-weight:normal;">— what the bot's <em>inaction</em> cost: portfolio vs S&amp;P while it wasn't trading</span></span>
         <span id="dd-verdict" style="font-size:12px;padding:3px 10px;border-radius:4px;background:#1f2126;color:#8b929d;">—</span>
@@ -819,7 +819,7 @@ TEMPLATE = r"""
         <div class="stat"><div class="l">paralysis droughts</div><div class="v" id="dd-npar">—</div></div>
         <div class="stat"><div class="l">involuntary alpha bleed</div><div class="v" id="dd-bleed">—</div></div>
       </div>
-      <div id="dd-current" style="font-size:12px;background:#0d1117;border:1px solid #1f2126;border-radius:6px;padding:10px 12px;margin-bottom:14px;color:#8b929d;">loading…</div>
+      <div id="drought-current" style="font-size:12px;background:#0d1117;border:1px solid #1f2126;border-radius:6px;padding:10px 12px;margin-bottom:14px;color:#8b929d;">loading…</div>
       <div style="font-size:12px;color:#dde1e7;margin-bottom:6px;text-transform:uppercase;letter-spacing:0.5px;">Droughts (newest first) — alpha = portfolio% − S&amp;P% over the idle window</div>
       <table id="dd-tape" style="font-size:12px;">
         <thead><tr>
@@ -3540,7 +3540,7 @@ async function refreshDecisionDrought() {
     bEl.style.color = (bleed || 0) <= -1.0 ? "#ff4455" : (bleed || 0) < 0 ? "#ffa726" : "#4caf50";
 
     const cur = r.current_drought;
-    const cEl = document.getElementById("dd-current");
+    const cEl = document.getElementById("drought-current");
     if (!cur) {
       cEl.textContent = "no ongoing drought — last cycle was a fill";
       cEl.style.borderColor = "#1f2126";
