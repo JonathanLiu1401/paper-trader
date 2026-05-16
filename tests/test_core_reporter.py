@@ -20,6 +20,21 @@ if str(_ROOT) not in sys.path:
     sys.path.insert(0, str(_ROOT))
 
 from paper_trader import reporter
+from paper_trader import store as store_mod
+from paper_trader.store import Store
+
+
+@pytest.fixture
+def fresh_store(tmp_path, monkeypatch):
+    """A real Store backed by a temp DB (mirrors test_core_strategy.py)."""
+    db = tmp_path / "paper_trader.db"
+    monkeypatch.setattr(store_mod, "DB_PATH", db)
+    monkeypatch.setattr(store_mod, "_singleton", None)
+    s = Store()
+    try:
+        yield s
+    finally:
+        s.close()
 
 
 class TestSend:
@@ -170,6 +185,49 @@ class TestSendDailyCloseBaseline:
         assert "vs $1000 start" in body
         assert "+50.00" in body
         assert "+5.00%" in body
+
+
+class TestSendDailyClosePnlReal:
+    """`send_daily_close` reports a same-day realized P/L on a *cash-flow*
+    basis: every SELL* adds its trade `value`, every other action (BUY*)
+    subtracts it. The trade `value` itself is written by `store.record_trade`
+    with the option ×100 contract multiplier. Both halves of that contract
+    were unlocked — only the baseline-label was tested. A sign flip
+    (`.startswith("SELL")` → `"BUY"`) or a dropped ×100 in `record_trade`
+    would ship green without this. One exact-value assertion pins both:
+    if ×100 were missing on options the total would be -449.50, not -400.00;
+    if the sign were inverted it would be +400.00.
+    """
+
+    def _run(self, fresh_store, monkeypatch):
+        captured: list[str] = []
+        monkeypatch.setattr(reporter, "_send",
+                            lambda msg: captured.append(msg) or True)
+        monkeypatch.setattr(reporter.market, "benchmark_sp500", lambda: None)
+        monkeypatch.setattr(reporter, "get_store", lambda: fresh_store)
+        # Mixed same-day ledger. record_trade computes value = qty*price*1
+        # for stock, qty*price*100 for options.
+        fresh_store.record_trade("NVDA", "BUY", 10, 100.0)          # value 1000 → -1000
+        fresh_store.record_trade("NVDA", "SELL", 5, 110.0)          # value  550 →  +550
+        fresh_store.record_trade("NVDA", "BUY_CALL", 1, 2.50,
+                                 expiry="2026-12-19", strike=600.0,
+                                 option_type="call")               # value  250 →  -250
+        fresh_store.record_trade("NVDA", "SELL_CALL", 1, 3.00,
+                                 expiry="2026-12-19", strike=600.0,
+                                 option_type="call")               # value  300 →  +300
+        assert reporter.send_daily_close() is True
+        return captured[0]
+
+    def test_realized_pl_cash_flow_sign_and_option_multiplier(
+            self, fresh_store, monkeypatch):
+        body = self._run(fresh_store, monkeypatch)
+        # -1000 + 550 - 250 + 300 = -400.00 exactly.
+        assert "Realized P/L (today, cash flow basis)  $-400.00" in body
+        # Both option legs are buy/sell-classified; all four count as "today".
+        assert "Trades today   4" in body
+        # Guard against the two regressions explicitly.
+        assert "$+400.00" not in body      # sign not inverted
+        assert "$-449.50" not in body      # option ×100 not dropped
 
 
 class TestPortfolioLines:
