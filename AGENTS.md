@@ -529,7 +529,13 @@ classification — the `regime_mult` source for `_ml_decide` and
 fallback — pickle round-trip, finite/clamped predictions, batch shape,
 monotone ranking, non-finite-label guard — the entire scorer path on a
 sklearn-less host, otherwise unexercised because every other
-`TestTrainScorer` runs with sklearn present).
+`TestTrainScorer` runs with sklearn present),
+`test_execute_and_fetch_signals.py` (`_execute_decision` exact-cash BUY
+boundary / one-cent-overspend block / SELL qty clamped to held position /
+no-position SELL block, and `_fetch_signals` empty-URL-not-collapsed
+invariant / repeated-URL dedup / top-10-by-score cut before the 5-sample —
+two seams previously only reachable through the *mocked* integration test,
+so their real ranking + dedup logic was unverified until this pass).
 
 > A non-network collection error from an *untracked, out-of-scope* test
 > file (e.g. one a parallel review agent left mid-flight that imports a
