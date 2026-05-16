@@ -125,6 +125,75 @@ class TestMACDLive:
         assert strategy._macd_live(closes) == "bearish"
 
 
+class TestStdevLive:
+    """`_stdev_live` is a *population* stdev (÷n) and is the only input to
+    `bb_position` in get_quant_signals_live. It had zero direct coverage, yet
+    a `/n`→`/(n-1)` slip or a moved `n < 2` guard would silently shift every
+    Bollinger reading Opus and the DecisionScorer see. Each test pins one
+    branch with an exact value so such a regression fails loudly."""
+
+    def test_short_input_returns_zero(self):
+        # The caller guards on `if sd20 > 0:` before dividing — so the
+        # degenerate path MUST return exactly 0.0, not raise / not NaN.
+        assert strategy._stdev_live([]) == 0.0
+        assert strategy._stdev_live([5.0]) == 0.0
+
+    def test_two_element_is_population_not_sample(self):
+        # n=2 is the smallest *non*-degenerate case: locks that `n < 2` is
+        # exclusive (it computes here, doesn't short-circuit to 0.0) AND that
+        # the divisor is n. [0,2] → mean 1, dev² {1,1}, /2 = 1 → sqrt = 1.0.
+        # Sample stdev (÷ n-1) would be sqrt(2) ≈ 1.414 and fail this.
+        assert strategy._stdev_live([0.0, 2.0]) == pytest.approx(1.0)
+
+    def test_constant_series_is_zero(self):
+        # Distinct code path from the short-input guard: it runs the full
+        # variance sum and must still yield 0.0 so a flat 20-day window
+        # leaves bb_position None instead of dividing by zero.
+        assert strategy._stdev_live([3.0, 3.0, 3.0, 3.0]) == 0.0
+
+    def test_known_series_exact_population_value(self):
+        # Textbook set: mean 5.0, Σ dev² = 32, /8 = 4, sqrt = exactly 2.0.
+        # Sample variance would be 32/7 ≈ 4.571 → 2.138, so this is the
+        # hard lock against the population→sample regression.
+        vals = [2.0, 4.0, 4.0, 4.0, 5.0, 5.0, 7.0, 9.0]
+        assert strategy._stdev_live(vals) == pytest.approx(2.0)
+
+
+class TestFormatQuantSignals:
+    """`_format_quant_signals` builds the TECHNICAL SIGNALS block of the live
+    Opus prompt. Zero prior coverage. Each test targets a branch a refactor
+    could silently break — not the literal format string."""
+
+    def test_empty_dict_returns_sentinel(self):
+        # `if not sigs` — losing this guard would emit an empty block (no
+        # rows, no notice) and Opus couldn't tell "no data" from a bug.
+        assert strategy._format_quant_signals({}) == "  (no quant signals available)"
+
+    def test_pct_vs_v_field_coercion(self):
+        # momentum / 52w-proximity fields go through `_pct` (None → "?",
+        # value → "{x}%"); rsi/macd/etc go through `_v` (None → "?", no %).
+        # A `_pct`↔`_v` swap on a field would pass through the prompt
+        # unnoticed, so pin both the None and the present-value rendering.
+        line = strategy._format_quant_signals({
+            "NVDA": {"rsi": None, "mom_5d": None, "mom_20d": 3.5,
+                     "pct_from_52h": -1.2},
+        })
+        assert "rsi=?" in line          # _v None → "?", NOT "?%"
+        assert "rsi=?%" not in line
+        assert "mom_5d=?" in line       # _pct None → "?", NOT "?%"
+        assert "mom_5d=?%" not in line
+        assert "mom_20d=3.5%" in line   # _pct value → "{x}%"
+        assert "52h=-1.2%" in line
+
+    def test_rows_sorted_by_ticker(self):
+        # `sorted(sigs.items())` — a regression to plain `.items()` would
+        # reorder the prompt non-deterministically; lock alphabetical.
+        out = strategy._format_quant_signals({
+            "ZM": {"rsi": 50}, "AAPL": {"rsi": 60}, "MU": {"rsi": 40},
+        })
+        assert out.index("  AAPL:") < out.index("  MU:") < out.index("  ZM:")
+
+
 # ─────────────────────────── _enforce_risk_pre_trade ───────────────────────────
 
 class TestEnforceRiskPreTrade:

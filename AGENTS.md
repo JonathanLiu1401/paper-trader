@@ -92,7 +92,7 @@ review:
 | `test_core_store.py` | cash bookkeeping, position upsert/blend/close, trade & equity ordering |
 | `test_core_market.py` | weekend / pre-open / after-close / holiday gating, price-cache TTL, option chain lookup |
 | `test_core_signals.py` | top-signal score threshold + sort order, backtest-row filter, urgent ai_score=NULL coercion, ticker regex word-boundary, **`get_historical_signals` gzip-fallback reader** (missing-file → `[]`; strict `< min_score` threshold incl. the `== min_score` KEPT boundary; `score`/`ai_score` `or`-fallback incl. `score:0` → ai_score; `limit` caps the moment `len(out) ≥ limit`; corrupt-JSON / non-numeric-score / blank lines skipped while reading **continues** — a `<`→`<=` or `continue`→`break` regression fails loudly) |
-| `test_core_strategy.py` | JSON parse w/ fences + trailing prose, RSI/EMA/MACD math, SELL-exceeds-held blocking, BUY insufficient cash blocking, **ambiguous option close blocking**, **expired-option settlement** (`_option_expired` boundary incl. expiry-day-still-live; `_expired_intrinsic` ITM/OTM/no-underlying; `_portfolio_snapshot` marks expired contracts to intrinsic/0 not premium; live-option transient-None still → avg_cost; `SELL_CALL` on a dead contract settles at intrinsic; **`_portfolio_snapshot` total_value = cash + Σ position market_value across a mixed stock+option book**) |
+| `test_core_strategy.py` | JSON parse w/ fences + trailing prose, RSI/EMA/MACD math, SELL-exceeds-held blocking, BUY insufficient cash blocking, **ambiguous option close blocking**, **expired-option settlement** (`_option_expired` boundary incl. expiry-day-still-live; `_expired_intrinsic` ITM/OTM/no-underlying; `_portfolio_snapshot` marks expired contracts to intrinsic/0 not premium; live-option transient-None still → avg_cost; `SELL_CALL` on a dead contract settles at intrinsic; **`_portfolio_snapshot` total_value = cash + Σ position market_value across a mixed stock+option book**), **`_stdev_live` population-stdev seam** (`n < 2` → exact `0.0` the `if sd20 > 0` caller-guard relies on; `n=2` computes ÷n not ÷(n-1); constant series → `0.0` via the full variance path; textbook set → exact `2.0` locking `/n` against a `/(n-1)` regression that would silently shift every `bb_position`), **`_format_quant_signals` prompt-block seam** (empty dict → the `(no quant signals available)` sentinel; `_pct` vs `_v` field coercion — momentum/52w use `_pct` "{x}%"/"?", rsi/macd/etc use `_v` no-%; rows `sorted` by ticker so a `.items()` regression can't reorder the prompt non-deterministically) |
 | `test_core_runner.py` | `_maybe_daily_close` weekend/time gating + once-per-day flag + retry-on-failure, `_maybe_hourly` 3600s gating + retry-on-failure |
 | `test_core_reporter.py` | openclaw missing → False, timeout/nonzero exit → False, trade alert + decision log + portfolio line formatting, **daily-close P/L baseline label tracks `_INITIAL_EQUITY` not a hardcoded `$1000`**, **`send_daily_close` `pnl_real` cash-flow sign (SELL\* credits / BUY\* debits) incl. the option ×100 multiplier via `store.record_trade`** (exact `$-400.00` on a mixed stock+option same-day ledger — a sign flip → `+400.00`, a dropped ×100 → `-449.50`), **`_behavioural_block` composes the scorecard state/headline/focus/concordance verbatim** (no re-derived verdict), suppresses NO_DATA, **returns `""` (never raises) when the builder faults — and `send_hourly_summary`/`send_daily_close` still send the summary regardless** (the "no block, never no summary" failure contract) |
 | `test_round_trips.py` | `build_round_trips` arithmetic: simple/partial/re-entry round-trips, option ×100, distinct (ticker,type,strike,expiry) keys, open-lot exclusion, orphan SELL, zero-cost `pnl_pct=None`, negative/unparseable `hold_days`, sub-cent rounding |
@@ -548,7 +548,21 @@ descending-sort verdict + the `start<=0` divide-by-zero guard + the
 `_llm_annotate_outcomes`' `allowed_run_ids` restriction — the documented
 contamination lock proving a winner/loser verdict does **not** leak onto an
 identically-named trade in an unreviewed middle run, and an unparseable
-LLM response leaves every label neutral).
+LLM response leaves every label neutral),
+`test_ml_backtest_store_views.py` (2026-05-16 pass — `BacktestStore`'s two
+dashboard-facing read views had **zero** prior direct coverage yet feed
+user-visible numbers: `all_runs`' `duration_days` exact calendar delta +
+`annualized_return_pct` compounding formula (zero-growth → exactly `0.0`
+locks the `-1.0` offset; a hand-computed `99.716` literal + an independent
+`growth ** (365.25/duration)` form lock the `365.25` divisor and exponent
+direction against a `365`-day or dropped-exponent regression) + `None`
+before finalize + run_id-ASC ordering + `include_curves` JSON parse with
+corrupt-JSON → `[]` degradation; `run_curves`' `value_pct`/`day_index`
+exact normalization, unparseable point-date → `day_index None` but value
+kept, corrupt `equity_curve_json` → `{rid: []}` not raise, the
+`float(start_val or 1000.0)` zero-start-value divide-by-zero guard, and
+empty `run_ids` → `{}`. Exact-value, not ranges — a normalization formula
+change must update the literals deliberately).
 
 > A non-network collection error from an *untracked, out-of-scope* test
 > file (e.g. one a parallel review agent left mid-flight that imports a
