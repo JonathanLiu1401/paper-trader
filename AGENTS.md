@@ -616,7 +616,30 @@ exact normalization, unparseable point-date → `day_index None` but value
 kept, corrupt `equity_curve_json` → `{rid: []}` not raise, the
 `float(start_val or 1000.0)` zero-start-value divide-by-zero guard, and
 empty `run_ids` → `{}`. Exact-value, not ranges — a normalization formula
-change must update the literals deliberately).
+change must update the literals deliberately),
+`test_ml_macd_avquota_seams.py` (2026-05-16 pass — two load-bearing seams
+with **zero** prior direct coverage, found by grepping every backtest
+symbol against `tests/`: **`_macd`** — its numeric signal (`element [2]`,
+`macd_signal`) is DecisionScorer feature slot 2 and drives `_ml_decide`'s
+`adj += 0.5 if macd > 0 else -0.5`; the **input-agnostic alignment lock**
+`round(m,9) == round(ema12[-1] − ema26[-1], 9)` plus a full independent
+reconstruction of `signal_line` catches any shift of the
+`offset = len(ema12) − len(ema26) = 14` EMA alignment a refactor could
+silently introduce; label asserted only on *non-degenerate convex*
+series (`m−s > 1.0`, real margin) — the linear-ramp label is a documented
+float-noise sharp edge (m vs s differ at ~1e-15) whose **only** reader is
+`_build_prompt`'s unused Opus path, so it is intentionally NOT locked —
+plus the exact-zero `("flat", 0.0, 0.0)` tie on constant closes and the
+`len < 35 → None` history guard; **`_ema`** seed-as-SMA + `v·k+prev·(1−k)`
+recurrence pinned exactly (`[1..6]/p=3 → [2.0,3.0,4.0,5.0]`) — previously
+only its `len<period → []` guard was touched; **`AlphaVantageNewsFetcher.
+_quota`/`_inc_quota`** — CLAUDE.md §8 invariant #9 cross-restart daily
+tracker: fresh/same-day-honored/corrupt-degrades, and the load-bearing
+`q.get("date") == date.today()` rollover asserted end-to-end
+(`yesterday calls=21 → _inc_quota → on-disk {today, 1}`, **not** 22 —
+verified by reading the JSON file directly, never via `_quota()` whose
+broad `except` would mask a bad write). Fully offline via the conftest
+`AV_QUOTA_PATH`/`AV_CACHE_DIR` redirect; exact-value, not ranges).
 
 > A non-network collection error from an *untracked, out-of-scope* test
 > file (e.g. one a parallel review agent left mid-flight that imports a
