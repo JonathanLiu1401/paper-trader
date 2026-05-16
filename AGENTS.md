@@ -183,7 +183,7 @@ Digital Intern dashboard on `:8080` can cross-fetch.
 | `GET /api/briefing` | Pre-market / live briefing: futures, next-open countdown, urgent news |
 | `GET /api/suggestions` | Trade-idea cards: BUY / ADD / TRIM / EXIT / WATCH per ticker |
 | `GET /api/greeks` | Per-leg and portfolio-wide Black-Scholes Greeks |
-| `GET /api/scorer-predictions` | DecisionScorer 5d-return predictions per held stock |
+| `GET /api/scorer-predictions` | DecisionScorer 5d-return predictions per held stock (clamped; `off_distribution` + `raw_pred_5d_return_pct` flag extrapolation) |
 | `GET /api/sector-heatmap` | DRAM/semis sector heatmap with momentum + news pulse |
 | `GET /api/news-deduped` | Top signals after dedup + exponential urgency decay |
 | `GET /api/position-thesis` | Per-position cards combining scorer + technicals + news + last decision |
@@ -253,6 +253,26 @@ version oscillated leveraged-ETF strategies; see the comment in
 > Note: `CLAUDE.md` §6 still documents the older HOLD-blocking gate
 > (`p < -5 → HOLD`, `p < 0 → ×0.7`). The code in `_ml_decide` above is
 > authoritative; CLAUDE.md §6 is stale on this point.
+
+**Prediction is clamped to the empirical label support.** `MLPRegressor`
+has no output bound, so for off-distribution feature vectors it extrapolates
+to nonsense (observed: −89% then +32% for the *same* LITE vector across two
+retrain cycles — the unbounded head is volatile). `predict()` clamps its
+output to `±PRED_CLAMP_PCT` (50%). The bound is load-bearing-safe: across the
+9k+ rows in `decision_outcomes.jsonl` only ~0.4% of real 5d outcomes exceed
+|50%| (p1=−25%, p99=+32%), and every gate boundary above (±10/±5/0) sits well
+inside ±50, so a clamped −89→−50 stays in the same `p < -10 → ×0.6` bucket —
+**gating behaviour is unchanged**. Clamping is output-only: it does not touch
+`build_features`/`SECTORS`/`N_FEATURES`, so the pickle stays compatible, and
+`train_scorer` never calls `predict()`, so there is no label-feedback loop.
+The untrained short-circuit (`return 0.0`) still runs *before* the clamp.
+`predict_with_meta()` is the sibling that exposes
+`{pred, raw, clamped, off_distribution}` for panels that want to flag
+extrapolation honestly (`/api/scorer-predictions` adds `off_distribution`
++ `raw_pred_5d_return_pct`; the unified dashboard's `_conviction_axes` decays
+the ML axis toward a 0.3 trust floor once `|pred| > 20%` instead of letting a
+clamped floor read as full ±1.0 conviction). Locked by
+`tests/test_decision_scorer.py::TestPredictionClamp`.
 
 **Concurrency invariant (`backtest.py`):** the module-global
 `_VOLUME_CACHE` is shared across the parallel run threads. Every read

@@ -52,6 +52,20 @@ SECTOR_MAP: dict[str, str] = {
 
 N_FEATURES = 10 + len(SECTORS)  # 10 base (quant + news_urgency + news_article_count) + 7 sector one-hot = 17
 
+# A 5-trading-day forward return is physically bounded. Across the 9,000+
+# real outcomes in data/decision_outcomes.jsonl the distribution is
+# p1=-25%, p99=+32%, and only ~0.4% of samples exceed |50%| (those are
+# 3x-leveraged-ETF crash/rip weeks — genuinely real). An MLPRegressor with
+# ReLU has no output bound, so for off-distribution feature vectors it
+# extrapolates to nonsense like -89% for an optical-networking stock. Such a
+# value isn't information; it's noise that pins the conviction board's ML
+# axis to full conviction and destroys trader trust in every panel that
+# surfaces it. Clamp the prediction to the empirical label support. ±50 is a
+# round bound that still encloses 99.6% of all real outcomes AND every
+# _ml_decide gate boundary (±10/±5/0), so gating behaviour is unchanged —
+# a clamped -50 is still in the "p < -10 → ×0.6" bucket, exactly as -89 was.
+PRED_CLAMP_PCT = 50.0
+
 
 class _LstsqScaler:
     """Pickle-safe stand-in for sklearn's StandardScaler, used in the numpy fallback."""
@@ -145,6 +159,68 @@ class DecisionScorer:
 
     _predict_err_logged: bool = False
 
+    def predict_with_meta(
+        self,
+        ml_score: float,
+        rsi: float | None,
+        macd: float | None,
+        mom5: float | None,
+        mom20: float | None,
+        regime_mult: float,
+        ticker: str,
+        vol_ratio: float | None = None,
+        bb_pos: float | None = None,
+        news_urgency: float | None = None,
+        news_article_count: float | None = None,
+    ) -> dict:
+        """Predicted 5d forward return (%) plus calibration metadata.
+
+        Returns ``{"pred", "raw", "clamped", "off_distribution"}``:
+        - ``pred``  — the value callers should act on (clamped, always finite)
+        - ``raw``   — the model's unbounded output (for diagnostics / honesty)
+        - ``clamped`` — True when ``|raw| > PRED_CLAMP_PCT`` (or non-finite)
+        - ``off_distribution`` — alias of ``clamped``; a True here means the
+          model extrapolated past the empirical label support and the point
+          estimate should be treated as low-trust, not gospel.
+
+        ``predict()`` is the scalar fast path every existing consumer uses;
+        this sibling exists for panels that want to surface the trust flag
+        without changing ``predict()``'s float contract.
+        """
+        if not self._trained or self._model is None:
+            return {"pred": 0.0, "raw": 0.0, "clamped": False,
+                    "off_distribution": False}
+        try:
+            X = np.array(
+                [build_features(ml_score, rsi, macd, mom5, mom20, regime_mult, ticker,
+                                vol_ratio=vol_ratio, bb_pos=bb_pos,
+                                news_urgency=news_urgency,
+                                news_article_count=news_article_count)],
+                dtype=np.float32,
+            )
+            if self._scaler is not None:
+                X = self._scaler.transform(X)
+            raw = float(self._model.predict(X)[0])
+        except Exception as e:
+            # Log once per instance — silent swallow was masking shape / dtype
+            # mismatches when feature additions were rolled out without retraining.
+            if not self._predict_err_logged:
+                print(f"[decision_scorer] predict error (silenced after first): {e}")
+                self._predict_err_logged = True
+            return {"pred": 0.0, "raw": 0.0, "clamped": False,
+                    "off_distribution": False}
+
+        # A non-finite model output (inf/nan from a pathological feature
+        # vector) is unusable — treat it as a 0% / off-distribution result
+        # rather than letting nan propagate silently through max/min.
+        if not np.isfinite(raw):
+            return {"pred": 0.0, "raw": raw, "clamped": True,
+                    "off_distribution": True}
+        clamped_pred = max(-PRED_CLAMP_PCT, min(PRED_CLAMP_PCT, raw))
+        was_clamped = abs(raw) > PRED_CLAMP_PCT
+        return {"pred": clamped_pred, "raw": raw, "clamped": was_clamped,
+                "off_distribution": was_clamped}
+
     def predict(
         self,
         ml_score: float,
@@ -159,27 +235,16 @@ class DecisionScorer:
         news_urgency: float | None = None,
         news_article_count: float | None = None,
     ) -> float:
-        """Return predicted 5d forward return (%). Returns 0.0 if not trained."""
-        if not self._trained or self._model is None:
-            return 0.0
-        try:
-            X = np.array(
-                [build_features(ml_score, rsi, macd, mom5, mom20, regime_mult, ticker,
-                                vol_ratio=vol_ratio, bb_pos=bb_pos,
-                                news_urgency=news_urgency,
-                                news_article_count=news_article_count)],
-                dtype=np.float32,
-            )
-            if self._scaler is not None:
-                X = self._scaler.transform(X)
-            return float(self._model.predict(X)[0])
-        except Exception as e:
-            # Log once per instance — silent swallow was masking shape / dtype
-            # mismatches when feature additions were rolled out without retraining.
-            if not self._predict_err_logged:
-                print(f"[decision_scorer] predict error (silenced after first): {e}")
-                self._predict_err_logged = True
-            return 0.0
+        """Return predicted 5d forward return (%), clamped to the empirical
+        label support (see ``PRED_CLAMP_PCT``). Returns 0.0 if not trained.
+
+        Scalar contract preserved for every existing consumer (``_ml_decide``
+        gate, ``_live_scorer_predictions``, ``scorer_confidence``)."""
+        return self.predict_with_meta(
+            ml_score, rsi, macd, mom5, mom20, regime_mult, ticker,
+            vol_ratio=vol_ratio, bb_pos=bb_pos, news_urgency=news_urgency,
+            news_article_count=news_article_count,
+        )["pred"]
 
     @property
     def is_trained(self) -> bool:

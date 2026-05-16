@@ -16,12 +16,118 @@ import pytest
 from paper_trader.ml.decision_scorer import (
     DecisionScorer,
     N_FEATURES,
+    PRED_CLAMP_PCT,
     SECTORS,
     SECTOR_MAP,
     _to_float,
     build_features,
     train_scorer,
 )
+
+
+class _FixedModel:
+    """A stand-in model whose predict() returns a value we control, so the
+    clamp / metadata logic can be tested without MLP training noise."""
+
+    def __init__(self, value: float) -> None:
+        self.value = value
+
+    def predict(self, X) -> np.ndarray:
+        return np.array([self.value], dtype=np.float64)
+
+
+def _trained_scorer_returning(value: float) -> DecisionScorer:
+    s = DecisionScorer()
+    s._model = _FixedModel(value)
+    s._scaler = None
+    s._trained = True
+    s._n_train = 1000
+    return s
+
+
+def _gate_bucket(p: float) -> str:
+    """Replica of the _ml_decide conviction gate buckets (backtest.py).
+    Clamping must never move a prediction into a different bucket."""
+    if p < -10.0:
+        return "strong_headwind"   # ×0.6
+    if p < 0.0:
+        return "mild_headwind"     # ×0.85
+    if p <= 5.0:
+        return "neutral"           # unchanged
+    if p <= 10.0:
+        return "mild_tailwind"     # ×1.15
+    return "strong_tailwind"       # ×1.3
+
+
+# ─────────────────────── prediction clamp / honesty ───────────────
+
+class TestPredictionClamp:
+    def test_extrapolated_prediction_is_clamped(self):
+        # The real bug: an MLP emitted -89% 5d return for LITE. A clamped
+        # value must never escape the empirical label support.
+        s = _trained_scorer_returning(-89.292)
+        v = s.predict(ml_score=0.0, rsi=55.6, macd=0.1, mom5=7.4, mom20=8.6,
+                      regime_mult=1.0, ticker="LITE")
+        assert v == pytest.approx(-PRED_CLAMP_PCT)
+        assert abs(v) <= PRED_CLAMP_PCT
+
+        s_hi = _trained_scorer_returning(175.0)
+        assert s_hi.predict(ml_score=0.0, rsi=50, macd=0.0, mom5=0.0,
+                            mom20=0.0, regime_mult=1.0, ticker="SOXL") == \
+            pytest.approx(PRED_CLAMP_PCT)
+
+    def test_meta_flags_off_distribution(self):
+        s = _trained_scorer_returning(-89.292)
+        m = s.predict_with_meta(ml_score=0.0, rsi=55.6, macd=0.1, mom5=7.4,
+                                mom20=8.6, regime_mult=1.0, ticker="LITE")
+        assert m["off_distribution"] is True
+        assert m["clamped"] is True
+        assert m["raw"] == pytest.approx(-89.292)
+        assert m["pred"] == pytest.approx(-PRED_CLAMP_PCT)
+
+    def test_in_distribution_prediction_untouched(self):
+        s = _trained_scorer_returning(-8.3)
+        m = s.predict_with_meta(ml_score=0.0, rsi=50, macd=0.0, mom5=0.0,
+                                mom20=0.0, regime_mult=1.0, ticker="NVDA")
+        assert m["off_distribution"] is False
+        assert m["clamped"] is False
+        assert m["pred"] == pytest.approx(-8.3)
+        assert m["raw"] == pytest.approx(-8.3)
+        # predict() and predict_with_meta()["pred"] must agree.
+        assert s.predict(ml_score=0.0, rsi=50, macd=0.0, mom5=0.0,
+                         mom20=0.0, regime_mult=1.0, ticker="NVDA") == \
+            pytest.approx(-8.3)
+
+    def test_non_finite_prediction_is_neutralised(self):
+        for bad in (float("inf"), float("-inf"), float("nan")):
+            s = _trained_scorer_returning(bad)
+            m = s.predict_with_meta(ml_score=0.0, rsi=50, macd=0.0, mom5=0.0,
+                                    mom20=0.0, regime_mult=1.0, ticker="NVDA")
+            assert m["pred"] == 0.0
+            assert m["off_distribution"] is True
+            assert math.isfinite(m["pred"])
+
+    def test_clamp_preserves_ml_decide_gate_bucket(self):
+        # The gate semantics are load-bearing (AGENTS.md). A clamp that
+        # silently moved -89 into a different conviction bucket would change
+        # live/backtest trade sizing. Every boundary + extreme must keep its
+        # bucket after clamping.
+        for raw in (-150.0, -89.292, -50.0001, -50.0, -11.0, -10.0001,
+                    -10.0, -5.0, -0.01, 0.0, 5.0, 5.01, 10.0, 10.01,
+                    49.9, 50.0, 50.0001, 89.0, 175.14):
+            clamped = max(-PRED_CLAMP_PCT, min(PRED_CLAMP_PCT, raw))
+            assert _gate_bucket(clamped) == _gate_bucket(raw), (
+                f"raw={raw} bucket changed under clamp -> {clamped}")
+
+    def test_untrained_scorer_meta_is_safe(self):
+        # Regression guard: the untrained short-circuit must run BEFORE the
+        # clamp path, otherwise a fresh scorer would stop returning 0.0.
+        s = DecisionScorer()
+        assert not s.is_trained
+        m = s.predict_with_meta(ml_score=2.0, rsi=None, macd=None, mom5=None,
+                                mom20=None, regime_mult=1.0, ticker="NVDA")
+        assert m == {"pred": 0.0, "raw": 0.0, "clamped": False,
+                     "off_distribution": False}
 
 
 # ─────────────────────── _to_float ───────────────────────────

@@ -5098,17 +5098,25 @@ def _live_scorer_predictions(scorer) -> list[dict]:
         q = quant.get(tk) or {}
         sent = sent_by_tk.get(tk) or {}
         ml_score = float(sent.get("max_score") or 0.0)
-        pred = scorer.predict(
+        meta = scorer.predict_with_meta(
             ml_score=ml_score, rsi=q.get("rsi"), macd=q.get("macd_signal"),
             mom5=q.get("mom_5d"), mom20=q.get("mom_20d"), regime_mult=regime_mult,
             ticker=tk, vol_ratio=q.get("vol_ratio"), bb_pos=q.get("bb_position"),
         )
-        preds.append({
+        pred = meta["pred"]
+        row = {
             "ticker": tk,
             "pred_5d_return_pct": round(float(pred), 3),
             "verdict": _scorer_verdict(float(pred)),
             "rsi": q.get("RSI"), "mom_5d": q.get("mom_5d"), "mom_20d": q.get("mom_20d"),
-        })
+            # Honesty flag: True ⇒ the model extrapolated past the empirical
+            # label support, pred is a clamped floor/ceiling, and the verdict
+            # should be read as "weak/low-trust", not a confident -50%.
+            "off_distribution": bool(meta["off_distribution"]),
+        }
+        if meta["off_distribution"]:
+            row["raw_pred_5d_return_pct"] = round(float(meta["raw"]), 3)
+        preds.append(row)
     return preds
 
 
