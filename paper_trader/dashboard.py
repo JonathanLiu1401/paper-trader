@@ -171,6 +171,8 @@ TEMPLATE = r"""
       --radius-sm: 5px;
     }
     * { box-sizing: border-box; }
+    html { overflow-x: hidden; max-width: 100%; }
+    body { overflow-x: hidden; }
     body {
       margin: 0; padding: 0;
       font-family: var(--font-sans);
@@ -178,13 +180,14 @@ TEMPLATE = r"""
       font-size: 15px; line-height: 1.5;
     }
     .brand, h1, h2, h3 { font-family: var(--font-display); }
-    .page-content { padding: 24px; max-width: 1600px; }
+    .page-content { padding: 24px; max-width: 1600px; width: 100%; }
     .topbar {
       background: var(--bg-panel);
       border-bottom: 1px solid var(--border);
       padding: 0 20px; height: 48px;
       display: flex; align-items: center; gap: 2px;
       position: sticky; top: 0; z-index: 100; margin: 0;
+      overflow: hidden; max-width: 100%;
     }
     .brand {
       font-weight: 700; color: var(--amber);
@@ -206,6 +209,7 @@ TEMPLATE = r"""
     nav.tabs {
       display: flex; gap: 2px; margin-bottom: 18px;
       border-bottom: 1px solid var(--border);
+      overflow-x: auto; -webkit-overflow-scrolling: touch; flex-wrap: nowrap;
     }
     nav.tabs a {
       padding: 8px 16px; color: var(--text-secondary); text-decoration: none;
@@ -224,6 +228,7 @@ TEMPLATE = r"""
     .card {
       background: var(--bg-panel); border: 1px solid var(--border);
       border-radius: var(--radius); padding: 18px 20px;
+      overflow-x: auto; -webkit-overflow-scrolling: touch;
     }
     .card h2 {
       margin: 0 0 14px; font-size: 11px; font-weight: 600;
@@ -235,6 +240,7 @@ TEMPLATE = r"""
       font-family: var(--font-mono);
       font-size: 24px; color: var(--text); font-weight: 500;
       font-variant-numeric: tabular-nums;
+      min-width: 0; max-width: 100%;
     }
     .stat .l { color: var(--text-muted); font-size: 11px; text-transform: uppercase; letter-spacing: 0.08em; }
     .pos, .pl { color: var(--green); }
@@ -257,7 +263,7 @@ TEMPLATE = r"""
     }
     tr:hover td { background: var(--bg-hover); }
     .muted { color: var(--text-secondary); }
-    canvas { max-height: 280px; }
+    canvas { max-width: 100%; max-height: 280px; }
     .pill {
       display: inline-flex; align-items: center;
       padding: 2px 8px; border-radius: 4px;
@@ -435,8 +441,12 @@ TEMPLATE = r"""
       body { padding-bottom: 72px; }
       .bottom-nav { display: grid; }
       .topbar { padding: 0 16px; }
+      .page-content { padding: 14px; }
       .card { min-height: auto !important; padding: 14px 16px; }
       .grid, .grid-2, .grid2 { grid-template-columns: 1fr !important; }
+      .bt-layout { grid-template-columns: 1fr !important; }
+      .stat-row { gap: 12px; }
+      .stat .v { font-size: 18px; }
       [style*="max-height: 520px"],
       [style*="max-height:520px"] { max-height: 60vh !important; }
       table { font-size: 12px; }
@@ -5739,6 +5749,30 @@ def open_attribution_api():
             store.open_positions(),
             store.equity_curve(limit=5000),
         ))
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/trade-asymmetry")
+def trade_asymmetry_api():
+    """Behavioural-edge pathology — the exit/sizing failure behind the P&L.
+
+    /api/analytics gives the raw aggregates (win_rate, profit_factor, $ avgs);
+    /api/calibration asks whether the confidence axis is accurate. Neither
+    answers the desk question: given my payoff ratio, what win-rate do I need
+    to break even, am I above or below it, and am I cutting winners faster
+    than losers (the disposition effect)? This composes the single source of
+    truth (build_round_trips, AGENTS.md #10) into payoff ratio, per-trade
+    expectancy, breakeven-vs-actual win-rate, and the winner/loser hold-time
+    disposition gap. The verdict label is withheld until n≥20 round-trips
+    (news-edge INSUFFICIENT_DATA idiom) so a five-trade read can't mislead.
+    Advisory only — never gates Opus, adds no caps (AGENTS.md #2/#12)."""
+    try:
+        from .analytics.trade_asymmetry import build_trade_asymmetry
+        store = get_store()
+        # Same trades convention as /api/analytics: oldest → newest.
+        trades = list(reversed(store.recent_trades(2000)))
+        return jsonify(build_trade_asymmetry(trades))
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
