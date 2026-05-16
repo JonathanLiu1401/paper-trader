@@ -357,9 +357,19 @@ def _train_decision_scorer(outcome_records: list[dict]) -> str:
         result = train_scorer(train_records)
         val_rmse = result.get("val_rmse", float("nan"))
         val_s = f"{val_rmse:.2f}" if val_rmse == val_rmse else "n/a"
+    except Exception as exc:
+        return f"scorer err: {exc}"
 
-        oos_rmse_s = "n/a"
-        if result.get("status") == "ok" and oos_records:
+    # OOS evaluation runs AFTER train_scorer has already pickled the model to
+    # SCORER_PATH. A crash here (transient pickle/IO race, validation-module
+    # change, …) does NOT mean training failed — the scorer is trained and the
+    # next cycle's singleton reset will deploy it. Guard it separately so a
+    # post-train diagnostic failure degrades to oos_rmse=n/a instead of being
+    # reported to the operator as `scorer err` (a false "scorer broken" signal
+    # that would make an operator think the conviction gate never engages).
+    oos_rmse_s = "n/a"
+    if result.get("status") == "ok" and oos_records:
+        try:
             # Re-load the freshly pickled model from disk so OOS predictions
             # use the exact serialized state (catches any save/load bugs).
             scorer = DecisionScorer()
@@ -367,11 +377,11 @@ def _train_decision_scorer(outcome_records: list[dict]) -> str:
             r = oos.get("rmse")
             if r is not None and r == r:
                 oos_rmse_s = f"{r:.2f}"
+        except Exception as exc:
+            oos_rmse_s = f"n/a (oos-eval err: {type(exc).__name__})"
 
-        return (f"scorer {result['status']} train_n={result['n']} "
-                f"val_rmse={val_s} oos_n={len(oos_records)} oos_rmse={oos_rmse_s}")
-    except Exception as exc:
-        return f"scorer err: {exc}"
+    return (f"scorer {result['status']} train_n={result['n']} "
+            f"val_rmse={val_s} oos_n={len(oos_records)} oos_rmse={oos_rmse_s}")
 
 
 def _parse_published_date(published) -> date | None:

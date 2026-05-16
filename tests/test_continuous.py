@@ -321,3 +321,55 @@ class TestTrainDecisionScorer:
         assert "oos_rmse=" in status
         # OOS holdout must be non-empty (~20% of 80)
         assert "oos_n=0" not in status
+
+    def test_oos_eval_failure_does_not_mask_successful_train(self, monkeypatch):
+        """A post-training OOS-eval crash must NOT be reported as a training
+        failure.
+
+        ``train_scorer`` pickles the model to ``SCORER_PATH`` and returns
+        ``status="ok"`` *before* the OOS diagnostic runs. If the OOS step then
+        raises (transient pickle/IO race, validation-module change, …) the
+        scorer is in fact trained and gets deployed (the singleton is reset and
+        reloads it next cycle) — but a single broad ``except`` around both the
+        train call and the diagnostic would surface ``scorer err`` to the
+        operator-facing log/Discord, falsely signalling a broken scorer and the
+        gate never engaging. The status must stay truthful: training succeeded.
+        """
+        import random as _rnd
+        import paper_trader.validation as _val
+
+        rng = _rnd.Random(13)
+        records = []
+        for i in range(80):
+            month = 1 + (i % 12)
+            day = 1 + (i // 12)
+            records.append({
+                "ticker": "NVDA" if i % 2 == 0 else "AMD",
+                "sim_date": f"2024-{month:02d}-{day:02d}",
+                "action": "BUY",
+                "ml_score": rng.uniform(0, 5),
+                "rsi": rng.uniform(20, 80),
+                "macd": rng.uniform(-1, 1),
+                "mom5": rng.uniform(-3, 3),
+                "mom20": rng.uniform(-5, 5),
+                "regime_mult": 1.0,
+                "forward_return_5d": rng.uniform(-3, 3),
+                "return_pct": 10.0,
+            })
+
+        def _boom(*_a, **_kw):
+            raise RuntimeError("simulated OOS-eval crash after pickling")
+
+        monkeypatch.setattr(_val, "evaluate_scorer_oos", _boom)
+
+        status = rcb._train_decision_scorer(records)
+        # Training succeeded and was pickled — the status must reflect that,
+        # not a generic "scorer err".
+        assert not status.startswith("scorer err"), status
+        assert "scorer ok" in status, status
+        assert "train_n=" in status, status
+        # OOS metric degrades gracefully to n/a rather than killing the report.
+        assert "oos_rmse=n/a" in status, status
+        # And the model the next cycle will load is genuinely trained.
+        from paper_trader.ml.decision_scorer import DecisionScorer
+        assert DecisionScorer().is_trained is True
