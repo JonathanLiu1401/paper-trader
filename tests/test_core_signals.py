@@ -312,3 +312,75 @@ class TestGetUrgentArticles:
         assert out[0]["ai_score"] == 0.0
         # And the format string used downstream must not raise.
         f"{out[0]['ai_score']:.1f}"
+
+
+def _write_gzip_jsonl(path: Path, lines: list[str]) -> None:
+    """Write raw text lines (already serialized) into a gzip file so the
+    corrupt-line / empty-line resilience branches can be exercised verbatim."""
+    import gzip
+
+    with gzip.open(path, "wt", encoding="utf-8") as gz:
+        gz.write("\n".join(lines) + "\n")
+
+
+class TestGetHistoricalSignals:
+    """`get_historical_signals` is the backtest-fallback gzip reader. It has
+    branching nothing else exercises: a `score`/`ai_score` `or`-fallback, a
+    strict `< min_score` threshold, a `limit` cap, and per-line resilience to
+    corrupt JSON / non-numeric scores. Each test pins one branch with an exact
+    expectation so a `<`→`<=` or `continue`→`break` regression fails loudly."""
+
+    def test_missing_file_returns_empty(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(signals, "HISTORICAL_GZ", tmp_path / "nope.json.gz")
+        assert signals.get_historical_signals() == []
+
+    def test_min_score_threshold_is_strict_less_than(self, tmp_path, monkeypatch):
+        import json
+
+        gz = tmp_path / "h.json.gz"
+        _write_gzip_jsonl(gz, [
+            json.dumps({"id": "lo", "score": 3.99}),
+            json.dumps({"id": "eq", "score": 4.0}),   # == threshold → KEPT (cond is `< min_score`)
+            json.dumps({"id": "hi", "score": 9.5}),
+        ])
+        monkeypatch.setattr(signals, "HISTORICAL_GZ", gz)
+        out = signals.get_historical_signals(min_score=4.0)
+        assert [r["id"] for r in out] == ["eq", "hi"]
+
+    def test_score_key_absent_falls_back_to_ai_score(self, tmp_path, monkeypatch):
+        import json
+
+        gz = tmp_path / "h.json.gz"
+        # `score` falsy/absent → `rec.get("score") or rec.get("ai_score")`.
+        _write_gzip_jsonl(gz, [
+            json.dumps({"id": "via_ai", "ai_score": 7.0}),         # no "score" key
+            json.dumps({"id": "zero_score", "score": 0, "ai_score": 8.0}),  # 0 is falsy → uses ai_score
+            json.dumps({"id": "neither"}),                          # both absent → score None → skipped
+        ])
+        monkeypatch.setattr(signals, "HISTORICAL_GZ", gz)
+        out = signals.get_historical_signals(min_score=4.0)
+        assert [r["id"] for r in out] == ["via_ai", "zero_score"]
+
+    def test_limit_caps_result_count(self, tmp_path, monkeypatch):
+        import json
+
+        gz = tmp_path / "h.json.gz"
+        _write_gzip_jsonl(gz, [json.dumps({"id": i, "score": 9.0}) for i in range(5)])
+        monkeypatch.setattr(signals, "HISTORICAL_GZ", gz)
+        out = signals.get_historical_signals(min_score=4.0, limit=2)
+        assert [r["id"] for r in out] == [0, 1]   # stops the moment len(out) >= limit
+
+    def test_corrupt_and_nonnumeric_lines_skipped_reading_continues(self, tmp_path, monkeypatch):
+        import json
+
+        gz = tmp_path / "h.json.gz"
+        _write_gzip_jsonl(gz, [
+            json.dumps({"id": "ok1", "score": 5.0}),
+            "{not valid json",                                  # JSONDecodeError → skip, keep reading
+            "",                                                 # blank line → skip
+            json.dumps({"id": "bad_score", "score": "NaNish"}),  # float() raises → skip, keep reading
+            json.dumps({"id": "ok2", "score": 6.0}),            # must still be reached
+        ])
+        monkeypatch.setattr(signals, "HISTORICAL_GZ", gz)
+        out = signals.get_historical_signals(min_score=4.0)
+        assert [r["id"] for r in out] == ["ok1", "ok2"]
