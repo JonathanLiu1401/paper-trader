@@ -134,15 +134,57 @@ class TestUpsertPosition:
         strikes = sorted(p["strike"] for p in positions)
         assert strikes == [600.0, 700.0]
 
-    def test_reopen_after_close_creates_new_row(self, fresh_store):
+    def test_reopen_after_close_reactivates_row(self, fresh_store):
         fresh_store.upsert_position("AMD", "stock", qty=5, avg_cost=100.0)
         fresh_store.upsert_position("AMD", "stock", qty=-5, avg_cost=110.0)
-        # Now buy again — should create a new open row, not reopen the closed one.
+        # Re-buy after a full close: the same-key closed row is reactivated
+        # (fresh qty/avg/opened_at, closed_at cleared) rather than orphaned.
         fresh_store.upsert_position("AMD", "stock", qty=3, avg_cost=120.0)
         positions = fresh_store.open_positions()
         assert len(positions) == 1
         assert positions[0]["qty"] == 3
         assert positions[0]["avg_cost"] == 120.0
+        # Reactivation, not a new row: exactly one row exists for the key.
+        n_rows = fresh_store.conn.execute(
+            "SELECT COUNT(*) FROM positions WHERE ticker='AMD' AND type='stock'"
+        ).fetchone()[0]
+        assert n_rows == 1
+
+    def test_reopen_option_after_close_does_not_crash(self, fresh_store):
+        # Regression: the table-wide UNIQUE(ticker,type,expiry,strike) made a
+        # plain INSERT raise IntegrityError when re-entering a previously
+        # fully-closed OPTION (non-NULL strike/expiry). That crashed the live
+        # cycle mid-_execute, leaving a recorded trade with no position and
+        # skipping the cash debit + decision/equity write.
+        fresh_store.upsert_position("NVDA", "call", qty=2, avg_cost=5.0,
+                                    expiry="2026-05-30", strike=900.0)
+        fresh_store.upsert_position("NVDA", "call", qty=-2, avg_cost=6.0,
+                                    expiry="2026-05-30", strike=900.0)  # full close
+        assert fresh_store.open_positions() == []
+        # Re-buy the exact same contract — must not raise.
+        fresh_store.upsert_position("NVDA", "call", qty=1, avg_cost=7.0,
+                                    expiry="2026-05-30", strike=900.0)
+        pos = fresh_store.open_positions()
+        assert len(pos) == 1
+        assert pos[0]["type"] == "call"
+        assert pos[0]["qty"] == 1
+        assert pos[0]["avg_cost"] == 7.0
+        assert pos[0]["strike"] == 900.0
+        assert pos[0]["expiry"] == "2026-05-30"
+        # current_price / unrealized_pl reset on reactivation (no stale marks).
+        assert pos[0]["current_price"] == 0
+        assert pos[0]["unrealized_pl"] == 0
+        # A subsequent add still blends into the reactivated lot, not a 3rd row.
+        fresh_store.upsert_position("NVDA", "call", qty=1, avg_cost=9.0,
+                                    expiry="2026-05-30", strike=900.0)
+        pos = fresh_store.open_positions()
+        assert len(pos) == 1
+        assert pos[0]["qty"] == 2
+        assert pos[0]["avg_cost"] == pytest.approx(8.0)  # (1*7 + 1*9)/2
+        n_rows = fresh_store.conn.execute(
+            "SELECT COUNT(*) FROM positions WHERE ticker='NVDA' AND type='call'"
+        ).fetchone()[0]
+        assert n_rows == 1
 
 
 class TestTradesOrdering:

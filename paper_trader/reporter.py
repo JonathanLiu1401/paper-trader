@@ -6,10 +6,12 @@ import subprocess
 from datetime import datetime, timezone
 
 from . import market
-from .store import get_store
+from .store import INITIAL_CASH, get_store
 
 DISCORD_CHANNEL = "channel:1496099475838603324"
-_INITIAL_EQUITY = 1000.0
+# Single source of truth — keep P/L baselines in lockstep with the store.
+# A hardcoded copy silently desyncs every reported P/L% if INITIAL_CASH moves.
+_INITIAL_EQUITY = INITIAL_CASH
 
 
 def _send(message: str) -> bool:

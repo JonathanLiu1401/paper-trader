@@ -138,10 +138,18 @@ review:
    `PRAGMA journal_mode=WAL` or open the file as `file:...?mode=ro` to avoid
    lock contention with the live writer.
 
-8. **Position uniqueness** — the `positions` table has a UNIQUE constraint on
-   `(ticker, type, expiry, strike)` with `closed_at IS NULL`. A second BUY on
-   an existing open lot blends the avg_cost; a SELL that zeros out qty marks
-   the row closed. A re-BUY after close creates a new row.
+8. **Position uniqueness** — the `positions` table has a *table-wide* UNIQUE
+   constraint on `(ticker, type, expiry, strike)` (it is **not** scoped to
+   `closed_at IS NULL` — there is no partial index). A second BUY on an
+   existing open lot blends the avg_cost; a SELL that zeros out qty marks the
+   row closed. A re-BUY after a full close **reactivates the same row** (fresh
+   qty/avg_cost/opened_at, marks reset, `closed_at` cleared) — it does *not*
+   insert a new row. This is load-bearing: because SQLite treats NULLs as
+   distinct in UNIQUE, the old "insert a new row" path only worked for stock
+   (NULL strike/expiry); re-entering a previously-closed *option* raised an
+   uncaught `IntegrityError` mid-`_execute`, leaving a recorded trade with no
+   position and skipping the cash debit + decision/equity write. Locked by
+   `tests/test_core_store.py::TestUpsertPosition::test_reopen_option_after_close_does_not_crash`.
 
 9. **Deterministic ordering** — `store.recent_trades`, `recent_decisions`, and
    `equity_curve` order by `(timestamp DESC, id DESC)`. The `id` tiebreaker is

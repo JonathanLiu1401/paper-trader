@@ -174,11 +174,33 @@ class Store:
                     )
             else:
                 if qty > 0:
-                    self.conn.execute(
-                        "INSERT INTO positions (ticker, type, qty, avg_cost, expiry, strike, opened_at) "
-                        "VALUES (?,?,?,?,?,?,?)",
-                        (ticker, type_, qty, avg_cost, expiry, strike, _now()),
-                    )
+                    # No open lot for this key. A prior fully-closed lot with
+                    # the SAME (ticker,type,expiry,strike) still occupies its
+                    # row, and the table-wide UNIQUE(ticker,type,expiry,strike)
+                    # constraint makes a plain INSERT raise IntegrityError when
+                    # strike/expiry are non-NULL — i.e. every option re-entry
+                    # after a full close crashed the cycle (stock NULLs are
+                    # distinct so it only bit options). Reactivate the closed
+                    # row instead so a re-entry after a full close just works.
+                    closed = self.conn.execute(
+                        "SELECT id FROM positions "
+                        "WHERE ticker=? AND type=? AND IFNULL(expiry,'')=IFNULL(?,'') "
+                        "AND IFNULL(strike,0)=IFNULL(?,0) AND closed_at IS NOT NULL "
+                        "ORDER BY id DESC LIMIT 1",
+                        (ticker, type_, expiry, strike),
+                    ).fetchone()
+                    if closed:
+                        self.conn.execute(
+                            "UPDATE positions SET qty=?, avg_cost=?, current_price=0, "
+                            "unrealized_pl=0, opened_at=?, closed_at=NULL WHERE id=?",
+                            (qty, avg_cost, _now(), closed["id"]),
+                        )
+                    else:
+                        self.conn.execute(
+                            "INSERT INTO positions (ticker, type, qty, avg_cost, expiry, strike, opened_at) "
+                            "VALUES (?,?,?,?,?,?,?)",
+                            (ticker, type_, qty, avg_cost, expiry, strike, _now()),
+                        )
             self.conn.commit()
 
     def close_position(self, position_id: int):
