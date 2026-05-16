@@ -227,6 +227,12 @@ def build_thesis_cards(
             "verdict": verdict,
             "thesis": thesis,
             "scorer_pred_5d": scorer_pred,
+            # Honesty flag — True ⇒ the scorer extrapolated past its
+            # empirical label support and ``scorer_pred_5d`` is a clamped
+            # ±50 floor/ceiling, not a confident point estimate. The unified
+            # conviction board decays its ML axis off this flag.
+            "off_distribution": bool(pred_row.get("off_distribution", False)),
+            "raw_pred_5d_return_pct": pred_row.get("raw_pred_5d_return_pct"),
             "scorer_verdict": pred_row.get("verdict"),
             "rsi": q.get("RSI"),
             "macd": q.get("MACD"),

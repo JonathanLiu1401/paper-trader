@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 import re
 import sqlite3
+import subprocess
 import zlib
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -13,6 +14,63 @@ from flask import Flask, jsonify, render_template_string, request
 from .store import get_store
 
 app = Flask(__name__)
+
+# ── Code-freshness probe ─────────────────────────────────────────────────
+# Long-running daemons silently serve pre-deploy bytecode: the scorer-clamp
+# fix landed while this :8090 process was already up, so it kept emitting
+# ±700% "predictions" for hours. /api/build-info exposes the git SHA the
+# process booted with vs the on-disk HEAD so an operator (and the unified
+# dashboard's banner) can see "you're running stale code — restart".
+_REPO_DIR = str(Path(__file__).resolve().parent.parent)
+
+
+def _git_sha(repo_dir: str, ref: str = "HEAD") -> str | None:
+    try:
+        r = subprocess.run(
+            ["git", "-C", repo_dir, "rev-parse", "--short", ref],
+            capture_output=True, text=True, timeout=3,
+        )
+        return (r.stdout.strip() or None) if r.returncode == 0 else None
+    except Exception:
+        return None
+
+
+_BOOT_SHA = _git_sha(_REPO_DIR)
+
+
+def _head_sha_and_behind() -> tuple[str | None, int]:
+    """Current on-disk HEAD short SHA + how many commits it is ahead of the
+    SHA this process booted with (0 if in sync or indeterminable)."""
+    head = _git_sha(_REPO_DIR)
+    behind = 0
+    if head and _BOOT_SHA and head != _BOOT_SHA:
+        try:
+            r = subprocess.run(
+                ["git", "-C", _REPO_DIR, "rev-list", "--count",
+                 f"{_BOOT_SHA}..HEAD"],
+                capture_output=True, text=True, timeout=3,
+            )
+            if r.returncode == 0:
+                behind = int(r.stdout.strip() or 0)
+        except Exception:
+            behind = 0
+    return head, behind
+
+
+@app.route("/api/build-info")
+def build_info_api():
+    """{boot_sha, head_sha, behind, stale} — stale ⇒ restart to apply
+    committed fixes (e.g. the DecisionScorer clamp)."""
+    head, behind = _head_sha_and_behind()
+    stale = bool(_BOOT_SHA and head and head != _BOOT_SHA)
+    return jsonify({
+        "as_of": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        "service": "paper_trader",
+        "boot_sha": _BOOT_SHA,
+        "head_sha": head,
+        "behind": behind,
+        "stale": stale,
+    })
 
 
 # Static sector classification for analytics + sector-pulse cards.
@@ -4773,7 +4831,12 @@ def scorer_predictions_api():
             # Use max_score for ml_score proxy — captures the strongest signal
             # in the window rather than diluting by averaging across mentions.
             ml_score = float(sent.get("max_score") or 0.0)
-            pred = scorer.predict(
+            # predict_with_meta (not predict) so the response can flag when
+            # the point estimate is a clamped ±50 floor/ceiling from an
+            # off-distribution extrapolation. A bare clamped -50 reads as a
+            # confident EXIT otherwise — and the unified conviction board
+            # pins its ML axis to it. AGENTS.md documents this contract.
+            meta = scorer.predict_with_meta(
                 ml_score=ml_score,
                 rsi=q.get("rsi"),
                 macd=q.get("macd_signal"),
@@ -4784,7 +4847,8 @@ def scorer_predictions_api():
                 vol_ratio=q.get("vol_ratio"),
                 bb_pos=q.get("bb_position"),
             )
-            preds.append({
+            pred = meta["pred"]
+            row = {
                 "ticker": tk,
                 "pred_5d_return_pct": round(float(pred), 3),
                 "verdict": _scorer_verdict(float(pred)),
@@ -4795,7 +4859,11 @@ def scorer_predictions_api():
                 "ml_news_score": round(ml_score, 2),
                 "news_count": sent.get("n", 0),
                 "news_urgent": sent.get("urgent", 0),
-            })
+                "off_distribution": bool(meta["off_distribution"]),
+            }
+            if meta["off_distribution"]:
+                row["raw_pred_5d_return_pct"] = round(float(meta["raw"]), 3)
+            preds.append(row)
         # Highest predicted return first so the trader sees winners at the top.
         preds.sort(key=lambda r: -(r["pred_5d_return_pct"] or 0))
         result["n_positions"] = len(preds)
@@ -4895,17 +4963,22 @@ def position_thesis_api():
             # Mirror /api/scorer-predictions exactly so both endpoints agree:
             # the scorer wants numeric macd_signal, not the "bullish"/"bearish"
             # MACD label (which _to_float silently zeroes).
-            pred = scorer.predict(
+            meta = scorer.predict_with_meta(
                 ml_score=float(sent.get("max_score") or 0.0),
                 rsi=q.get("rsi"), macd=q.get("macd_signal"),
                 mom5=q.get("mom_5d"), mom20=q.get("mom_20d"),
                 regime_mult=regime_mult, ticker=tk,
                 vol_ratio=q.get("vol_ratio"), bb_pos=q.get("bb_position"),
             )
-            scorer_preds.append({
+            row = {
                 "ticker": tk,
-                "pred_5d_return_pct": round(float(pred), 3),
-            })
+                "pred_5d_return_pct": round(float(meta["pred"]), 3),
+                "verdict": _scorer_verdict(float(meta["pred"])),
+                "off_distribution": bool(meta["off_distribution"]),
+            }
+            if meta["off_distribution"]:
+                row["raw_pred_5d_return_pct"] = round(float(meta["raw"]), 3)
+            scorer_preds.append(row)
 
         decisions = store.recent_decisions(limit=80)
         out = build_thesis_cards(positions, decisions, scorer_preds, quant)
@@ -5228,7 +5301,7 @@ def disagreement_api():
             verb = last_verb.get(tk)
             severity, label = _classify_disagreement(p.get("verdict", ""), verb)
             iv = interval_for(p["pred_5d_return_pct"], conf) if conf.get("overall") else None
-            rows.append({
+            drow = {
                 "ticker": tk,
                 "scorer_verdict": p.get("verdict"),
                 "scorer_pred_5d_pct": p.get("pred_5d_return_pct"),
@@ -5237,7 +5310,14 @@ def disagreement_api():
                 "severity": severity,
                 "label": label,
                 "interval": iv,
-            })
+                # Carry the honesty flag through so a HIGH-severity row
+                # driven by a clamped extrapolation can be visually
+                # de-weighted rather than read as a real scorer/Opus fight.
+                "off_distribution": bool(p.get("off_distribution", False)),
+            }
+            if p.get("off_distribution"):
+                drow["raw_pred_5d_return_pct"] = p.get("raw_pred_5d_return_pct")
+            rows.append(drow)
         severity_order = {"HIGH": 0, "MEDIUM": 1, "ALIGNED": 2}
         rows.sort(key=lambda r: (severity_order.get(r["severity"], 9),
                                  r["scorer_pred_5d_pct"] or 0))

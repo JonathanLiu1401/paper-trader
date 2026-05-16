@@ -174,6 +174,20 @@ review:
    The `/api/backtests/compare` win-rate is a **different** metric (per-fill FIFO
    lot win/loss, stocks only) and intentionally does *not* use this helper.
 
+11. **Scorer honesty is end-to-end** — every panel that surfaces a
+   DecisionScorer prediction calls `predict_with_meta()` (never the bare
+   scalar `predict()`) and propagates `off_distribution` +
+   `raw_pred_5d_return_pct`: `/api/scorer-predictions`, `/api/position-thesis`
+   (→ thesis card → unified conviction board), `/api/disagreement`,
+   `/api/scorer-confidence`. A clamped ±50 floor must never reach a UI/board
+   without its low-trust flag, or a phantom "confident EXIT" pins downstream
+   conviction. Locked by `tests/test_scorer_honesty.py`. **The on-disk clamp
+   is necessary but not sufficient: a long-running `:8090` process that
+   booted before the clamp commit keeps extrapolating to ±700% in memory.**
+   `/api/build-info` (`stale: true`) is the canonical signal that a restart
+   is required to apply committed scorer/code fixes; locked by
+   `tests/test_build_info.py`.
+
 ### Dashboard API endpoints (port 8090)
 
 All endpoints serve `application/json`. CORS is wide open (`*`) so the
@@ -200,7 +214,7 @@ Digital Intern dashboard on `:8080` can cross-fetch.
 | `GET /api/scorer-predictions` | DecisionScorer 5d-return predictions per held stock (clamped; `off_distribution` + `raw_pred_5d_return_pct` flag extrapolation) |
 | `GET /api/sector-heatmap` | DRAM/semis sector heatmap with momentum + news pulse |
 | `GET /api/news-deduped` | Top signals after dedup + exponential urgency decay |
-| `GET /api/position-thesis` | Per-position cards combining scorer + technicals + news + last decision |
+| `GET /api/position-thesis` | Per-position cards combining scorer + technicals + news + last decision. Each card carries `off_distribution` + `raw_pred_5d_return_pct` so the unified conviction board can decay its ML axis off the explicit flag (not a re-derived magnitude heuristic) |
 | `GET /api/calibration` | Confidence-bucket win rate + signal-source attribution |
 | `GET /api/drawdown` | Drawdown anatomy: peak/trough, time-in-DD, per-position contribution |
 | `GET /api/earnings-risk` | Upcoming earnings ⨯ held positions / watchlist, tiered |
@@ -208,6 +222,7 @@ Digital Intern dashboard on `:8080` can cross-fetch.
 | `GET /api/decision-health` | Action mix, NO_DECISION parse-failure rate, confidence trend |
 | `GET /api/decision-forensics` | *Why* NO_DECISION: failure-mode taxonomy (timeout/truncated/no-json/fenced/prose/malformed/legacy), open-vs-closed split, hourly trend, retry-exhausted count, actionable hint + raw Opus excerpts |
 | `GET /api/liquidity` | Capital deployment & liquidity: cash vs deployed %, position weights, unrealized P/L, days-since-last-entry, status (NO_DRY_POWDER/DRY_POWDER_LOW/BALANCED/CASH_HEAVY) + flags |
+| `GET /api/build-info` | Code-freshness probe: `{boot_sha, head_sha, behind, stale}`. `stale: true` ⇒ this `:8090` process booted before the on-disk HEAD — committed fixes (e.g. the DecisionScorer ±50 clamp) are NOT applied until restart. The unified dashboard's landing banner reads this + its own to flag stale processes |
 
 ### Common failure modes (live trader)
 
