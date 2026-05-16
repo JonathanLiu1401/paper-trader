@@ -536,7 +536,19 @@ boundary / one-cent-overspend block / SELL qty clamped to held position /
 no-position SELL block, and `_fetch_signals` empty-URL-not-collapsed
 invariant / repeated-URL dedup / top-10-by-score cut before the 5-sample —
 two seams previously only reachable through the *mocked* integration test,
-so their real ranking + dedup logic was unverified until this pass).
+so their real ranking + dedup logic was unverified until this pass),
+`test_ml_backtest_seams.py` (2026-05-16 pass — three seams with real logic
+and *zero* prior direct coverage, found by grepping every symbol in
+`tests/`: `_sector_rotation` exact trailing-return ranking incl. the
+descending-sort verdict + the `start<=0` divide-by-zero guard + the
+`<2 points` insufficient-history guard + future-dated-close exclusion;
+`_get_decision_scorer`'s `_Dummy` except-path fallback honouring the
+**exact 11-keyword `predict(**kw)` signature `_ml_decide` calls** plus
+`is_trained is False` / `_n_train→0` / cached-singleton idempotence;
+`_llm_annotate_outcomes`' `allowed_run_ids` restriction — the documented
+contamination lock proving a winner/loser verdict does **not** leak onto an
+identically-named trade in an unreviewed middle run, and an unparseable
+LLM response leaves every label neutral).
 
 > A non-network collection error from an *untracked, out-of-scope* test
 > file (e.g. one a parallel review agent left mid-flight that imports a
@@ -678,6 +690,20 @@ For automated review agents that touch ML / backtest code:
   annotation rows side-step it (`weight=1.0`, so `eff=ai_score`). Do not
   "linearise" this in a surgical pass — it perturbs ArticleNet training
   dynamics and is out of scope for the ML/backtest review.
+- **The `_get_decision_scorer` `_Dummy` fallback is a load-bearing
+  contract, not a stub** — when the real `DecisionScorer` import or
+  instantiation raises, the singleton degrades to an inline `_Dummy`.
+  `_ml_decide` then calls `scorer.predict(**kwargs)` with a **fixed
+  11-keyword signature** (`ml_score, rsi, macd, mom5, mom20, regime_mult,
+  ticker, vol_ratio, bb_pos, news_urgency, news_article_count`) and reads
+  `scorer.is_trained` + `getattr(scorer, "_n_train", 0)`. If a refactor
+  "tidies" the Dummy into a positional or arg-less `predict`, **every**
+  parallel backtest run thread throws `TypeError` mid-cycle the moment the
+  real scorer can't load (recorded `failed`, zero decisions) — a silent,
+  total backtest outage that only manifests on the import-failure path the
+  happy-path tests never take. Keep `def predict(self, **kw): return 0.0`,
+  `is_trained = False`. Locked by
+  `tests/test_ml_backtest_seams.py::TestDecisionScorerDummyFallback`.
 
 ### When to bump model versions
 
