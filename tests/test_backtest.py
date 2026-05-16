@@ -450,6 +450,29 @@ class TestMlDecide:
         # No effective signal — should be HOLD.
         assert decision["action"] == "HOLD"
 
+    def test_none_score_article_does_not_crash(self, synthetic_prices):
+        """Regression: a present-but-None `score` (malformed article dict) used
+        to reach `float(None)` in _ml_decide and raise TypeError — uncaught,
+        killing the whole run thread mid-cycle. It must now be coerced to 0.0
+        and skipped as no-signal (the `< 1.0` guard), yielding a clean HOLD.
+
+        `.get("score", 0.0)` does NOT default on a None VALUE, only a missing
+        key — so this is distinct from `test_no_signals_returns_hold` (empty
+        list) and from a missing-key article.
+        """
+        p = SimPortfolio(cash=1000.0)
+        rng = random.Random(42)
+        d = synthetic_prices.trading_days[-1]
+        articles = [
+            {"title": "Nvidia beats earnings, guidance raised",
+             "score": None, "tickers": ["NVDA"]},          # the bug case
+            {"title": "AMD upgrade", "tickers": ["AMD"]},   # missing key entirely
+        ]
+        # Must not raise; both articles carry no usable score → HOLD.
+        decision = _ml_decide(d, p, articles, synthetic_prices,
+                              run_id=1, rng=rng)
+        assert decision["action"] == "HOLD"
+
     def test_oversize_buy_clipped_by_cash(self, synthetic_prices):
         """A BUY must never recommend a notional > 95% of available cash."""
         p = SimPortfolio(cash=100.0)

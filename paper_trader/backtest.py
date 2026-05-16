@@ -1330,7 +1330,13 @@ def _ml_decide(
     ticker_article_count: dict[str, int] = {}
     ticker_max_urgency: dict[str, float] = {}
     for a in articles:
-        raw_score = float(a.get("score", 0.0))
+        # `.get("score", 0.0)` only defaults on a MISSING key — a present-but-
+        # None score (a malformed article dict) reaches float(None) and raises
+        # TypeError, which is uncaught here and kills the whole run thread
+        # mid-cycle (the run is recorded "failed" with no decisions). `or 0.0`
+        # coerces a None/0/"" score to 0.0, which the `< 1.0` guard then skips
+        # as no-signal. No behaviour change for any real float score.
+        raw_score = float(a.get("score") or 0.0)
         if raw_score < 1.0:
             continue
         sentiment = _article_sentiment(a.get("title", ""))
