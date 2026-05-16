@@ -352,6 +352,68 @@ class TestParseDecision:
         assert d["ticker"] == "AMD"
 
 
+# ─────────────────────── volume cache concurrency ─────────────────────
+
+class TestVolumeCacheConcurrency:
+    """Regression test for the `_persist_volume_cache_for_window` race.
+
+    The persist helper used to iterate the shared `_VOLUME_CACHE` dict
+    WITHOUT holding `_VOLUME_CACHE_LOCK`, while parallel run threads insert
+    into it under that lock. The iterator is not protected by another
+    thread's lock, so it raised `RuntimeError: dictionary changed size
+    during iteration` — which was swallowed by the function's own
+    try/except, silently breaking volume-cache persistence under the
+    parallel continuous loop.
+    """
+
+    def test_persist_holds_lock_while_iterating_cache(self, monkeypatch):
+        """Deterministic lock-discipline check (no thread-scheduling races).
+
+        The fix wraps the `_VOLUME_CACHE.items()` snapshot in
+        `with _VOLUME_CACHE_LOCK:`. We swap in a dict whose `.items()`
+        records whether the cache lock is currently held at call time. A
+        non-reentrant Lock cannot be re-acquired by the holder, so
+        `acquire(blocking=False)` returning True proves NO thread holds it —
+        i.e. the pre-fix unlocked iteration. The fixed code must produce
+        zero such violations.
+        """
+        import json
+
+        import paper_trader.backtest as bt
+
+        start = date(2024, 1, 1)
+        end = date(2024, 12, 31)
+        s_iso, e_iso = start.isoformat(), end.isoformat()
+        lock = bt._VOLUME_CACHE_LOCK
+        violations: list[str] = []
+
+        class _LockCheckingDict(dict):
+            def items(self):
+                # If we can grab the lock, nobody holds it → the caller
+                # iterated the shared cache WITHOUT serialising. That is the
+                # exact race that raised "dictionary changed size during
+                # iteration" under the parallel continuous loop.
+                if lock.acquire(blocking=False):
+                    lock.release()
+                    violations.append("items() called without _VOLUME_CACHE_LOCK")
+                return super().items()
+
+        cache = _LockCheckingDict()
+        for i in range(50):
+            cache[(f"T{i}", s_iso, e_iso)] = {"2024-01-02": float(i)}
+        monkeypatch.setattr(bt, "_VOLUME_CACHE", cache)
+
+        bt._persist_volume_cache_for_window(start, end)
+
+        assert violations == [], violations
+        # And the snapshot must still have been written correctly.
+        path = bt._volume_cache_path(start, end)
+        assert path.exists()
+        data = json.loads(path.read_text())
+        assert len(data) == 50
+        assert data["T0"] == {"2024-01-02": 0.0}
+
+
 # ─────────────────────── _ml_decide (smoke tests) ──────────────────────
 
 class TestMlDecide:

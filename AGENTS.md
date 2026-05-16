@@ -184,6 +184,8 @@ Digital Intern dashboard on `:8080` can cross-fetch.
 | `GET /api/earnings-risk` | Upcoming earnings ⨯ held positions / watchlist, tiered |
 | `GET /api/scorer-confidence` | Empirical residual bands + directional hit-rate for DecisionScorer |
 | `GET /api/decision-health` | Action mix, NO_DECISION parse-failure rate, confidence trend |
+| `GET /api/decision-forensics` | *Why* NO_DECISION: failure-mode taxonomy (timeout/truncated/no-json/fenced/prose/malformed/legacy), open-vs-closed split, hourly trend, retry-exhausted count, actionable hint + raw Opus excerpts |
+| `GET /api/liquidity` | Capital deployment & liquidity: cash vs deployed %, position weights, unrealized P/L, days-since-last-entry, status (NO_DRY_POWDER/DRY_POWDER_LOW/BALANCED/CASH_HEAVY) + flags |
 
 ### Common failure modes (live trader)
 
@@ -224,9 +226,36 @@ from a 17-dim feature vector:
 | 10..16 | sector one-hot | `SECTOR_MAP` lookup | "other" |
 
 Training happens in `run_continuous_backtests.py::_train_decision_scorer`
-after each cycle. The model is **only used to gate live trades when
-`_n_train >= 500`** — below that threshold it returns 0.0 and `_ml_decide`
-treats it as a no-op.
+after each cycle. Until trained AND `_n_train >= 500`, `predict()` returns
+`0.0` and `_ml_decide` ignores it entirely.
+
+Once `_scorer.is_trained and _n_train >= 500`, the scorer **modulates BUY
+conviction only — it never cancels a trade** (an earlier HOLD-block
+version oscillated leveraged-ETF strategies; see the comment in
+`_ml_decide`). Given the predicted 5-day return `p`:
+
+| Condition | Effect on conviction |
+|-----------|----------------------|
+| `p < -10` | `× 0.6` (strong headwind, still buys) |
+| `-10 ≤ p < 0` | `× 0.85` (mild headwind) |
+| `0 ≤ p ≤ 5` | unchanged |
+| `5 < p ≤ 10` | `× 1.15`, capped at 0.95 |
+| `p > 10` | `× 1.3`, capped at 0.95 |
+
+> Note: `CLAUDE.md` §6 still documents the older HOLD-blocking gate
+> (`p < -5 → HOLD`, `p < 0 → ×0.7`). The code in `_ml_decide` above is
+> authoritative; CLAUDE.md §6 is stale on this point.
+
+**Concurrency invariant (`backtest.py`):** the module-global
+`_VOLUME_CACHE` is shared across the parallel run threads. Every read
+*and* every iteration of it must hold `_VOLUME_CACHE_LOCK` — iterating it
+unlocked while another run thread inserts raises
+`RuntimeError: dictionary changed size during iteration`, which the
+persist helper's `try/except` swallows (silently dropping the disk
+cache so every run re-fetches volumes from yfinance). It is also
+window-keyed and never evicted, so a long-lived continuous loop's RSS
+grows slowly across cycles — restart the loop periodically; do not add
+an ad-hoc eviction policy without measuring.
 
 ### How to run backtests manually
 

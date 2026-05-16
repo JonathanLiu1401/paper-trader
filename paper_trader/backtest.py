@@ -704,9 +704,19 @@ def _persist_volume_cache_for_window(start: date, end: date) -> None:
     try:
         path = _volume_cache_path(start, end)
         path.parent.mkdir(parents=True, exist_ok=True)
-        flat = {ticker: series
-                for (ticker, s, e), series in _VOLUME_CACHE.items()
-                if (s, e) == key}
+        # Snapshot the shared cache UNDER the lock. This runs in a backtest
+        # run thread (up to RUNS_PER_CYCLE in parallel); other threads call
+        # `_VOLUME_CACHE[...] = series` concurrently. Iterating the live dict
+        # here raced with those writes and raised
+        # `RuntimeError: dictionary changed size during iteration` — caught by
+        # the except below, so the cache silently never persisted under
+        # parallel runs (every run re-fetched volumes from yfinance). Copy
+        # under the lock, then do file IO outside it (don't hold the lock
+        # across disk writes).
+        with _VOLUME_CACHE_LOCK:
+            flat = {ticker: series
+                    for (ticker, s, e), series in _VOLUME_CACHE.items()
+                    if (s, e) == key}
         path.write_text(json.dumps(flat))
     except Exception as e:
         print(f"[volume_cache] persist failed: {e}")

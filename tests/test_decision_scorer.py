@@ -255,6 +255,33 @@ class TestTrainScorer:
         # Sanity: with a strongly positive mom5, expect a non-negative prediction.
         # (Loose bound — model isn't perfect.) Mostly we want to assert finite.
         assert math.isfinite(v)
+        # Rank-order: the training data is a clean monotone relationship
+        # (fwd = mom * 1.2, ml_score = mom). A strongly bullish feature vector
+        # MUST predict a higher return than a strongly bearish one — otherwise
+        # the model carries no usable signal and gating on it is noise.
+        v_bull = s.predict(ml_score=10.0, rsi=50, macd=0.1, mom5=10.0,
+                           mom20=0.0, regime_mult=1.0, ticker="NVDA")
+        v_bear = s.predict(ml_score=-10.0, rsi=50, macd=0.1, mom5=-10.0,
+                           mom20=0.0, regime_mult=1.0, ticker="NVDA")
+        assert v_bull > v_bear
+
+    def test_training_is_deterministic(self):
+        """train_scorer pins random_state=42 for the split and the MLP, so two
+        runs on identical records must report identical n and val_rmse —
+        otherwise backtest cycles can't be compared and the scorer drifts
+        non-reproducibly between retrains.
+        """
+        recs = [_synthetic_outcome(sim_date=f"2025-08-{i+1:02d}", mom5=(i - 20),
+                                   fwd=(i - 20) * 1.1)
+                for i in range(40)]
+        r1 = train_scorer(list(recs))
+        r2 = train_scorer(list(recs))
+        assert r1["status"] == r2["status"] == "ok"
+        assert r1["n"] == r2["n"]
+        # val_rmse may be NaN only in the numpy-fallback path; when sklearn is
+        # present it must be bit-identical across deterministic runs.
+        if r1["val_rmse"] == r1["val_rmse"]:  # not NaN
+            assert r1["val_rmse"] == pytest.approx(r2["val_rmse"], rel=1e-9)
 
 
 # ─────────────────────── ranking semantics ───────────────────────
