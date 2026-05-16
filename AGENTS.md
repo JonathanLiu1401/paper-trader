@@ -96,6 +96,7 @@ review:
 | `test_core_reporter.py` | openclaw missing → False, timeout/nonzero exit → False, trade alert + decision log + portfolio line formatting |
 | `test_round_trips.py` | `build_round_trips` arithmetic: simple/partial/re-entry round-trips, option ×100, distinct (ticker,type,strike,expiry) keys, open-lot exclusion, orphan SELL, zero-cost `pnl_pct=None`, negative/unparseable `hold_days`, sub-cent rounding |
 | `test_core_analytics.py` | `/api/analytics` end-to-end via Flask test client: exact `win_rate_pct` / `profit_factor` / `avg_holding_days` / `realized_pl_usd` / `n_round_trips` for a fixed ledger; open positions excluded; empty ledger → null metrics |
+| `test_core_dashboard_helpers.py` | Pure dashboard helpers with no prior coverage: `_scorer_verdict` 5-way boundary bucketing; `_position_ages_from_trades` open-lot state machine (partial-sell keeps entry, full-sell→re-buy resets, option trades ignored); `_next_market_open` open/close/weekend/holiday arithmetic; `_classify_action` co-pilot selection incl. the **EXIT-before-TRIM** ordering regression and "never BUY without a technical confirm" |
 
 ### Key invariants and constraints
 
@@ -453,6 +454,17 @@ For automated review agents that touch ML / backtest code:
 - **`SAMPLE_EVERY_N_DAYS = 1`** — backtests sample every trading day.
   Don't change this casually; the continuous loop's timing budget
   assumes a year-long sim completes in ~minutes per run.
+- **Scorer-train status must stay truthful** — in
+  `run_continuous_backtests.py::_train_decision_scorer`, `train_scorer()`
+  pickles the model to `SCORER_PATH` and returns `status="ok"` *before* the
+  temporal-OOS diagnostic runs. The OOS block (`DecisionScorer()` reload +
+  `evaluate_scorer_oos`) has its **own** `try/except` that degrades to
+  `oos_rmse=n/a (...)`. Do not collapse it back into the outer
+  train `try/except`: a post-train diagnostic crash would then surface as
+  `scorer err` on the operator-facing log/Discord even though the scorer is
+  trained and the next cycle's singleton reset deploys it — a false
+  "scorer broken / gate never engages" signal. Locked by
+  `tests/test_continuous.py::TestTrainDecisionScorer::test_oos_eval_failure_does_not_mask_successful_train`.
 
 ### When to bump model versions
 
