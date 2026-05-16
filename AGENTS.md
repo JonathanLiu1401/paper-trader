@@ -91,9 +91,9 @@ review:
 | `test_core_store.py` | cash bookkeeping, position upsert/blend/close, trade & equity ordering |
 | `test_core_market.py` | weekend / pre-open / after-close / holiday gating, price-cache TTL, option chain lookup |
 | `test_core_signals.py` | top-signal score threshold + sort order, backtest-row filter, urgent ai_score=NULL coercion, ticker regex word-boundary |
-| `test_core_strategy.py` | JSON parse w/ fences + trailing prose, RSI/EMA/MACD math, SELL-exceeds-held blocking, BUY insufficient cash blocking, **ambiguous option close blocking**, **expired-option settlement** (`_option_expired` boundary incl. expiry-day-still-live; `_expired_intrinsic` ITM/OTM/no-underlying; `_portfolio_snapshot` marks expired contracts to intrinsic/0 not premium; live-option transient-None still → avg_cost; `SELL_CALL` on a dead contract settles at intrinsic) |
+| `test_core_strategy.py` | JSON parse w/ fences + trailing prose, RSI/EMA/MACD math, SELL-exceeds-held blocking, BUY insufficient cash blocking, **ambiguous option close blocking**, **expired-option settlement** (`_option_expired` boundary incl. expiry-day-still-live; `_expired_intrinsic` ITM/OTM/no-underlying; `_portfolio_snapshot` marks expired contracts to intrinsic/0 not premium; live-option transient-None still → avg_cost; `SELL_CALL` on a dead contract settles at intrinsic; **`_portfolio_snapshot` total_value = cash + Σ position market_value across a mixed stock+option book**) |
 | `test_core_runner.py` | `_maybe_daily_close` weekend/time gating + once-per-day flag + retry-on-failure, `_maybe_hourly` 3600s gating + retry-on-failure |
-| `test_core_reporter.py` | openclaw missing → False, timeout/nonzero exit → False, trade alert + decision log + portfolio line formatting |
+| `test_core_reporter.py` | openclaw missing → False, timeout/nonzero exit → False, trade alert + decision log + portfolio line formatting, **daily-close P/L baseline label tracks `_INITIAL_EQUITY` not a hardcoded `$1000`** |
 | `test_round_trips.py` | `build_round_trips` arithmetic: simple/partial/re-entry round-trips, option ×100, distinct (ticker,type,strike,expiry) keys, open-lot exclusion, orphan SELL, zero-cost `pnl_pct=None`, negative/unparseable `hold_days`, sub-cent rounding |
 | `test_core_analytics.py` | `/api/analytics` end-to-end via Flask test client: exact `win_rate_pct` / `profit_factor` / `avg_holding_days` / `realized_pl_usd` / `n_round_trips` for a fixed ledger; open positions excluded; empty ledger → null metrics |
 | `test_core_dashboard_helpers.py` | Pure dashboard helpers with no prior coverage: `_scorer_verdict` 5-way boundary bucketing; `_position_ages_from_trades` open-lot state machine (partial-sell keeps entry, full-sell→re-buy resets, option trades ignored); `_next_market_open` open/close/weekend/holiday arithmetic; `_classify_action` co-pilot selection incl. the **EXIT-before-TRIM** ordering regression and "never BUY without a technical confirm" |
@@ -539,6 +539,19 @@ For automated review agents that touch ML / backtest code:
   trained and the next cycle's singleton reset deploys it — a false
   "scorer broken / gate never engages" signal. Locked by
   `tests/test_continuous.py::TestTrainDecisionScorer::test_oos_eval_failure_does_not_mask_successful_train`.
+- **Run-return weight is applied twice into the ArticleNet feed (by
+  design, not a bug)** — `_append_top_decisions` folds the per-run weight
+  `w = 0.5 + 0.5·(ret−min)/span` into the JSONL `ai_score`
+  (`w·5.0` for BUY, `w·0.5` for SELL) *and* stores the bare `w` as
+  `weight`. `_inject_and_train` then writes `eff = min(10, ai_score·weight)`
+  into digital-intern's `articles.db`, so a top-run BUY lands at `≈5·w²`
+  (`w∈[0.5,1.0] → eff∈[1.25,5.0]`) — the run-quality term is **squared**,
+  intentionally compressing lower-ranked runs harder than a linear weight
+  would. This only affects ArticleNet's training emphasis (a *separate*
+  model in digital-intern), never the DecisionScorer or any trade. Opus
+  annotation rows side-step it (`weight=1.0`, so `eff=ai_score`). Do not
+  "linearise" this in a surgical pass — it perturbs ArticleNet training
+  dynamics and is out of scope for the ML/backtest review.
 
 ### When to bump model versions
 

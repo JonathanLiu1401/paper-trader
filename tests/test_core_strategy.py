@@ -401,6 +401,44 @@ class TestExpiredIntrinsic:
         assert strategy._expired_intrinsic("NVDA", "call", 600.0) == 0.0
 
 
+class TestPortfolioSnapshotSummation:
+    """total_value must equal cash + Σ(position market value) across a mixed
+    stock+option book. Existing tests only assert open_value for a single
+    expired option; this pins the cash+positions identity the spec requires
+    and would catch a multiplier/sign regression in the aggregation."""
+
+    def test_total_value_is_cash_plus_all_position_market_values(
+        self, fresh_store, monkeypatch
+    ):
+        # Stock: 5 AMD marked @ $120  → 5 * 120 * 1   = $600
+        # Option: 2 NVDA 600C marked @ $7 → 2 * 7 * 100 = $1400
+        # Cash starts at the store default ($1000), untouched by upserts.
+        monkeypatch.setattr(market, "get_prices", lambda tks: {"AMD": 120.0})
+        monkeypatch.setattr(market, "get_option_price",
+                            lambda t, e, s, ot: 7.0)
+        fresh_store.upsert_position("AMD", "stock", qty=5, avg_cost=100.0)
+        fresh_store.upsert_position("NVDA", "call", qty=2, avg_cost=5.0,
+                                    expiry="2026-12-19", strike=600.0)
+
+        snap = strategy._portfolio_snapshot(fresh_store)
+
+        assert snap["cash"] == pytest.approx(1000.0)
+        assert snap["open_value"] == pytest.approx(600.0 + 1400.0)
+        assert snap["total_value"] == pytest.approx(1000.0 + 2000.0)
+        # The identity itself, derived from the per-position market_value the
+        # snapshot reports, must hold exactly.
+        summed = snap["cash"] + sum(p["market_value"] for p in snap["positions"])
+        assert snap["total_value"] == pytest.approx(summed)
+        # And it must be persisted, not just returned.
+        assert fresh_store.get_portfolio()["total_value"] == pytest.approx(3000.0)
+
+    def test_empty_book_total_equals_cash(self, fresh_store, monkeypatch):
+        monkeypatch.setattr(market, "get_prices", lambda tks: {})
+        snap = strategy._portfolio_snapshot(fresh_store)
+        assert snap["open_value"] == 0.0
+        assert snap["total_value"] == pytest.approx(snap["cash"])
+
+
 class TestPortfolioSnapshotExpiredOptions:
     def test_expired_otm_option_marked_to_zero_not_premium(self, fresh_store, monkeypatch):
         # Bought a call for $5.00 premium; it expired OTM. Must mark to 0,

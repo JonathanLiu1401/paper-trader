@@ -155,7 +155,7 @@ def send_daily_close() -> bool:
         f"```\n"
         f"Equity         ${pf['total_value']:.2f}\n"
         f"Cash           ${pf['cash']:.2f}\n"
-        f"Total P/L      ${pl:+.2f} ({pl_pct:+.2f}%)  vs $1000 start\n"
+        f"Total P/L      ${pl:+.2f} ({pl_pct:+.2f}%)  vs ${_INITIAL_EQUITY:.0f} start\n"
         f"Realized P/L (today, cash flow basis)  ${pnl_real:+.2f}\n"
         f"Trades today   {n_trades}\n"
         f"{sp_line}\n"

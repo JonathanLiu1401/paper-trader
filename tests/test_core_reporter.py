@@ -129,6 +129,49 @@ class TestSendDecisionLog:
         assert "NO_DECISION" in captured[0]
 
 
+class TestSendDailyCloseBaseline:
+    """The daily-close P/L baseline label must track reporter._INITIAL_EQUITY,
+    not a hardcoded literal. reporter.py's own header comment makes
+    _INITIAL_EQUITY the single source of truth ('A hardcoded copy silently
+    desyncs every reported P/L'); the displayed 'vs $X start' string used to
+    hardcode $1000 and would lie if INITIAL_CASH ever moved."""
+
+    def _wire(self, monkeypatch, total_value, baseline):
+        captured = []
+        monkeypatch.setattr(reporter, "_send",
+                            lambda msg: captured.append(msg) or True)
+        monkeypatch.setattr(reporter, "_INITIAL_EQUITY", baseline)
+        monkeypatch.setattr(reporter.market, "benchmark_sp500", lambda: None)
+        fake_store = MagicMock()
+        fake_store.get_portfolio.return_value = {
+            "total_value": total_value, "cash": total_value,
+        }
+        fake_store.open_positions.return_value = []
+        fake_store.recent_trades.return_value = []
+        monkeypatch.setattr(reporter, "get_store", lambda: fake_store)
+        return captured
+
+    def test_baseline_label_tracks_initial_equity(self, monkeypatch):
+        # Baseline moved to $2000. P/L on $2200 equity must read +$200 / +10%
+        # against a 'vs $2000 start' label — never the stale '$1000'.
+        captured = self._wire(monkeypatch, total_value=2200.0, baseline=2000.0)
+        assert reporter.send_daily_close() is True
+        body = captured[0]
+        assert "vs $2000 start" in body
+        assert "vs $1000 start" not in body
+        # And the numbers use the same baseline (pl = 2200-2000, pct = 10%).
+        assert "+200.00" in body
+        assert "+10.00%" in body
+
+    def test_default_baseline_still_renders(self, monkeypatch):
+        captured = self._wire(monkeypatch, total_value=1050.0, baseline=1000.0)
+        reporter.send_daily_close()
+        body = captured[0]
+        assert "vs $1000 start" in body
+        assert "+50.00" in body
+        assert "+5.00%" in body
+
+
 class TestPortfolioLines:
     def test_stock_line_format(self):
         positions = [{
