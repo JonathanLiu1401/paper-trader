@@ -290,6 +290,8 @@ Digital Intern dashboard on `:8080` can cross-fetch.
 | `GET /backtests` | HTML — backtest grid + equity overlay |
 | `GET /api/state` | Portfolio + positions + last 40 trades + last 20 decisions + equity curve |
 | `GET /api/portfolio` | Compact portfolio read (consumed by Digital Intern at :8080) |
+| `GET /api/data-feed` | Live news-collector pulse — proxies digital-intern's `articles.db` (live-only filter): articles in last 1h / 24h + top active sources. Returns zeros (with `error`) if the article DB is unreachable so the widget still renders |
+| `GET /api/validation` | Signal-integrity validation history (permutation tests + label audits) read from `data/validation_results.json`, appended by the continuous loop's background validation runner (capped 50 on the writer side); UI renders the most recent entry |
 | `GET /api/backtests` | Full backtest run list with SPY/QQQ baselines |
 | `GET /api/backtests/<run_id>` | Single backtest detail (trades, decisions, equity) |
 | `GET /api/backtests/compare?ids=1,2,3` | Normalized overlay of 2–4 runs |

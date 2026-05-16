@@ -159,3 +159,76 @@ class TestGetOptionPrice:
         fake_ticker.option_chain.return_value = chain
         monkeypatch.setattr(market.yf, "Ticker", lambda t: fake_ticker)
         assert market.get_option_price("FAKE", "2026-12-19", 100.0, "call") == 7.5
+
+
+class TestGetFuturesPriceBucketCache:
+    """Locks the 30s time-bucket lru_cache in get_futures_price.
+
+    get_futures_price(sym) -> get_futures_price_cached(sym, int(time()//30)).
+    Within one 30s bucket repeated calls must NOT re-hit get_price; once the
+    bucket advances they must. The cache must also key on the symbol, not the
+    bucket alone (otherwise two futures would alias to one price). lru_cache is
+    module-global, so each test clears it first for isolation.
+    """
+
+    def test_same_30s_bucket_serves_cached_value(self, monkeypatch):
+        from paper_trader import market
+
+        market.get_futures_price_cached.cache_clear()
+        calls = []
+
+        def fake_get_price(sym):
+            calls.append(sym)
+            return 100.0 + len(calls)  # changes every real fetch
+
+        monkeypatch.setattr(market, "get_price", fake_get_price)
+        # Freeze wall clock inside the same 30s bucket (t=10 -> 10//30 == 0).
+        monkeypatch.setattr(market.time, "time", lambda: 10.0)
+
+        first = market.get_futures_price("ES=F")
+        second = market.get_futures_price("ES=F")
+        third = market.get_futures_price("ES=F")
+
+        assert first == 101.0
+        assert second == first and third == first  # cached, not re-fetched
+        assert calls == ["ES=F"]  # get_price hit exactly once
+
+    def test_bucket_advance_triggers_refetch(self, monkeypatch):
+        from paper_trader import market
+
+        market.get_futures_price_cached.cache_clear()
+        calls = []
+
+        def fake_get_price(sym):
+            calls.append(sym)
+            return float(len(calls))
+
+        monkeypatch.setattr(market, "get_price", fake_get_price)
+
+        now = {"t": 0.0}
+        monkeypatch.setattr(market.time, "time", lambda: now["t"])
+
+        now["t"] = 5.0          # bucket 0
+        a = market.get_futures_price("NQ=F")
+        now["t"] = 29.999       # still bucket 0
+        b = market.get_futures_price("NQ=F")
+        now["t"] = 30.0         # bucket 1 -> new lru key -> refetch
+        c = market.get_futures_price("NQ=F")
+
+        assert a == 1.0
+        assert b == 1.0          # same bucket: cached
+        assert c == 2.0          # bucket advanced: fresh fetch
+        assert calls == ["NQ=F", "NQ=F"]
+
+    def test_distinct_symbols_keyed_independently(self, monkeypatch):
+        from paper_trader import market
+
+        market.get_futures_price_cached.cache_clear()
+        prices = {"ES=F": 5000.0, "CL=F": 70.0}
+        monkeypatch.setattr(market, "get_price", lambda s: prices[s])
+        monkeypatch.setattr(market.time, "time", lambda: 0.0)
+
+        # Same bucket, different symbols must not alias to one cached value.
+        assert market.get_futures_price("ES=F") == 5000.0
+        assert market.get_futures_price("CL=F") == 70.0
+        assert market.get_futures_price("ES=F") == 5000.0
