@@ -113,13 +113,23 @@ def build_trade_asymmetry(trades: list[dict],
     if state == "STABLE":
         skew_negative = (disposition_gap is not None
                          and disposition_gap < -DISPOSITION_EPS_DAYS)
-        if (payoff_ratio is not None and actual_wr is not None
-                and breakeven_wr is not None and actual_wr < breakeven_wr):
+        # The trap = losing money with losers on the book. When a payoff
+        # ratio exists this is exactly `actual_wr < breakeven_wr`
+        # (sign(expectancy) ≡ actual-vs-breakeven, washes contribute 0); the
+        # `payoff_ratio is None` arm additionally catches an all-losers book
+        # (no winner mean ⇒ no ratio) so it reads as PAYOFF_TRAP, not FLAT.
+        if (n_losses > 0 and expectancy is not None
+                and expectancy < -FLAT_EPS_USD):
             verdict = "PAYOFF_TRAP"
-            verdict_reason = (
-                f"win-rate {actual_wr:.1f}% is below the {breakeven_wr:.1f}% "
-                f"this {payoff_ratio:.2f} payoff ratio needs to break even — "
-                f"the math cannot carry it")
+            if payoff_ratio is not None and breakeven_wr is not None:
+                verdict_reason = (
+                    f"win-rate {actual_wr:.1f}% is below the "
+                    f"{breakeven_wr:.1f}% this {payoff_ratio:.2f} payoff "
+                    f"ratio needs to break even — the math cannot carry it")
+            else:
+                verdict_reason = (
+                    f"no winning round-trips — every closed trade lost "
+                    f"(${expectancy:+.2f}/trade over {n} round-trips)")
         elif expectancy is not None and expectancy > FLAT_EPS_USD:
             if skew_negative:
                 verdict = "DISPOSITION_BLEED"
@@ -158,10 +168,16 @@ def build_trade_asymmetry(trades: list[dict],
             f"payoff ratio (verdict withheld until n≥{STABLE_MIN_RTS})."
             + disp_clause)
     elif verdict == "PAYOFF_TRAP":
+        if payoff_ratio is not None and breakeven_wr is not None:
+            trap_lead = (
+                f"PAYOFF_TRAP — {actual_wr:.1f}% win-rate vs "
+                f"{breakeven_wr:.1f}% needed for this {payoff_ratio:.2f} "
+                f"payoff ratio; ")
+        else:
+            trap_lead = ("PAYOFF_TRAP — no winning round-trips; ")
         headline = (
-            f"PAYOFF_TRAP — {actual_wr:.1f}% win-rate vs {breakeven_wr:.1f}% "
-            f"needed for this {payoff_ratio:.2f} payoff ratio; "
-            f"${expectancy:+.2f}/trade over {n} round-trips." + disp_clause)
+            trap_lead
+            + f"${expectancy:+.2f}/trade over {n} round-trips." + disp_clause)
     elif verdict == "DISPOSITION_BLEED":
         headline = (
             f"DISPOSITION_BLEED — profitable (${expectancy:+.2f}/trade) but "

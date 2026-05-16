@@ -114,6 +114,19 @@ class TestPayoffArithmetic:
         assert r["state"] == "STABLE"
         assert r["verdict"] == "PAYOFF_TRAP"
 
+    def test_all_losers_is_payoff_trap_not_flat(self):
+        # 20 straight losers, no winners → no payoff ratio can be formed, but
+        # a unanimously losing book must NOT read as FLAT. It's the trap.
+        trades = _ledger([("L", 1, 100.0, 95.0, 1)] * 20)
+        r = build_trade_asymmetry(trades)
+        assert r["n_wins"] == 0
+        assert r["n_losses"] == 20
+        assert r["payoff_ratio"] is None        # no winner mean to form it
+        assert r["expectancy_usd"] == -5.0
+        assert r["state"] == "STABLE"
+        assert r["verdict"] == "PAYOFF_TRAP"
+        assert r["verdict_reason"]               # non-empty, no None formatting
+
     def test_no_losers_payoff_is_none_not_infinity(self):
         trades = _ledger([("W", 1, 100.0, 110.0, 1)] * 20)  # all winners
         r = build_trade_asymmetry(trades)
