@@ -465,6 +465,57 @@ class TestMlDecide:
             # Must not exceed 95% of cash.
             assert notional <= 100.0 * 0.95 + 0.01  # tiny rounding allowance
 
+    def test_conviction_caps_position_size_when_cash_is_abundant(
+            self, synthetic_prices, monkeypatch):
+        """Regression guard for the OTHER arm of position sizing.
+
+        ``buy_notional = min(total_val * conviction, cash * 0.95)``.
+        ``test_oversize_buy_clipped_by_cash`` only exercises the cash arm. With
+        abundant cash the *conviction* cap is what bounds the trade — and a
+        regression that dropped ``min(0.25, …)`` would let position size balloon
+        with no other test catching it.
+
+        Deterministic trace with ``synthetic_prices`` (51 trading days):
+          - 51 SPY days < 200 → ``_market_regime`` == "unknown" → regime_mult 1.0
+          - 51 days < 60 → ``_compute_technical_indicators`` is None → no quant adj
+          - sentiment of the headline = +1.0 (3 bullish words, 0 bearish)
+          - ticker_scores[NVDA] = score(10.0) × sentiment(1.0) = 10.0
+          - NVDA ∉ _LEVERAGED_ETFS → conviction = min(0.25, 10.0/20) = 0.25
+            (the cap *binds*: uncapped would be 0.50, so a regression that
+            dropped ``min(0.25, …)`` doubles the notional and fails here)
+          - cash 100_000 ≫ → conviction arm binds, NOT the cash arm
+        ⇒ notional == 0.25 × 100_000 == 25_000.0 ; qty == 25_000 / 200 == 125.0
+        """
+        import paper_trader.backtest as bt
+        # The module-level scorer singleton is not reset by conftest; pin it
+        # untrained so the gate cannot perturb conviction in this assertion.
+        monkeypatch.setattr(bt, "_DECISION_SCORER", None, raising=False)
+
+        p = SimPortfolio(cash=100_000.0)
+        rng = random.Random(42)
+        articles = [{"title": "Nvidia beats earnings, guidance raised, "
+                              "semiconductor surge",
+                     "score": 10.0, "tickers": ["NVDA"]}]
+        d = synthetic_prices.trading_days[-1]
+        decision = _ml_decide(d, p, articles, synthetic_prices,
+                              run_id=1, rng=rng)
+
+        assert decision["action"] == "BUY"
+        assert decision["ticker"] == "NVDA"
+        price = synthetic_prices.price_on("NVDA", d)
+        assert price == 200.0  # 100 + 50*2, last synthetic NVDA close
+        total_value = p.total_value(synthetic_prices, d)  # == cash, no positions
+        notional = decision["qty"] * price
+        # Conviction cap is exactly 25% of total value here — pin both the
+        # derived qty and the notional so any change to the conviction
+        # formula (cap removal, regime double-count, scorer leakage) fails.
+        assert decision["qty"] == pytest.approx(125.0, abs=1e-6)
+        assert notional == pytest.approx(25_000.0, abs=0.01)
+        assert notional <= total_value * 0.25 + 0.01
+        # And it must stay under the absolute leveraged-ETF ceiling (0.40)
+        # regardless of which arm bound it.
+        assert notional <= total_value * 0.40 + 0.01
+
 
 # ─────────────────────── BacktestStore isolation ───────────────────────────
 

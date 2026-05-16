@@ -392,6 +392,22 @@ If `scorer insufficient_after_dedup n=...` keeps appearing, the
 `data/decision_outcomes.jsonl` tail is too small or too duplicated — more
 cycles need to accumulate before the scorer can train.
 
+### Position sizing invariant (`_ml_decide`)
+
+A backtest BUY's notional is `min(total_val * conviction, cash * 0.95)`.
+`conviction` has a hard ceiling: `min(0.25, best_score/20)` for normal
+tickers, `min(0.40, best_score/15)` for a `_LEVERAGED_ETFS` name in a
+bull/sideways regime. The DecisionScorer (once `_n_train >= 500`) only
+*modulates* this conviction — it never lifts the cap (the ×1.3/×1.15
+tailwind arms are themselves capped at 0.95, and the notional is still
+clipped by the two `min`s). Both arms are now test-locked:
+`tests/test_backtest.py::TestMlDecide::test_oversize_buy_clipped_by_cash`
+pins the cash arm; `::test_conviction_caps_position_size_when_cash_is_abundant`
+pins the conviction arm with exact expected values (a regression that drops
+`min(0.25, …)` doubles the notional and fails the assertion). If you change
+the conviction formula, update both tests deliberately — they assert exact
+numbers, not ranges, by design.
+
 ### Tests (ML + backtest section)
 
 ```bash
