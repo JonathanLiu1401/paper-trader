@@ -313,6 +313,39 @@ class TestExecuteSellCallDisambiguation:
         status, _ = strategy._execute(decision, snap, fresh_store)
         assert status == "FILLED"
 
+    def test_disambiguated_close_caps_at_matched_contract_qty(
+            self, fresh_store, monkeypatch):
+        # Two contracts (qty 1 each) → _enforce_risk_pre_trade sums held=2
+        # across strikes, so a qty=2 SELL_CALL passes the pre-trade gate. But
+        # the caller disambiguates to the 700C, which only holds qty 1.
+        # _execute must apply its own per-contract cap and BLOCK — otherwise
+        # cash is over-credited for a contract that was never held. Pins the
+        # SELL_CALL per-contract recheck seam in strategy._execute.
+        monkeypatch.setattr(market, "get_option_price", lambda t, e, s, ot: 6.0)
+        fresh_store.upsert_position("NVDA", "call", qty=1, avg_cost=5.0,
+                                    expiry="2026-12-19", strike=600.0)
+        fresh_store.upsert_position("NVDA", "call", qty=1, avg_cost=5.0,
+                                    expiry="2026-12-19", strike=700.0)
+        positions = [
+            {"ticker": "NVDA", "type": "call", "qty": 1, "avg_cost": 5.0,
+             "strike": 600.0, "expiry": "2026-12-19"},
+            {"ticker": "NVDA", "type": "call", "qty": 1, "avg_cost": 5.0,
+             "strike": 700.0, "expiry": "2026-12-19"},
+        ]
+        snap = {"cash": 1000.0, "total_value": 2000.0, "positions": positions}
+        decision = {"action": "SELL_CALL", "ticker": "NVDA", "qty": 2,
+                    "strike": 700, "expiry": "2026-12-19", "reasoning": ""}
+        # The pre-trade gate alone would pass (held summed across strikes = 2).
+        ok, _ = strategy._enforce_risk_pre_trade(decision, snap)
+        assert ok is True
+        # But _execute caps at the matched contract's qty (1) and blocks.
+        status, detail = strategy._execute(decision, snap, fresh_store)
+        assert status == "BLOCKED"
+        assert "exceeds held" in detail.lower()
+        # No phantom SELL recorded, cash untouched.
+        assert fresh_store.recent_trades(5) == []
+        assert fresh_store.get_portfolio()["cash"] == 1000.0
+
 
 # ─────────────────────────── HOLD / REBALANCE / unknown ───────────────────────────
 
