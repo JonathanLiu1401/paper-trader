@@ -878,6 +878,28 @@ TEMPLATE = r"""
       </table>
     </div>
 
+    <!-- ─── Scorer ⇄ Opus Disagreement (new 2026-05-16, agent 4 feature-dev) ─── -->
+    <div class="card" id="dis-card" style="margin-bottom:18px;">
+      <h2 style="display:flex;justify-content:space-between;align-items:center;">
+        <span>Scorer ⇄ Opus disagreement <span class="muted" style="font-size:11px;text-transform:none;letter-spacing:normal;font-weight:normal;">— where the ML safety net and Opus are fighting on held positions</span></span>
+        <span class="muted" id="dis-asof" style="font-size:11px;text-transform:none;letter-spacing:normal;">—</span>
+      </h2>
+      <div class="muted" id="dis-meta" style="font-size:12px;margin-bottom:12px;">loading…</div>
+      <div class="stat-row" style="margin-bottom:14px;">
+        <div class="stat"><div class="l">high conflict</div><div class="v" id="dis-high">—</div></div>
+        <div class="stat"><div class="l">medium</div><div class="v" id="dis-med">—</div></div>
+        <div class="stat"><div class="l">aligned</div><div class="v" id="dis-aln">—</div></div>
+        <div class="stat"><div class="l">positions</div><div class="v" id="dis-n">—</div></div>
+      </div>
+      <table id="dis-tbl" style="font-size:13px;">
+        <thead><tr>
+          <th>ticker</th><th>scorer verdict</th><th class="num">pred 5d</th>
+          <th>last Opus action</th><th>conflict</th><th>read</th>
+        </tr></thead>
+        <tbody><tr><td colspan="6" class="muted">loading…</td></tr></tbody>
+      </table>
+    </div>
+
     <!-- ─── Portfolio Analytics ─── -->
     <div class="card" style="margin-bottom:18px;">
       <h2>Portfolio analytics</h2>
@@ -3624,6 +3646,70 @@ async function refreshValidation() {
   }
 }
 
+async function refreshDisagreement() {
+  try {
+    const r = await fetch(API_PREFIX + "/api/disagreement").then(r => r.json());
+    if (r.error) {
+      document.getElementById("dis-meta").textContent = "error: " + r.error;
+      return;
+    }
+    document.getElementById("dis-asof").textContent =
+      r.as_of ? r.as_of.replace("T", " ").slice(0, 16) : "—";
+    const c = r.counts || {};
+    const setC = (id, v, col) => {
+      const e = document.getElementById(id);
+      e.textContent = (v == null ? "—" : v);
+      if (col) e.style.color = col;
+    };
+    setC("dis-high", c.HIGH, (c.HIGH > 0) ? "#ff4455" : "#8b929d");
+    setC("dis-med", c.MEDIUM, (c.MEDIUM > 0) ? "#ffa726" : "#8b929d");
+    setC("dis-aln", c.ALIGNED, "#4caf50");
+    setC("dis-n", r.n_positions);
+    if (!r.scorer_trained) {
+      document.getElementById("dis-meta").textContent =
+        "scorer not trained yet — needs ≥500 decision outcomes before it can disagree with Opus";
+    } else if (!r.n_positions) {
+      document.getElementById("dis-meta").textContent =
+        "no open stock positions to compare";
+    } else {
+      const h = c.HIGH || 0;
+      document.getElementById("dis-meta").innerHTML = h > 0
+        ? `<span style="color:#ff4455;font-weight:bold;">${h} position(s) where Opus is overriding the ML safety net</span> — scorer says exit/trim while Opus is still long. Canonical "why is the book losing money?" check.`
+        : "scorer and Opus are aligned on every held position";
+    }
+    const tb = document.querySelector("#dis-tbl tbody");
+    const rows = r.rows || [];
+    if (!rows.length) {
+      tb.innerHTML = `<tr><td colspan="6" class="muted">—</td></tr>`;
+    } else {
+      const sevColor = { HIGH: "#ff4455", MEDIUM: "#ffa726", ALIGNED: "#4caf50" };
+      const actCls = a => !a ? "hold"
+        : a.startsWith("SELL") ? "sell"
+        : a === "HOLD" ? "hold" : "buy";
+      let html = rows.map(x => {
+        const p = x.scorer_pred_5d_pct;
+        const od = x.off_distribution;
+        const predTxt = p == null ? "—"
+          : ((p >= 0 ? "+" : "") + fmt(p, 1) + "%" + (od ? " *" : ""));
+        return `<tr>
+          <td><strong>${x.ticker}</strong></td>
+          <td>${verdictBadge(x.scorer_verdict)}</td>
+          <td class="num" style="color:${od ? '#8b929d' : scorerColor(p)};">${predTxt}</td>
+          <td><span class="pill ${actCls(x.last_action)}">${x.last_action || '—'}</span></td>
+          <td><span style="color:${sevColor[x.severity] || '#8b929d'};font-weight:bold;">${x.severity}</span></td>
+          <td class="muted" style="font-size:12px;">${x.label || ''}</td>
+        </tr>`;
+      }).join("");
+      if (rows.some(x => x.off_distribution)) {
+        html += `<tr><td colspan="6" class="muted" style="font-size:11px;">* off-distribution — scorer extrapolated past its label support; this conflict is de-weighted, not a real fight</td></tr>`;
+      }
+      tb.innerHTML = html;
+    }
+  } catch (e) {
+    console.error("disagreement:", e);
+  }
+}
+
 // ───────── boot ─────────
 refresh();
 refreshSignals();
@@ -3646,6 +3732,7 @@ refreshDecisionForensics();
 refreshDecisionDrought();
 refreshNewsEdge();
 refreshScorerConfidence();
+refreshDisagreement();
 refreshDataFeed();
 refreshValidation();
 setInterval(refresh, 15_000);
@@ -3669,6 +3756,7 @@ setInterval(refreshDecisionForensics, 60_000);
 setInterval(refreshDecisionDrought, 60_000);
 setInterval(refreshNewsEdge, 300_000);
 setInterval(refreshScorerConfidence, 120_000);
+setInterval(refreshDisagreement, 60_000);
 setInterval(refreshDataFeed, 60_000);
 setInterval(refreshValidation, 120_000);
 showTab(INITIAL_TAB || "trader");

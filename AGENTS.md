@@ -137,11 +137,25 @@ review:
    only advance their "last sent" markers on actual send success. A transient
    openclaw failure retries on the next cycle rather than silently skipping
    the hour or day. If a reviewer adds a "fire-and-forget" path, this property
-   breaks.
+   breaks. `_maybe_daily_close` also skips weekends **and** NYSE full-holiday
+   closes (`market.NYSE_HOLIDAYS_2026`) — both guards `return` *before* touching
+   `_daily_close_sent_for`, so the flag never advances on a non-trading day and
+   the next real trading day still gets its close report. Locked by
+   `tests/test_core_runner.py::TestMaybeDailyClose` (incl.
+   `test_does_not_fire_on_nyse_holiday`).
 
 7. **`paper_trader.db` uses WAL** — any external reader must use
    `PRAGMA journal_mode=WAL` or open the file as `file:...?mode=ro` to avoid
    lock contention with the live writer.
+   *Known concern (not fixed here — too invasive for a surgical pass):* the
+   in-process Flask dashboard runs in a daemon thread but shares the **same**
+   `Store` singleton (and thus the same `sqlite3.Connection`,
+   `check_same_thread=False`) as the runner. Writes are serialized by
+   `Store._lock`; reads (`get_portfolio`, `recent_trades`, `open_positions`,
+   `recent_decisions`, `equity_curve`) are **not**. Concurrent dashboard reads
+   during a runner write are tolerated by WAL but are not strictly
+   connection-safe. A proper fix would give the dashboard its own read-only
+   connection rather than reworking locking on the live writer.
 
 8. **Position uniqueness** — the `positions` table has a *table-wide* UNIQUE
    constraint on `(ticker, type, expiry, strike)` (it is **not** scoped to

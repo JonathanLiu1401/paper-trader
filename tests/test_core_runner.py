@@ -72,6 +72,20 @@ class TestMaybeDailyClose:
         runner._maybe_daily_close()
         assert calls == []
 
+    def test_does_not_fire_on_nyse_holiday(self, monkeypatch):
+        # 2026-05-25 is Memorial Day — a Monday (weekday) full-market close.
+        # 16:10 ET is past the trigger time, so only the holiday guard can
+        # stop the spurious "DAILY CLOSE" post.
+        _patch_now(monkeypatch, _ny(2026, 5, 25, 16, 10))
+        assert _ny(2026, 5, 25, 16, 10).astimezone(NY).weekday() < 5  # is a weekday
+        calls = []
+        monkeypatch.setattr(runner.reporter, "send_daily_close",
+                            lambda: calls.append(1) or True)
+        runner._maybe_daily_close()
+        assert calls == []
+        # Holiday guard must not advance the sent-for flag.
+        assert runner._daily_close_sent_for is None
+
     def test_does_not_fire_before_1605_ET(self, monkeypatch):
         # Thursday 16:04 NY — too early.
         _patch_now(monkeypatch, _ny(2026, 5, 14, 16, 4))

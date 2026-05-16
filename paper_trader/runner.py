@@ -43,6 +43,12 @@ def _maybe_daily_close():
     today = now_ny.date().isoformat()
     if now_ny.weekday() >= 5:
         return  # no weekend close report
+    if now_ny.date() in market.NYSE_HOLIDAYS_2026:
+        # A full-holiday close is not a trading day — emitting a "DAILY CLOSE"
+        # with stale marks and "Trades today 0" is misleading noise. Mirror the
+        # weekend guard: bail before touching _daily_close_sent_for so the flag
+        # stays where it was.
+        return
     if now_ny.hour < DAILY_CLOSE_HOUR_NY or (now_ny.hour == DAILY_CLOSE_HOUR_NY and now_ny.minute < 5):
         return
     if _daily_close_sent_for == today:
