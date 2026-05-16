@@ -3848,19 +3848,6 @@ def model_progress():
         return jsonify({"cycles": [], "error": str(e)})
 
 
-def _holding_days(buy_ts: str | None, sell_ts: str | None) -> float | None:
-    """Calendar days between a round-trip's first BUY and its closing SELL."""
-    if not buy_ts or not sell_ts:
-        return None
-    try:
-        b = datetime.fromisoformat(buy_ts.replace("Z", "+00:00"))
-        s = datetime.fromisoformat(sell_ts.replace("Z", "+00:00"))
-    except Exception:
-        return None
-    dd = (s - b).total_seconds() / 86400.0
-    return round(dd, 2) if dd >= 0 else None
-
-
 @app.route("/api/analytics")
 def analytics_api():
     """Derived portfolio analytics — sector exposure, drawdown, Sharpe, win rate, daily P/L."""
@@ -3933,32 +3920,19 @@ def analytics_api():
 
         # ─── 4. Win rate (round-trips per distinct position) ───
         # A round-trip closes when held qty returns to ≈ 0. P/L = proceeds - cost.
-        # Key by (ticker, type, strike, expiry) so stock and option legs of the
-        # same ticker don't conflate into a single round-trip.
-        per_position: dict[tuple, dict] = {}
-        round_trips: list[float] = []
-        holding_days: list[float] = []  # one entry per closed round-trip
-        for t in trades:
-            typ = t.get("option_type") or "stock"
-            key = (t["ticker"], typ, t.get("strike"), t.get("expiry"))
-            rec = per_position.setdefault(
-                key, {"cost": 0.0, "proceeds": 0.0, "held": 0.0, "first_buy_ts": None})
-            if (t["action"] or "").startswith("BUY"):
-                # Stamp the open time on the first BUY of a fresh round-trip.
-                if abs(rec["held"]) < 1e-4:
-                    rec["first_buy_ts"] = t.get("timestamp")
-                rec["cost"] += t["value"]
-                rec["held"] += t["qty"]
-            elif (t["action"] or "").startswith("SELL"):
-                rec["proceeds"] += t["value"]
-                rec["held"] -= t["qty"]
-                if abs(rec["held"]) < 1e-4:
-                    round_trips.append(rec["proceeds"] - rec["cost"])
-                    hd = _holding_days(rec["first_buy_ts"], t.get("timestamp"))
-                    if hd is not None:
-                        holding_days.append(hd)
-                    rec["cost"] = rec["proceeds"] = rec["held"] = 0.0
-                    rec["first_buy_ts"] = None
+        # Round-trip grouping is delegated to analytics.round_trips so this
+        # endpoint and any future trade-attribution caller share one
+        # implementation instead of drifting hand-maintained copies.
+        # build_round_trips keys by (ticker, type, strike, expiry) — stock and
+        # option legs of the same ticker stay distinct. pnl_usd is rounded to
+        # 4dp there; the win/loss split below uses strict `> 0`, so a sub-cent
+        # rounding artefact reads as a non-win (pinned by test_round_trips).
+        from .analytics.round_trips import build_round_trips
+        _rts = build_round_trips(trades)
+        round_trips: list[float] = [rt["pnl_usd"] for rt in _rts]
+        holding_days: list[float] = [
+            rt["hold_days"] for rt in _rts if rt["hold_days"] is not None
+        ]  # one entry per closed round-trip with a parseable entry/exit ts
 
         wins = [p for p in round_trips if p > 0]
         losses = [p for p in round_trips if p <= 0]

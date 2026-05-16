@@ -94,6 +94,8 @@ review:
 | `test_core_strategy.py` | JSON parse w/ fences + trailing prose, RSI/EMA/MACD math, SELL-exceeds-held blocking, BUY insufficient cash blocking, **ambiguous option close blocking** |
 | `test_core_runner.py` | `_maybe_daily_close` weekend/time gating + once-per-day flag + retry-on-failure, `_maybe_hourly` 3600s gating + retry-on-failure |
 | `test_core_reporter.py` | openclaw missing → False, timeout/nonzero exit → False, trade alert + decision log + portfolio line formatting |
+| `test_round_trips.py` | `build_round_trips` arithmetic: simple/partial/re-entry round-trips, option ×100, distinct (ticker,type,strike,expiry) keys, open-lot exclusion, orphan SELL, zero-cost `pnl_pct=None`, negative/unparseable `hold_days`, sub-cent rounding |
+| `test_core_analytics.py` | `/api/analytics` end-to-end via Flask test client: exact `win_rate_pct` / `profit_factor` / `avg_holding_days` / `realized_pl_usd` / `n_round_trips` for a fixed ledger; open positions excluded; empty ledger → null metrics |
 
 ### Key invariants and constraints
 
@@ -159,6 +161,18 @@ review:
    post a stale same-microsecond row. `equity_curve` still returns ascending
    `{timestamp,total_value,cash,sp500_price}` (no `id` leaked to callers).
    Locked by `tests/test_core_invariants.py::TestSameTimestampOrdering`.
+
+10. **Round-trip aggregation has one home** — `paper_trader/analytics/round_trips.py::build_round_trips`
+   is the single source of truth for closed-round-trip P&L (a round-trip is the
+   slice of same-`(ticker,type,strike,expiry)` trades from qty-leaves-zero to
+   qty-returns-zero; a re-BUY after a full close starts a new one). `analytics_api`
+   (`/api/analytics`) consumes it for `win_rate_pct` / `profit_factor` /
+   `avg_holding_days`; do **not** reintroduce an inline copy here or in a future
+   trade-attribution endpoint — they drift. `pnl_usd` is rounded to 4dp and the
+   win/loss split is strict `> 0`, so a sub-cent artefact reads as a non-win
+   (pinned by `tests/test_round_trips.py::TestEdgeCases::test_subcent_pnl_rounds_to_zero`).
+   The `/api/backtests/compare` win-rate is a **different** metric (per-fill FIFO
+   lot win/loss, stocks only) and intentionally does *not* use this helper.
 
 ### Dashboard API endpoints (port 8090)
 

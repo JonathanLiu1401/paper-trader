@@ -389,6 +389,55 @@ class TestTrainScorer:
         if r1["val_rmse"] == r1["val_rmse"]:  # not NaN
             assert r1["val_rmse"] == pytest.approx(r2["val_rmse"], rel=1e-9)
 
+    def test_scorer_ranks_high_ml_score_above_low(self, tmp_path, monkeypatch):
+        """A higher ml_score (≈ article kw_score) must predict a higher 5d
+        return than a low one when the training data makes ml_score
+        predictive — with mom5 held NEUTRAL so this isolates feature[0].
+
+        ``test_trained_scorer_round_trip`` varies ml_score and mom5 together,
+        so it cannot tell whether the model learned ml_score at all (it could
+        be riding mom5 alone). This test pins every other feature constant and
+        only moves ml_score, exercising the full pipeline
+        (build_features → train → pickle → reload → predict).
+
+        It catches the historical "feature key bug" class (commit 028f94d):
+        a dict-key mismatch / wrong _to_float default that silently collapses
+        ml_score to a constant — the model then can't learn the relationship
+        and the high/low gap vanishes (verified by injecting a dead feature[0]:
+        the assertion fails with v_hi == v_lo). It does NOT catch a *consistent*
+        sign flip — train and predict share build_features, so the model just
+        learns the inverted representation; that is a fundamental property of
+        any train→predict round-trip, not a coverage gap to paper over.
+        """
+        import paper_trader.ml.decision_scorer as ds
+        path = tmp_path / "scorer_mlrank.pkl"
+        monkeypatch.setattr(ds, "SCORER_PATH", path)
+
+        # fwd = ml_score * 1.5; ml_score swept -10..+10; mom5 fixed at 0.0.
+        recs = []
+        for i in range(40):
+            sc = (i - 20) * 0.5  # -10.0 .. +9.5
+            recs.append(_synthetic_outcome(
+                sim_date=f"2025-09-{i+1:02d}", ml_score=sc, mom5=0.0,
+                fwd=sc * 1.5,
+            ))
+        result = train_scorer(recs)
+        assert result["status"] == "ok"
+
+        s = DecisionScorer()
+        assert s.is_trained
+        common = dict(rsi=50.0, macd=0.1, mom5=0.0, mom20=0.0,
+                      regime_mult=1.0, ticker="NVDA")
+        v_hi = s.predict(ml_score=8.0, **common)
+        v_lo = s.predict(ml_score=-8.0, **common)
+        assert math.isfinite(v_hi) and math.isfinite(v_lo)
+        # The >5 gap catches a dead/dropped feature[0] (true spread at ±8 is
+        # 24pp, so a model that actually learned ml_score clears 5 comfortably
+        # while a no-op/constant-feature model gives ~0). Ordering is a cheap
+        # extra guard, not a sign-flip detector (see docstring).
+        assert v_hi > v_lo, f"high ml_score did not rank above low ({v_hi} !> {v_lo})"
+        assert v_hi - v_lo > 5.0, f"ml_score signal too weak: gap={v_hi - v_lo:.2f}"
+
 
 # ─────────────────────── ranking semantics ───────────────────────
 

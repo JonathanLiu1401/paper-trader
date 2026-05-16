@@ -98,6 +98,13 @@ class TestExtractTickers:
         assert "Q1" not in out
         assert "FED" not in out
 
+    def test_cashtag_overrides_noise_filter(self):
+        # `AI` is in _NOT_TICKERS so a bare mention is dropped, but an
+        # explicit cashtag ($AI) is an intentional signal and is kept.
+        # This asymmetry is deliberate — pin it so it isn't "fixed" away.
+        assert "AI" not in signals._extract_tickers("the AI boom continues")
+        assert "AI" in signals._extract_tickers("watching $AI into the print")
+
     def test_empty_string_returns_empty(self):
         assert signals._extract_tickers("") == set()
         assert signals._extract_tickers(None) == set()
