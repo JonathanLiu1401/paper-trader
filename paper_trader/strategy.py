@@ -449,7 +449,8 @@ def _build_payload(snapshot: dict, top_signals: list[dict], sentiments: list[dic
                    watch_prices: dict[str, float | None],
                    futures_prices: dict[str, float | None],
                    sp500: float | None, market_open: bool,
-                   quant_signals: dict[str, dict] | None = None) -> str:
+                   quant_signals: dict[str, dict] | None = None,
+                   self_review_block: str | None = None) -> str:
     now = datetime.now(timezone.utc).isoformat()
     pos_lines = []
     for p in snapshot["positions"]:
@@ -482,6 +483,11 @@ def _build_payload(snapshot: dict, top_signals: list[dict], sentiments: list[dic
 
     sp = f"{sp500:.2f}" if sp500 else "N/A"
 
+    # Behavioural mirror — observational only (advisory; never gates). Placed
+    # right after PORTFOLIO so the trader sees its own track record next to its
+    # current book, before market data biases it.
+    review_section = f"\n{self_review_block}\n" if self_review_block else ""
+
     return f"""TIME (UTC): {now}
 MARKET_OPEN: {market_open}
 S&P 500 BENCHMARK: {sp}
@@ -492,7 +498,7 @@ PORTFOLIO:
   total value: ${snapshot['total_value']:.2f}
   positions:
 {chr(10).join(pos_lines) if pos_lines else '  (none)'}
-
+{review_section}
 WATCHLIST PRICES:
 {chr(10).join(px_lines)}
 
@@ -670,8 +676,29 @@ def decide() -> dict:
     seen_ids = {s["id"] for s in top}
     merged = [a for a in urgent if a["id"] not in seen_ids] + top
 
+    # Behavioural self-review — feed the trader its own track record (payoff
+    # ratio, disposition gap, capital-paralysis state, open-book alpha) so it
+    # can self-correct, exactly as a desk reviews its P&L before trading.
+    # Advisory only; composes the existing pure builders (single source of
+    # truth). Wrapped so a diagnostics failure NEVER blocks a trade — the
+    # failure mode is "no mirror this cycle", never "no decision this cycle".
+    self_review_block: str | None = None
+    try:
+        from .analytics.self_review import build_self_review
+        sr = build_self_review(
+            store.get_portfolio(),
+            store.open_positions(),
+            store.recent_trades(2000),
+            store.recent_decisions(limit=3000),
+            store.equity_curve(limit=5000),
+        )
+        self_review_block = sr.get("prompt_block")
+    except Exception as e:
+        print(f"[strategy] self-review failed (non-fatal): {e}")
+
     payload = _build_payload(snap, merged, sents, watch_px, fut_px, sp500, market_open,
-                             quant_signals=quant_sigs)
+                             quant_signals=quant_sigs,
+                             self_review_block=self_review_block)
     prompt = f"{SYSTEM_PROMPT}\n\n---\nCONTEXT:\n{payload}"
 
     raw = _claude_call(prompt)

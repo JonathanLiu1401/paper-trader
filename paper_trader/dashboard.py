@@ -6142,6 +6142,39 @@ def trade_asymmetry_api():
         return jsonify({"error": str(e)}), 500
 
 
+@app.route("/api/self-review")
+def self_review_api():
+    """The behavioural mirror the live trader now sees in its own prompt.
+
+    Canonical single source (AGENTS.md invariant #10): composes
+    build_trade_asymmetry + build_capital_paralysis + build_open_attribution
+    verbatim — no re-derived P&L — into one report plus the exact
+    `prompt_block` string injected into strategy._build_payload every live
+    decision cycle. Observational only: it states facts and the builders' own
+    calibrated verdicts, issues no directives, imposes no caps, and reaffirms
+    full autonomy in its own preamble — it does not violate the "no hard risk
+    limits / Opus has full autonomy" invariant (#2/#12), exactly as
+    /api/capital-paralysis and /api/liquidity are advisory-only. Exposing it
+    here keeps the dashboard, a future chat single-source and the in-prompt
+    block from ever drifting apart (the inline-copy hazard #10 warns of)."""
+    try:
+        from .analytics.self_review import build_self_review
+        store = get_store()
+        # trades store-native newest-first — build_self_review reverses
+        # internally for the asymmetry consumer, exactly as the two endpoints
+        # above do (build_liquidity wants newest-first, build_round_trips
+        # wants oldest→newest).
+        return jsonify(build_self_review(
+            store.get_portfolio(),
+            store.open_positions(),
+            store.recent_trades(2000),
+            store.recent_decisions(limit=3000),
+            store.equity_curve(limit=5000),
+        ))
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
 # Daily-bar history cache for the news-edge endpoint. Keyed by ticker; daily
 # bars don't change intraday in a way that matters for forward-return analysis
 # of *past* articles, so a generous TTL keeps the endpoint snappy after the
