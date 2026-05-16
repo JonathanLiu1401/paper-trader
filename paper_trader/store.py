@@ -139,8 +139,13 @@ class Store:
             return cur.lastrowid
 
     def recent_trades(self, limit: int = 50) -> list[dict]:
+        # Tie-break on the autoincrement id so rows that share a timestamp
+        # (two writes inside the same microsecond) still come back newest-first
+        # deterministically. Without this, recent_trades(1) — used by
+        # runner._cycle/send_trade_alert right after _execute records the
+        # trade — could surface a stale same-microsecond row.
         rows = self.conn.execute(
-            "SELECT * FROM trades ORDER BY timestamp DESC LIMIT ?", (limit,)
+            "SELECT * FROM trades ORDER BY timestamp DESC, id DESC LIMIT ?", (limit,)
         ).fetchall()
         return [dict(r) for r in rows]
 
@@ -214,7 +219,7 @@ class Store:
 
     def recent_decisions(self, limit: int = 20) -> list[dict]:
         rows = self.conn.execute(
-            "SELECT * FROM decisions ORDER BY timestamp DESC LIMIT ?", (limit,)
+            "SELECT * FROM decisions ORDER BY timestamp DESC, id DESC LIMIT ?", (limit,)
         ).fetchall()
         return [dict(r) for r in rows]
 
@@ -230,10 +235,13 @@ class Store:
     def equity_curve(self, limit: int = 500) -> list[dict]:
         # Most recent `limit` points, returned in ascending order.
         rows = self.conn.execute(
-            "SELECT timestamp, total_value, cash, sp500_price FROM equity_curve "
-            "ORDER BY timestamp DESC LIMIT ?", (limit,)
+            "SELECT id, timestamp, total_value, cash, sp500_price FROM equity_curve "
+            "ORDER BY timestamp DESC, id DESC LIMIT ?", (limit,)
         ).fetchall()
-        return [dict(r) for r in reversed(rows)]
+        # reversed() → ascending by (timestamp, id): same-microsecond points
+        # keep insertion order instead of an arbitrary sqlite ordering.
+        return [{k: r[k] for k in ("timestamp", "total_value", "cash", "sp500_price")}
+                for r in reversed(rows)]
 
     def close(self):
         self.conn.close()

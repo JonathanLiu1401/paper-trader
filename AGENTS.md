@@ -143,6 +143,15 @@ review:
    an existing open lot blends the avg_cost; a SELL that zeros out qty marks
    the row closed. A re-BUY after close creates a new row.
 
+9. **Deterministic ordering** — `store.recent_trades`, `recent_decisions`, and
+   `equity_curve` order by `(timestamp DESC, id DESC)`. The `id` tiebreaker is
+   load-bearing: two writes inside the same microsecond collide on `timestamp`
+   alone, and `runner._cycle` reads `recent_trades(1)` immediately after
+   `_execute` records a trade — without the tiebreaker `send_trade_alert` could
+   post a stale same-microsecond row. `equity_curve` still returns ascending
+   `{timestamp,total_value,cash,sp500_price}` (no `id` leaked to callers).
+   Locked by `tests/test_core_invariants.py::TestSameTimestampOrdering`.
+
 ### Dashboard API endpoints (port 8090)
 
 All endpoints serve `application/json`. CORS is wide open (`*`) so the
