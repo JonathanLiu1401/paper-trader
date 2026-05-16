@@ -472,6 +472,17 @@ TEMPLATE = r"""
       <span></span><span></span><span></span>
     </button>
   </nav>
+  <!-- ─── Global stale-process banner (new 2026-05-16, agent 4) ───
+       Always-on, page-wide. Per-panel fetchMaybeStale only degrades the
+       endpoints a stale boot is missing; nothing told the operator the
+       whole process is behind HEAD — so the self-review mirror silently
+       not being injected (exactly the live state on 2026-05-16) was
+       invisible from the trader page. Polls /api/build-info. -->
+  <div id="global-stale-banner" style="display:none;background:#b71c1c;color:#fff;
+       padding:9px 16px;font-size:13px;font-weight:600;text-align:center;
+       letter-spacing:0.2px;border-bottom:1px solid #7f0000;">
+    <span id="global-stale-text">⚠ Paper-trader is running stale code — restart to apply committed fixes.</span>
+  </div>
   <div class="nav-drawer" id="navDrawer">
     <div class="nav-drawer-header">◈ TRADING STACK</div>
     <a href="/">Command Center</a>
@@ -1000,6 +1011,45 @@ TEMPLATE = r"""
         <thead><tr>
           <th>ticker</th><th class="num">pos %</th><th class="num">SPY %</th>
           <th class="num">alpha %</th><th class="num">excess $</th>
+        </tr></thead>
+        <tbody><tr><td colspan="5" class="muted">loading…</td></tr></tbody>
+      </table>
+    </div>
+
+    <!-- ─── Overtrading / re-entry churn (new 2026-05-16, agent 4) ─── -->
+    <div class="card" id="churn-card" style="margin-bottom:18px;">
+      <h2 style="display:flex;justify-content:space-between;align-items:center;">
+        <span>Overtrading &amp; churn <span class="muted" style="font-size:11px;text-transform:none;letter-spacing:normal;font-weight:normal;">— how often it re-buys a name it just closed, and how fast</span></span>
+        <span id="churn-state" style="font-size:12px;padding:3px 10px;border-radius:4px;background:#1f2126;color:#8b929d;">—</span>
+      </h2>
+      <div class="muted" id="churn-headline" style="font-size:12px;margin-bottom:12px;">loading…</div>
+      <div class="stat-row" style="margin-bottom:14px;">
+        <div class="stat"><div class="l">fast re-entries</div><div class="v" id="churn-reentry">—</div></div>
+        <div class="stat"><div class="l">round-trips / day</div><div class="v" id="churn-rtpd">—</div></div>
+        <div class="stat"><div class="l">median hold</div><div class="v" id="churn-hold">—</div></div>
+        <div class="stat"><div class="l">sub-day trips</div><div class="v" id="churn-subday">—</div></div>
+        <div class="stat"><div class="l">loss in &lt;1d trips</div><div class="v" id="churn-lossconc">—</div></div>
+      </div>
+      <div style="font-size:12px;color:#dde1e7;margin-bottom:6px;text-transform:uppercase;letter-spacing:0.5px;">Fastest same-name re-entries</div>
+      <table id="churn-events" style="font-size:12px;">
+        <thead><tr>
+          <th>ticker</th><th class="num">gap (d)</th><th class="num">prior P/L $</th><th>closed → re-bought</th>
+        </tr></thead>
+        <tbody><tr><td colspan="4" class="muted">loading…</td></tr></tbody>
+      </table>
+    </div>
+
+    <!-- ─── Thesis drift — entry rationale vs reality (new 2026-05-16, agent 4) ─── -->
+    <div class="card" id="tdrift-card" style="margin-bottom:18px;">
+      <h2 style="display:flex;justify-content:space-between;align-items:center;">
+        <span>Thesis drift <span class="muted" style="font-size:11px;text-transform:none;letter-spacing:normal;font-weight:normal;">— is the reason each position was opened for still true?</span></span>
+        <span id="tdrift-state" style="font-size:12px;padding:3px 10px;border-radius:4px;background:#1f2126;color:#8b929d;">—</span>
+      </h2>
+      <div class="muted" id="tdrift-headline" style="font-size:12px;margin-bottom:12px;">loading…</div>
+      <table id="tdrift-rows" style="font-size:12px;">
+        <thead><tr>
+          <th>ticker</th><th>health</th><th class="num">P/L %</th>
+          <th class="num">held (d)</th><th>entry rationale → current drift</th>
         </tr></thead>
         <tbody><tr><td colspan="5" class="muted">loading…</td></tr></tbody>
       </table>
@@ -3921,6 +3971,110 @@ async function refreshTradeAsymmetry() {
   dg.style.color = (r.disposition_gap_days != null && r.disposition_gap_days < 0) ? "#ff4455" : _plColor(r.disposition_gap_days);
 }
 
+// ───────── Overtrading/churn + thesis-drift (new 2026-05-16, agent 4) ─────────
+// Same stale-degrade contract as the behavioural cluster above: a process
+// that booted before these endpoints' commit 404s them → explicit
+// "restart to apply" instead of a silent failure.
+async function refreshChurn() {
+  const r = await fetchMaybeStale("/api/churn");
+  if (r.__unavailable) { markStale("churn-state", "churn-headline", "Overtrading/churn endpoint"); return; }
+  if (r.error) { document.getElementById("churn-headline").textContent = "error: " + r.error; return; }
+  const vmap = {
+    CHURNING:        ["#b71c1c", "#ffffff"],
+    ACTIVE_TURNOVER: ["#b8860b", "#000000"],
+    BUY_AND_HOLD:    ["#1b5e20", "#a5d6a7"],
+  };
+  const stateBadge = { STABLE: null, EMERGING: ["#3a2a00", "#ffd479"], NO_DATA: ["#1f2126", "#8b929d"] };
+  const sEl = document.getElementById("churn-state");
+  if (r.state === "STABLE" && r.verdict) {
+    const [bg, fg] = vmap[r.verdict] || stateBadge.NO_DATA;
+    sEl.textContent = r.verdict.replace(/_/g, " ");
+    sEl.style.background = bg; sEl.style.color = fg;
+  } else {
+    const [bg, fg] = stateBadge[r.state] || stateBadge.NO_DATA;
+    sEl.textContent = r.state; sEl.style.background = bg; sEl.style.color = fg;
+  }
+  document.getElementById("churn-headline").textContent = r.headline || "";
+  const re = document.getElementById("churn-reentry");
+  re.textContent = r.reentry_rate_pct != null ? r.n_reentries + " (" + fmt(r.reentry_rate_pct, 1) + "%)" : "—";
+  re.style.color = (r.reentry_rate_pct != null && r.reentry_rate_pct >= 25) ? "#ff4455" : "#dde1e7";
+  document.getElementById("churn-rtpd").textContent = r.round_trips_per_day != null ? fmt(r.round_trips_per_day, 2) : "—";
+  document.getElementById("churn-hold").textContent = r.median_hold_days != null ? fmt(r.median_hold_days, 2) + "d" : "—";
+  document.getElementById("churn-subday").textContent = r.sub_day_trip_pct != null ? fmt(r.sub_day_trip_pct, 1) + "%" : "—";
+  const lc = document.getElementById("churn-lossconc");
+  lc.textContent = r.churn_loss_concentration_pct != null ? fmt(r.churn_loss_concentration_pct, 1) + "%" : "—";
+  lc.style.color = (r.churn_loss_concentration_pct != null && r.churn_loss_concentration_pct >= 50) ? "#ff4455" : "#dde1e7";
+  const tb = document.querySelector("#churn-events tbody");
+  const evs = r.reentry_events || [];
+  if (!evs.length) {
+    tb.innerHTML = '<tr><td colspan="4" class="muted">no fast same-name re-entries — clean turnover</td></tr>';
+  } else {
+    tb.innerHTML = evs.map(e => {
+      const p = e.prior_pnl_usd;
+      const pc = p == null ? "#8b929d" : (p > 0 ? "#4caf50" : p < 0 ? "#ff4455" : "#dde1e7");
+      return '<tr><td>' + e.ticker + '</td><td class="num">' + fmt(e.gap_days, 2) +
+        '</td><td class="num" style="color:' + pc + '">' +
+        (p == null ? "—" : _sgn(p) + "$" + fmt(Math.abs(p))) +
+        '</td><td>' + (e.prior_exit_ts || "").slice(0, 10) + ' → ' +
+        (e.next_entry_ts || "").slice(0, 10) + '</td></tr>';
+    }).join("");
+  }
+}
+
+async function refreshThesisDrift() {
+  const r = await fetchMaybeStale("/api/thesis-drift");
+  if (r.__unavailable) { markStale("tdrift-state", "tdrift-headline", "Thesis-drift endpoint"); return; }
+  if (r.error) { document.getElementById("tdrift-headline").textContent = "error: " + r.error; return; }
+  const sEl = document.getElementById("tdrift-state");
+  const c = r.counts || {};
+  if (r.state === "NO_DATA") {
+    sEl.textContent = "NO DATA"; sEl.style.background = "#1f2126"; sEl.style.color = "#8b929d";
+  } else if ((c.BROKEN || 0) > 0) {
+    sEl.textContent = c.BROKEN + " BROKEN"; sEl.style.background = "#b71c1c"; sEl.style.color = "#fff";
+  } else if ((c.WEAKENING || 0) > 0) {
+    sEl.textContent = c.WEAKENING + " WEAKENING"; sEl.style.background = "#b8860b"; sEl.style.color = "#000";
+  } else {
+    sEl.textContent = "ALL INTACT"; sEl.style.background = "#1b5e20"; sEl.style.color = "#a5d6a7";
+  }
+  document.getElementById("tdrift-headline").textContent = r.headline || "";
+  const tb = document.querySelector("#tdrift-rows tbody");
+  const ps = r.positions || [];
+  if (!ps.length) {
+    tb.innerHTML = '<tr><td colspan="5" class="muted">no open positions</td></tr>';
+    return;
+  }
+  const hmap = { BROKEN: ["#b71c1c", "#fff"], WEAKENING: ["#b8860b", "#000"], INTACT: ["#1b5e20", "#a5d6a7"] };
+  tb.innerHTML = ps.map(p => {
+    const [hb, hf] = hmap[p.health] || ["#1f2126", "#8b929d"];
+    const reason = p.entry_reason || "—";
+    const reasonShort = reason.length > 90 ? reason.slice(0, 90) + "…" : reason;
+    const drift = (p.drift_reasons || []).join("; ");
+    const plc = p.pl_pct == null ? "#8b929d" : (p.pl_pct > 0 ? "#4caf50" : p.pl_pct < 0 ? "#ff4455" : "#dde1e7");
+    return '<tr><td>' + p.ticker + '</td>' +
+      '<td><span style="padding:2px 7px;border-radius:3px;font-size:11px;background:' + hb + ';color:' + hf + '">' + p.health + '</span></td>' +
+      '<td class="num" style="color:' + plc + '">' + (p.pl_pct == null ? "—" : _sgn(p.pl_pct) + fmt(p.pl_pct, 2) + "%") + '</td>' +
+      '<td class="num">' + (p.days_held == null ? "—" : fmt(p.days_held, 1)) + '</td>' +
+      '<td title="' + reason.replace(/"/g, "&quot;") + '"><span class="muted">' + reasonShort + '</span><br><span style="color:#dde1e7;">↳ ' + (drift || "—") + '</span></td></tr>';
+  }).join("");
+}
+
+async function refreshGlobalStale() {
+  try {
+    const r = await fetch(API_PREFIX + "/api/build-info").then(r => r.json());
+    const el = document.getElementById("global-stale-banner");
+    const tx = document.getElementById("global-stale-text");
+    if (r && (r.stale || (r.behind && r.behind > 0))) {
+      tx.textContent = "⚠ Paper-trader is running stale code — booted " +
+        (r.boot_sha || "?") + ", HEAD is " + (r.head_sha || "?") +
+        (r.behind ? " (" + r.behind + " commit" + (r.behind === 1 ? "" : "s") + " behind)" : "") +
+        ". Committed fixes (incl. the self-review mirror & newest endpoints) are NOT applied until paper-trader is restarted.";
+      el.style.display = "block";
+    } else {
+      el.style.display = "none";
+    }
+  } catch (e) { /* build-info unreachable — leave banner hidden */ }
+}
+
 async function refreshCapitalParalysis() {
   const r = await fetchMaybeStale("/api/capital-paralysis");
   if (r.__unavailable) { markStale("cp-state", "cp-headline", "Capital-paralysis endpoint"); return; }
@@ -4171,6 +4325,9 @@ refreshOpenAttribution();
 refreshDecisionReliability();
 refreshFundedSuggestions();
 refreshSignalFollowThrough();
+refreshChurn();
+refreshThesisDrift();
+refreshGlobalStale();
 setInterval(refresh, 15_000);
 setInterval(refreshSignals, 30_000);
 setInterval(refreshAnalytics, 30_000);
@@ -4201,6 +4358,9 @@ setInterval(refreshOpenAttribution, 60_000);
 setInterval(refreshDecisionReliability, 60_000);
 setInterval(refreshFundedSuggestions, 45_000);
 setInterval(refreshSignalFollowThrough, 300_000);
+setInterval(refreshChurn, 60_000);
+setInterval(refreshThesisDrift, 60_000);
+setInterval(refreshGlobalStale, 60_000);
 showTab(INITIAL_TAB || "trader");
 </script>
 </div><!-- /.page-content -->
@@ -6206,6 +6366,76 @@ def trade_asymmetry_api():
         # Same trades convention as /api/analytics: oldest → newest.
         trades = list(reversed(store.recent_trades(2000)))
         return jsonify(build_trade_asymmetry(trades))
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/churn")
+def churn_api():
+    """Overtrading & same-name re-entry churn — the turnover question.
+
+    /api/analytics shows raw aggregates; /api/trade-asymmetry grades the
+    *payoff* pathology (DISPOSITION_BLEED, breakeven-vs-actual win-rate).
+    Neither measures how often the book re-buys a name it just fully
+    closed (the live NVDA→LITE→NVDA shape on 2026-05-16) nor the
+    round-trips-per-active-day cadence. This composes the single source of
+    truth (build_round_trips, AGENTS.md #10 — no re-derived P&L) into the
+    fast-re-entry count/rate, cadence, sub-day-loss concentration, and a
+    CHURNING / ACTIVE_TURNOVER / BUY_AND_HOLD verdict withheld until
+    n≥20 round-trips (trade_asymmetry STABLE idiom). Advisory only — never
+    gates Opus, adds no caps (AGENTS.md #2/#12)."""
+    try:
+        from .analytics.churn import build_churn
+        store = get_store()
+        # Same trades convention as /api/analytics & /api/trade-asymmetry:
+        # oldest → newest (build_round_trips reads in sequence).
+        trades = list(reversed(store.recent_trades(2000)))
+        return jsonify(build_churn(trades))
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/thesis-drift")
+def thesis_drift_api():
+    """Entry-thesis vs current-reality, per open position.
+
+    /api/position-thesis fuses *current* signals; /api/suggestions
+    re-derives an action from scratch. Neither re-tests a holding against
+    *the reason it was opened for* — which is sitting verbatim in the
+    opening fill's trades.reason. This anchors each open position on its
+    own opening BUY rationale (invariant #8: the BUY nearest opened_at is
+    this lot's opener even on a re-entered name) and grades INTACT /
+    WEAKENING / BROKEN off objective, deterministic inputs (P/L since
+    entry, hold time, and optional live quant/news). Advisory only —
+    never gates Opus, adds no caps (AGENTS.md #2/#12)."""
+    try:
+        from .analytics.thesis_drift import build_thesis_drift
+        store = get_store()
+        positions = store.open_positions()
+        trades = store.recent_trades(2000)
+        signals = None
+        try:
+            tickers = sorted({p["ticker"] for p in positions
+                              if p.get("ticker")})
+            if tickers:
+                from .strategy import get_quant_signals_live
+                quant = get_quant_signals_live(tickers) or {}
+                news = _ticker_news_pulse(tickers, hours=24)
+                signals = {}
+                for tk in tickers:
+                    q = quant.get(tk, {}) or {}
+                    nrec = news.get(tk.upper(), {}) or {}
+                    signals[tk] = {
+                        "rsi": q.get("RSI"),
+                        "macd": q.get("MACD"),
+                        "mom_5d": q.get("mom_5d"),
+                        "mom_20d": q.get("mom_20d"),
+                        "news_count": nrec.get("n", 0),
+                        "news_urgent": bool(nrec.get("urgent", 0)),
+                    }
+        except Exception:
+            signals = None  # builder degrades to price-only health
+        return jsonify(build_thesis_drift(positions, trades, signals))
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
