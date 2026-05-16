@@ -230,6 +230,158 @@ class TestSendDailyClosePnlReal:
         assert "$-449.50" not in body      # option ×100 not dropped
 
 
+class TestBehaviouralBlock:
+    """`reporter._behavioural_block()` composes `build_trader_scorecard`
+    *verbatim* (single source of truth, AGENTS.md invariant #10 — it must
+    never re-derive a verdict) into a compact Discord block, and follows the
+    reporter's failure contract: a builder/store fault degrades to an empty
+    string ('no behavioural block'), never an exception ('no Discord
+    summary'). It mirrors the unified `_fetch_scorecard` chat-line contract:
+    NO_DATA / ERROR / None state is suppressed; a mature verdict is shown."""
+
+    _SCORECARD = {
+        "state": "FLAGS_PRESENT",
+        "headline": "4 of 5 behavioural checks flagging: "
+                    "PAYOFF_TRAP, CHURNING, PINNED, SELECTION_DRAG.",
+        "focus": {
+            "name": "trade_asymmetry",
+            "label": "PAYOFF_TRAP",
+            "theme": "EXIT_DISCIPLINE",
+            "headline": "Payoff 0.15:1 vs 0.83 breakeven — negative "
+                        "expectancy; the desk is in a payoff trap.",
+        },
+        "concordance": [
+            {"theme": "EXIT_DISCIPLINE", "count": 2,
+             "labels": ["PAYOFF_TRAP", "CHURNING"],
+             "checks": ["trade_asymmetry", "churn"]},
+        ],
+        "flags": [], "checks": [], "n_flags": 4, "n_ok": 1,
+    }
+
+    def _patch_builder(self, monkeypatch, ret=None, raises=False):
+        import paper_trader.analytics.trader_scorecard as tsc
+
+        def fake(*a, **k):
+            if raises:
+                raise RuntimeError("builder boom")
+            return ret
+
+        monkeypatch.setattr(tsc, "build_trader_scorecard", fake)
+        fake_store = MagicMock()
+        fake_store.get_portfolio.return_value = {"total_value": 970.0,
+                                                 "cash": 6.0}
+        fake_store.open_positions.return_value = []
+        fake_store.recent_trades.return_value = []
+        fake_store.recent_decisions.return_value = []
+        fake_store.equity_curve.return_value = []
+        monkeypatch.setattr(reporter, "get_store", lambda: fake_store)
+        return fake_store
+
+    def test_composes_state_headline_focus_concordance_verbatim(
+            self, monkeypatch):
+        self._patch_builder(monkeypatch, ret=self._SCORECARD)
+        block = reporter._behavioural_block()
+        # State surfaced.
+        assert "FLAGS_PRESENT" in block
+        # Headline forwarded verbatim — not re-summarised.
+        assert ("4 of 5 behavioural checks flagging: "
+                "PAYOFF_TRAP, CHURNING, PINNED, SELECTION_DRAG.") in block
+        # Highest-precedence focus: builder name + its own headline verbatim.
+        assert "trade_asymmetry" in block
+        assert ("Payoff 0.15:1 vs 0.83 breakeven — negative expectancy; "
+                "the desk is in a payoff trap.") in block
+        # Concordance: the factual count + theme + the builders' own labels.
+        assert "EXIT_DISCIPLINE" in block
+        assert "PAYOFF_TRAP" in block and "CHURNING" in block
+
+    def test_empty_string_when_state_no_data(self, monkeypatch):
+        self._patch_builder(monkeypatch, ret={"state": "NO_DATA",
+                                              "headline": "No mature "
+                                              "behavioural history yet."})
+        assert reporter._behavioural_block() == ""
+
+    def test_empty_string_when_builder_raises(self, monkeypatch):
+        # Never raises — the failure mode is 'no block', never 'no summary'.
+        self._patch_builder(monkeypatch, raises=True)
+        assert reporter._behavioural_block() == ""
+
+    def test_aligned_healthy_is_shown(self, monkeypatch):
+        # A clean desk is also worth telling the operator (mirrors the
+        # unified _fetch_scorecard contract: only NO_DATA/ERROR suppressed).
+        self._patch_builder(monkeypatch, ret={
+            "state": "ALIGNED_HEALTHY",
+            "headline": "All 3 mature behavioural checks healthy.",
+            "focus": None, "concordance": [],
+        })
+        block = reporter._behavioural_block()
+        assert "ALIGNED_HEALTHY" in block
+        assert "All 3 mature behavioural checks healthy." in block
+
+
+class TestSendHourlyBehavioural:
+    """The behavioural block is appended to the hourly summary, but a builder
+    fault must never suppress the summary itself (reporter failure contract)."""
+
+    def _wire(self, monkeypatch, scorecard_ret=None, scorecard_raises=False):
+        captured: list[str] = []
+        monkeypatch.setattr(reporter, "_send",
+                            lambda msg: captured.append(msg) or True)
+        monkeypatch.setattr(reporter.market, "benchmark_sp500", lambda: None)
+        fake_store = MagicMock()
+        fake_store.get_portfolio.return_value = {"total_value": 970.0,
+                                                 "cash": 6.0}
+        fake_store.open_positions.return_value = []
+        fake_store.recent_trades.return_value = []
+        fake_store.recent_decisions.return_value = []
+        fake_store.equity_curve.return_value = []
+        monkeypatch.setattr(reporter, "get_store", lambda: fake_store)
+        import paper_trader.analytics.trader_scorecard as tsc
+
+        def fake(*a, **k):
+            if scorecard_raises:
+                raise RuntimeError("builder boom")
+            return scorecard_ret
+
+        monkeypatch.setattr(tsc, "build_trader_scorecard", fake)
+        return captured
+
+    def test_hourly_includes_behavioural_block_when_flags_present(
+            self, monkeypatch):
+        captured = self._wire(monkeypatch, scorecard_ret={
+            "state": "FLAGS_PRESENT",
+            "headline": "2 of 5 behavioural checks flagging: CHURNING, PINNED.",
+            "focus": {"name": "churn", "label": "CHURNING",
+                      "theme": "EXIT_DISCIPLINE",
+                      "headline": "0.26d median hold — churning."},
+            "concordance": [],
+        })
+        assert reporter.send_hourly_summary() is True
+        body = captured[0]
+        # Normal summary still intact.
+        assert "Equity" in body and "$970.00" in body
+        # Behavioural verdict surfaced verbatim.
+        assert "2 of 5 behavioural checks flagging: CHURNING, PINNED." in body
+        assert "0.26d median hold — churning." in body
+
+    def test_hourly_still_sends_when_builder_raises(self, monkeypatch):
+        captured = self._wire(monkeypatch, scorecard_raises=True)
+        # Summary must still send — builder fault degrades to no block.
+        assert reporter.send_hourly_summary() is True
+        body = captured[0]
+        assert "Equity" in body and "$970.00" in body
+
+    def test_daily_close_includes_behavioural_block(self, monkeypatch):
+        captured = self._wire(monkeypatch, scorecard_ret={
+            "state": "FLAGS_PRESENT",
+            "headline": "1 of 5 behavioural checks flagging: PAYOFF_TRAP.",
+            "focus": None, "concordance": [],
+        })
+        assert reporter.send_daily_close() is True
+        body = captured[0]
+        assert "DAILY CLOSE" in body
+        assert "1 of 5 behavioural checks flagging: PAYOFF_TRAP." in body
+
+
 class TestPortfolioLines:
     def test_stock_line_format(self):
         positions = [{

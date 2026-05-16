@@ -81,6 +81,65 @@ def send_decision_log(summary: dict) -> bool:
     return _send("\n".join(parts))
 
 
+def _behavioural_block() -> str:
+    """Compose the behavioural verdict-alignment scorecard *verbatim* into a
+    compact Discord block for the hourly / daily-close report.
+
+    The trading stack has ~24 behavioural builders and ~30 endpoints, all of
+    which the operator only ever sees on a dashboard they don't open. The
+    operator lives in Discord. This routes the *synthesis* (the scorecard's
+    own router verdict — does ≥1 independent behavioural check flag a problem,
+    and do any concur on a theme) to the surface they actually read.
+
+    Single source of truth (AGENTS.md invariant #10): it calls
+    ``build_trader_scorecard`` with the exact same store reads as
+    ``/api/scorecard`` and forwards the builder's *own* headline / focus /
+    concordance verbatim — it re-derives no verdict. Observational only,
+    never gates Opus, adds no caps (invariants #2/#12 — the ``self_review`` /
+    ``scorecard`` precedent).
+
+    Failure contract mirrors the rest of ``reporter``: any builder/store
+    fault degrades to ``""`` ("no behavioural block this report"), **never**
+    an exception ("no Discord summary this report"). NO_DATA / ERROR / None
+    is suppressed (mirrors the unified ``_fetch_scorecard`` chat-line
+    contract); a mature verdict — including ALIGNED_HEALTHY — is shown.
+    """
+    try:
+        from .analytics.trader_scorecard import build_trader_scorecard
+        store = get_store()
+        sc = build_trader_scorecard(
+            store.get_portfolio(),
+            store.open_positions(),
+            store.recent_trades(2000),
+            store.recent_decisions(limit=3000),
+            store.equity_curve(limit=5000),
+        )
+        if not isinstance(sc, dict):
+            return ""
+        state = sc.get("state")
+        headline = sc.get("headline")
+        if state in (None, "NO_DATA", "ERROR") or not headline:
+            return ""
+        lines = [f"**BEHAVIOURAL** ◈ {state}", f"> {headline}"]
+        focus = sc.get("focus")
+        if isinstance(focus, dict) and focus.get("headline"):
+            lines.append(
+                f"> look first — {focus.get('name')}: {focus['headline']}"
+            )
+        for n in (sc.get("concordance") or [])[:2]:
+            if not isinstance(n, dict):
+                continue
+            labels = ", ".join(n.get("labels") or [])
+            lines.append(
+                f"> concur — {n.get('count')} checks on "
+                f"{n.get('theme')}: {labels}"
+            )
+        return "\n".join(lines)
+    except Exception as e:
+        print(f"[reporter] behavioural block skipped: {e}")
+        return ""
+
+
 def _portfolio_lines(positions: list[dict]) -> list[str]:
     lines = []
     for p in positions:
@@ -127,6 +186,9 @@ def send_hourly_summary() -> bool:
         + "\n".join(trade_lines)
         + "\n```"
     )
+    bx = _behavioural_block()
+    if bx:
+        body += "\n" + bx
     return _send(body)
 
 
@@ -164,4 +226,7 @@ def send_daily_close() -> bool:
         + ("\n".join(_portfolio_lines(positions)) or "  (none)")
         + "\n```"
     )
+    bx = _behavioural_block()
+    if bx:
+        body += "\n" + bx
     return _send(body)
