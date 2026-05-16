@@ -1045,6 +1045,24 @@ TEMPLATE = r"""
       </table>
     </div>
 
+    <!-- ─── Signal follow-through — is the trader using its own news edge? (new 2026-05-16, agent 4) ─── -->
+    <div class="card" id="sft-card" style="margin-bottom:18px;">
+      <h2 style="display:flex;justify-content:space-between;align-items:center;">
+        <span>Signal follow-through <span class="muted" style="font-size:11px;text-transform:none;letter-spacing:normal;font-weight:normal;">— did it act on the news it saw, and did acting pay (vs SPY)?</span></span>
+        <span id="sft-state" style="font-size:12px;padding:3px 10px;border-radius:4px;background:#1f2126;color:#8b929d;">—</span>
+      </h2>
+      <div class="muted" id="sft-headline" style="font-size:12px;margin-bottom:12px;">loading…</div>
+      <div class="stat-row" style="margin-bottom:14px;">
+        <div class="stat"><div class="l">follow-through</div><div class="v" id="sft-ft">—</div></div>
+        <div class="stat"><div class="l">acted / ignored</div><div class="v" id="sft-ai">—</div></div>
+        <div class="stat"><div class="l">selection edge (ref)</div><div class="v" id="sft-edge">—</div></div>
+        <div class="stat"><div class="l">acted abn% @ref</div><div class="v" id="sft-acted">—</div></div>
+        <div class="stat"><div class="l">ignored abn% @ref</div><div class="v" id="sft-ign">—</div></div>
+        <div class="stat"><div class="l">resolved / signals</div><div class="v" id="sft-n">—</div></div>
+      </div>
+      <div class="muted" id="sft-meta" style="font-size:12px;">—</div>
+    </div>
+
     <!-- ─── Sector Pulse ─── -->
     <div class="card" style="margin-bottom:18px;">
       <h2 style="display:flex;justify-content:space-between;align-items:center;">
@@ -4074,6 +4092,54 @@ async function refreshFundedSuggestions() {
     </tr>`).join("") : `<tr><td colspan="6" class="muted">no actionable BUY/ADD ideas</td></tr>`;
 }
 
+// ───────── Signal follow-through — does it use its own news edge? (new 2026-05-16, agent 4) ─────────
+async function refreshSignalFollowThrough() {
+  const r = await fetchMaybeStale("/api/signal-followthrough");
+  if (r.__unavailable) { markStale("sft-state", "sft-headline", "Signal-follow-through endpoint"); return; }
+  if (r.error) { document.getElementById("sft-headline").textContent = "error: " + r.error; return; }
+  const smap = {
+    EXPLOITING_SIGNALS: ["#1b5e20", "#a5d6a7"],
+    NEUTRAL_USE:        ["#b8860b", "#000000"],
+    LOW_ACTIVITY:       ["#3a2a00", "#ffd479"],
+    IGNORING_FEED:      ["#b71c1c", "#ffffff"],
+    MISUSING_SIGNALS:   ["#b71c1c", "#ffffff"],
+    INSUFFICIENT:       ["#1f2126", "#8b929d"],
+    NO_DATA:            ["#1f2126", "#8b929d"],
+    ERROR:              ["#b71c1c", "#ffffff"],
+  };
+  const [bg, fg] = smap[r.verdict] || smap.NO_DATA;
+  const sEl = document.getElementById("sft-state");
+  sEl.textContent = (r.verdict || "—").replace(/_/g, " ");
+  sEl.style.background = bg; sEl.style.color = fg;
+  document.getElementById("sft-headline").textContent = r.verdict_reason || "";
+  const ft = document.getElementById("sft-ft");
+  ft.textContent = r.follow_through_rate_pct != null ? fmt(r.follow_through_rate_pct, 1) + "%" : "—";
+  ft.style.color = r.follow_through_rate_pct == null ? "#8b929d"
+                 : r.follow_through_rate_pct < 5 ? "#ff4455"
+                 : r.follow_through_rate_pct < 25 ? "#ffa726" : "#4caf50";
+  document.getElementById("sft-ai").textContent =
+    (r.n_acted != null ? r.n_acted : "—") + " / " + (r.n_ignored != null ? r.n_ignored : "—");
+  const ed = document.getElementById("sft-edge");
+  ed.textContent = r.selection_edge_pct != null ? _sgn(r.selection_edge_pct) + fmt(r.selection_edge_pct, 2) + " pp" : "—";
+  ed.style.color = _plColor(r.selection_edge_pct);
+  const ref = String(r.reference_horizon || 3);
+  const acted = (r.acted || {})[ref] || {}, ign = (r.ignored || {})[ref] || {};
+  const aEl = document.getElementById("sft-acted");
+  aEl.textContent = acted.mean_abnormal_pct != null ? _sgn(acted.mean_abnormal_pct) + fmt(acted.mean_abnormal_pct, 2) + "%" : "—";
+  aEl.style.color = _plColor(acted.mean_abnormal_pct);
+  const iEl = document.getElementById("sft-ign");
+  iEl.textContent = ign.mean_abnormal_pct != null ? _sgn(ign.mean_abnormal_pct) + fmt(ign.mean_abnormal_pct, 2) + "%" : "—";
+  iEl.style.color = _plColor(ign.mean_abnormal_pct);
+  document.getElementById("sft-n").textContent =
+    (r.n_resolved != null ? r.n_resolved : "—") + " / " + (r.n_signals != null ? r.n_signals : "—");
+  document.getElementById("sft-meta").textContent =
+    "ref " + (r.reference_horizon != null ? r.reference_horizon + "d" : "—")
+    + " · " + (r.n_decisions != null ? r.n_decisions : "—") + " decisions"
+    + " · " + (r.n_tickers_priced != null ? r.n_tickers_priced : "—") + " tickers priced"
+    + (r.spy_adjusted ? " · SPY-adjusted" : " · raw only")
+    + (r.lookback_days != null ? " · " + r.lookback_days + "d lookback" : "");
+}
+
 // ───────── boot ─────────
 refresh();
 refreshSignals();
@@ -4104,6 +4170,7 @@ refreshCapitalParalysis();
 refreshOpenAttribution();
 refreshDecisionReliability();
 refreshFundedSuggestions();
+refreshSignalFollowThrough();
 setInterval(refresh, 15_000);
 setInterval(refreshSignals, 30_000);
 setInterval(refreshAnalytics, 30_000);
@@ -4133,6 +4200,7 @@ setInterval(refreshCapitalParalysis, 45_000);
 setInterval(refreshOpenAttribution, 60_000);
 setInterval(refreshDecisionReliability, 60_000);
 setInterval(refreshFundedSuggestions, 45_000);
+setInterval(refreshSignalFollowThrough, 300_000);
 showTab(INITIAL_TAB || "trader");
 </script>
 </div><!-- /.page-content -->
@@ -6344,6 +6412,68 @@ def funded_suggestions_api():
         return jsonify(out)
     except Exception as e:
         return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/signal-followthrough")
+def signal_followthrough_api():
+    """Is the trader actually *using* its own news edge?
+
+    news-edge grades the signal alone (ignoring the bot); decision-drought
+    grades inaction vs SPY (not vs the signals present). This grades the
+    *join*: of the high-score live signals visible at decision time (the
+    exact ``get_top_signals(hours=2, min_score=4.0)`` window strategy.decide
+    feeds Opus), did the trader transact that ticker, and did the signals it
+    ACTED on beat — forward, SPY-abnormal — the ones it IGNORED? A near-zero
+    follow-through ⇒ IGNORING_FEED; negative selection edge ⇒ MISUSING_SIGNALS.
+    ``?days=`` (lookback, default 30) / ``?min_score=`` (default 4.0). Pure
+    composition of build_signal_followthrough + news_edge resolution helpers
+    (single source of truth). Advisory only — never gates Opus
+    (invariants #2/#12)."""
+    try:
+        from .analytics.signal_followthrough import (
+            _fetch_live_articles,
+            build_signal_followthrough,
+        )
+        from .strategy import WATCHLIST
+
+        days = max(7, min(120, int(request.args.get("days", 30))))
+        min_score = float(request.args.get("min_score", 4.0))
+
+        path = _articles_db_path()
+        if path is None:
+            return jsonify({"error": "articles.db not found",
+                            "verdict": "NO_DATA", "acted": {}, "ignored": {}}), 200
+
+        store = get_store()
+        decs = store.recent_decisions(limit=3000)
+        since = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
+        arts = _fetch_live_articles(str(path), since, min_score=min_score)
+
+        # Price only the watchlist tickers that actually appear in the feed,
+        # most-frequent first, capped — same cold-start guard as news-edge.
+        freq: dict[str, int] = {}
+        pats = {tk: re.compile(rf"(?:\$|\b){re.escape(tk)}\b") for tk in WATCHLIST}
+        for a in arts:
+            up = a["text"].upper()
+            for tk, pat in pats.items():
+                if pat.search(up):
+                    freq[tk] = freq.get(tk, 0) + 1
+        wanted = [tk for tk, _ in sorted(freq.items(), key=lambda kv: -kv[1])][:30]
+
+        price_history = {tk: _daily_history_cached(tk) for tk in wanted}
+        spy_history = _daily_history_cached("SPY")
+
+        result = build_signal_followthrough(
+            decs, arts, price_history, spy_history, WATCHLIST,
+            lookback_hours=2.0, min_score=min_score)
+        result["lookback_days"] = days
+        result["min_score"] = min_score
+        result["n_tickers_priced"] = len([tk for tk in wanted
+                                          if price_history.get(tk)])
+        return jsonify(result)
+    except Exception as e:
+        return jsonify({"error": str(e), "verdict": "ERROR",
+                        "acted": {}, "ignored": {}}), 500
 
 
 def run(host: str = "0.0.0.0", port: int = 8090):
