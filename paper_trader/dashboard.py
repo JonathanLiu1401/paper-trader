@@ -1055,6 +1055,22 @@ TEMPLATE = r"""
       </table>
     </div>
 
+    <!-- ─── Signal-feed health — is the trader even seeing news? (new 2026-05-16, agent 4) ─── -->
+    <div class="card" id="fh-card" style="margin-bottom:18px;">
+      <h2 style="display:flex;justify-content:space-between;align-items:center;">
+        <span>Signal-feed health <span class="muted" style="font-size:11px;text-transform:none;letter-spacing:normal;font-weight:normal;">— is the live trader receiving any news, or flying blind?</span></span>
+        <span id="fh-state" style="font-size:12px;padding:3px 10px;border-radius:4px;background:#1f2126;color:#8b929d;">—</span>
+      </h2>
+      <div class="muted" id="fh-headline" style="font-size:12px;margin-bottom:12px;">loading…</div>
+      <div class="stat-row" style="margin-bottom:14px;">
+        <div class="stat"><div class="l">blind streak (0-signal cycles)</div><div class="v" id="fh-streak">—</div></div>
+        <div class="stat"><div class="l">newest live article age</div><div class="v" id="fh-age">—</div></div>
+        <div class="stat"><div class="l">live articles (2h / 24h)</div><div class="v" id="fh-live">—</div></div>
+        <div class="stat"><div class="l">split-brain DB</div><div class="v" id="fh-split">—</div></div>
+      </div>
+      <div class="muted" id="fh-path" style="font-size:12px;word-break:break-all;">—</div>
+    </div>
+
     <!-- ─── Decision reliability — true current-regime parse-fail rate (new 2026-05-16, agent 4) ─── -->
     <div class="card" id="dr-card" style="margin-bottom:18px;">
       <h2 style="display:flex;justify-content:space-between;align-items:center;">
@@ -4183,6 +4199,51 @@ async function refreshOpenAttribution() {
   }).join("") : `<tr><td colspan="5" class="muted">no anchorable open stock positions</td></tr>`;
 }
 
+async function refreshFeedHealth() {
+  const r = await fetchMaybeStale("/api/feed-health");
+  if (r.__unavailable) { markStale("fh-state", "fh-headline", "Signal-feed-health endpoint"); return; }
+  if (r.error) { document.getElementById("fh-headline").textContent = "error: " + r.error; return; }
+  const smap = {
+    BLIND:      ["#b71c1c", "#ffffff"],
+    STALE_FEED: ["#b8860b", "#000000"],
+    HEALTHY:    ["#1b5e20", "#a5d6a7"],
+    NO_DATA:    ["#1f2126", "#8b929d"],
+    ERROR:      ["#3a2a00", "#ffd479"],
+  };
+  const [bg, fg] = smap[r.verdict] || smap.NO_DATA;
+  const sEl = document.getElementById("fh-state");
+  sEl.textContent = (r.verdict || "—").replace(/_/g, " ");
+  sEl.style.background = bg; sEl.style.color = fg;
+  document.getElementById("fh-headline").textContent =
+    (r.restart_recommended ? "⚠ RESTART RECOMMENDED — " : "") + (r.headline || "");
+  const st = document.getElementById("fh-streak");
+  st.textContent = r.blind_streak != null
+    ? r.blind_streak + " / " + (r.n_decisions != null ? r.n_decisions : "—")
+    : "—";
+  st.style.color = (r.blind_streak || 0) >= (r.blind_streak_min || 3) ? "#ff4455"
+                  : (r.blind_streak || 0) > 0 ? "#ffa726" : "#4caf50";
+  const ag = document.getElementById("fh-age");
+  ag.textContent = r.resolved_newest_age_h != null
+    ? fmt(r.resolved_newest_age_h, 1) + "h" : "never";
+  ag.style.color = (r.resolved_newest_age_h == null
+                    || r.resolved_newest_age_h >= (r.stale_hours || 6))
+                   ? "#ff4455" : "#4caf50";
+  document.getElementById("fh-live").textContent =
+    (r.resolved_live_2h != null ? r.resolved_live_2h : "—") + " / "
+    + (r.resolved_live_24h != null ? r.resolved_live_24h : "—");
+  const sp = document.getElementById("fh-split");
+  sp.textContent = r.split_brain ? "YES" : "no";
+  sp.style.color = r.split_brain ? "#ff4455" : "#8b929d";
+  document.getElementById("fh-path").textContent =
+    r.resolved_path
+      ? ("trader reads " + r.resolved_path
+         + (r.split_brain && r.fresher_path
+            ? "  ·  fresher copy: " + r.fresher_path
+              + " (" + fmt(r.fresher_age_h, 1) + "h)"
+            : ""))
+      : "no resolved article DB";
+}
+
 async function refreshDecisionReliability() {
   const r = await fetchMaybeStale("/api/decision-reliability");
   if (r.__unavailable) { markStale("dr-state", "dr-headline", "Decision-reliability endpoint"); return; }
@@ -4388,6 +4449,7 @@ refreshValidation();
 refreshTradeAsymmetry();
 refreshCapitalParalysis();
 refreshOpenAttribution();
+refreshFeedHealth();
 refreshDecisionReliability();
 refreshFundedSuggestions();
 refreshSignalFollowThrough();
@@ -4422,6 +4484,7 @@ setInterval(refreshValidation, 120_000);
 setInterval(refreshTradeAsymmetry, 60_000);
 setInterval(refreshCapitalParalysis, 45_000);
 setInterval(refreshOpenAttribution, 60_000);
+setInterval(refreshFeedHealth, 60_000);
 setInterval(refreshDecisionReliability, 60_000);
 setInterval(refreshFundedSuggestions, 45_000);
 setInterval(refreshSignalFollowThrough, 300_000);
@@ -6832,6 +6895,114 @@ def source_edge_api():
     except Exception as e:
         return jsonify({"error": str(e), "sources": [],
                         "verdict": "ERROR"}), 500
+
+
+def _feed_db_probe(db_path: str, want_counts: bool = False) -> dict:
+    """Read newest *live* first_seen (and optionally 2h/24h live counts) from
+    one candidate articles.db. The live-only clause is inlined verbatim (the
+    canonical AGENTS.md invariant #1/#3 fragment, mirroring signals.py and
+    data_feed_api) — a planted backtest:// row must never read as the freshest
+    article or the split-brain detector would be defeated by training data.
+    Returns ``{exists, newest, live_2h, live_24h}``; never raises."""
+    out = {"exists": False, "newest": None, "live_2h": 0, "live_24h": 0}
+    try:
+        from pathlib import Path as _P
+        if not _P(db_path).exists():
+            return out
+        out["exists"] = True
+        conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True, timeout=3.0)
+        try:
+            live_clause = (
+                "url NOT LIKE 'backtest://%' "
+                "AND source NOT LIKE 'backtest_%' "
+                "AND source NOT LIKE 'opus_annotation%'"
+            )
+            row = conn.execute(
+                f"SELECT MAX(first_seen) FROM articles WHERE {live_clause}"
+            ).fetchone()
+            out["newest"] = row[0] if row else None
+            if want_counts:
+                # Cut-offs computed as ISO strings in Python, mirroring
+                # signals.get_top_signals exactly — NOT sqlite's
+                # datetime('now',...) (space-separated), which would
+                # lexically mis-compare against the 'T'-separated ISO
+                # first_seen the way data_feed_api's count subtly does.
+                now = datetime.now(timezone.utc)
+                s2 = (now - timedelta(hours=2)).isoformat()
+                s24 = (now - timedelta(hours=24)).isoformat()
+                out["live_2h"] = int(conn.execute(
+                    f"SELECT COUNT(*) FROM articles WHERE "
+                    f"first_seen >= ? AND {live_clause}", (s2,)
+                ).fetchone()[0] or 0)
+                out["live_24h"] = int(conn.execute(
+                    f"SELECT COUNT(*) FROM articles WHERE "
+                    f"first_seen >= ? AND {live_clause}", (s24,)
+                ).fetchone()[0] or 0)
+        finally:
+            conn.close()
+    except Exception:
+        return out
+    return out
+
+
+@app.route("/api/feed-health")
+def feed_health_api():
+    """Is the live trader actually *seeing* any news, or flying blind?
+
+    Every other panel measures behaviour *after* a decision and assumes the
+    trader received signals. None answer the prior question when the book just
+    HOLDs for hours. strategy.decide() builds Opus's prompt from
+    signals.get_top_signals(hours=2) against signals._db_path(); if that DB is
+    stale the prompt's signal block is empty, signal_count is recorded 0, and a
+    0-signal HOLD is indistinguishable from a deliberate one. /api/data-feed
+    shows raw counts with no verdict, path, or link to the decision log — a
+    stale `articles_24h: 3801` reads as healthy. This adds the consecutive
+    0-signal *decision streak*, the resolved DB path + its newest-live age, and
+    split-brain detection (signals._db_path() prefers the USB mount while the
+    daemon / unified_dashboard prefer the local copy — opposite precedence, so
+    a stale USB mirror silently blinds the trader while every other surface
+    reads the fresh one). Pure core: analytics/feed_health.build_feed_health
+    (this endpoint does all the SQLite/filesystem IO; the builder stays pure).
+    Advisory only — never gates Opus, adds no caps (invariants #2/#12)."""
+    try:
+        from . import signals as _sig
+        from .analytics.feed_health import build_feed_health
+
+        resolved = _sig._db_path()
+        resolved_str = str(resolved)
+
+        # The two candidates signals._db_path() chooses between, de-duped and
+        # order-preserving (USB first — the resolution order the trader uses).
+        seen: set[str] = set()
+        cand_paths: list[str] = []
+        for p in (_sig.USB_DB, _sig.LOCAL_DB):
+            ps = str(p)
+            if ps not in seen:
+                seen.add(ps)
+                cand_paths.append(ps)
+
+        candidates = []
+        resolved_probe = {"exists": False, "newest": None,
+                          "live_2h": 0, "live_24h": 0}
+        for ps in cand_paths:
+            probe = _feed_db_probe(ps, want_counts=(ps == resolved_str))
+            candidates.append({"path": ps, "exists": probe["exists"],
+                               "newest": probe["newest"]})
+            if ps == resolved_str:
+                resolved_probe = probe
+
+        feed = {
+            "resolved_path": resolved_str if resolved_probe["exists"] else None,
+            "resolved_newest": resolved_probe["newest"],
+            "resolved_live_2h": resolved_probe["live_2h"],
+            "resolved_live_24h": resolved_probe["live_24h"],
+            "candidates": candidates,
+        }
+        store = get_store()
+        return jsonify(build_feed_health(
+            store.recent_decisions(limit=3000), feed))
+    except Exception as e:
+        return jsonify({"error": str(e), "verdict": "ERROR"}), 500
 
 
 def run(host: str = "0.0.0.0", port: int = 8090):
