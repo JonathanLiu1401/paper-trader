@@ -1149,6 +1149,23 @@ TEMPLATE = r"""
       <div class="muted" id="se-meta" style="font-size:12px;margin-top:10px;">—</div>
     </div>
 
+    <!-- ─── Behavioural scorecard — verdict-alignment router (new 2026-05-16, agent 4) ─── -->
+    <div class="card" id="score-card" style="margin-bottom:18px;">
+      <h2 style="display:flex;justify-content:space-between;align-items:center;">
+        <span>Behavioural scorecard <span class="muted" style="font-size:11px;text-transform:none;letter-spacing:normal;font-weight:normal;">— do the independent behavioural checks agree on a problem? (no grade, just concordance)</span></span>
+        <span id="score-state" style="font-size:12px;padding:3px 10px;border-radius:4px;background:#1f2126;color:#8b929d;">—</span>
+      </h2>
+      <div class="muted" id="score-headline" style="font-size:12px;margin-bottom:10px;">loading…</div>
+      <div id="score-focus" style="font-size:12px;margin-bottom:8px;"></div>
+      <div id="score-concordance" style="font-size:12px;margin-bottom:12px;"></div>
+      <table style="font-size:12px;width:100%;">
+        <thead><tr style="text-align:left;color:#8b929d;">
+          <th style="padding:4px 6px;">check</th><th style="padding:4px 6px;">verdict</th><th style="padding:4px 6px;">what it says</th>
+        </tr></thead>
+        <tbody id="score-rows"><tr><td colspan="3" class="muted" style="padding:6px;">—</td></tr></tbody>
+      </table>
+    </div>
+
     <!-- ─── Sector Pulse ─── -->
     <div class="card" style="margin-bottom:18px;">
       <h2 style="display:flex;justify-content:space-between;align-items:center;">
@@ -4421,6 +4438,51 @@ async function refreshSourceEdge() {
     + (r.lookback_days != null ? " · " + r.lookback_days + "d lookback" : "");
 }
 
+// ───────── Behavioural scorecard — verdict-alignment router (new 2026-05-16, agent 4) ─────────
+// Same stale-degrade contract as the behavioural cluster: a process that
+// booted before this endpoint's commit 404s it → explicit "restart to apply".
+async function refreshScorecard() {
+  const r = await fetchMaybeStale("/api/scorecard");
+  if (r.__unavailable) { markStale("score-state", "score-headline", "Behavioural scorecard endpoint"); return; }
+  if (r.error) { document.getElementById("score-headline").textContent = "error: " + r.error; return; }
+  const smap = {
+    FLAGS_PRESENT:   ["#b71c1c", "#ffffff"],
+    ALIGNED_HEALTHY: ["#1b5e20", "#a5d6a7"],
+    NO_DATA:         ["#1f2126", "#8b929d"],
+  };
+  const [bg, fg] = smap[r.state] || smap.NO_DATA;
+  const sEl = document.getElementById("score-state");
+  sEl.textContent = (r.state || "—").replace(/_/g, " ");
+  sEl.style.background = bg; sEl.style.color = fg;
+  document.getElementById("score-headline").textContent = r.headline || "";
+
+  const fEl = document.getElementById("score-focus");
+  if (r.focus) {
+    fEl.innerHTML = "<span style='color:#ffd479;'>Look first:</span> "
+      + "<b>" + r.focus.name.replace(/_/g, " ") + "</b> — "
+      + (r.focus.headline || "");
+  } else { fEl.textContent = ""; }
+
+  const cEl = document.getElementById("score-concordance");
+  const conc = (r.concordance || []);
+  if (conc.length) {
+    cEl.innerHTML = conc.map(n =>
+      "<span style='color:#ff8a80;'>" + n.count
+      + " independent checks concur on " + n.theme.replace(/_/g, " ")
+      + ":</span> " + (n.labels || []).join(", ")).join("<br>");
+  } else { cEl.textContent = ""; }
+
+  const kcolor = { FLAG: "#ff4455", OK: "#4caf50", IMMATURE: "#8b929d", ERROR: "#ffd479" };
+  const rows = (r.checks || []).map(c =>
+    "<tr><td style='padding:4px 6px;'>" + c.name.replace(/_/g, " ") + "</td>"
+    + "<td style='padding:4px 6px;color:" + (kcolor[c.klass] || "#8b929d") + ";'>"
+      + (c.label || "—") + " <span class='muted' style='font-size:10px;'>("
+      + c.klass + ")</span></td>"
+    + "<td style='padding:4px 6px;color:#8b929d;'>" + (c.headline || "—") + "</td></tr>");
+  document.getElementById("score-rows").innerHTML =
+    rows.length ? rows.join("") : "<tr><td colspan='3' class='muted' style='padding:6px;'>—</td></tr>";
+}
+
 // ───────── boot ─────────
 refresh();
 refreshSignals();
@@ -4456,6 +4518,7 @@ refreshSignalFollowThrough();
 refreshChurn();
 refreshThesisDrift();
 refreshSourceEdge();
+refreshScorecard();
 refreshGlobalStale();
 setInterval(refresh, 15_000);
 setInterval(refreshSignals, 30_000);
@@ -4491,6 +4554,7 @@ setInterval(refreshSignalFollowThrough, 300_000);
 setInterval(refreshChurn, 60_000);
 setInterval(refreshThesisDrift, 60_000);
 setInterval(refreshSourceEdge, 300_000);
+setInterval(refreshScorecard, 60_000);
 setInterval(refreshGlobalStale, 60_000);
 showTab(INITIAL_TAB || "trader");
 </script>
@@ -6594,6 +6658,34 @@ def self_review_api():
         # above do (build_liquidity wants newest-first, build_round_trips
         # wants oldest→newest).
         return jsonify(build_self_review(
+            store.get_portfolio(),
+            store.open_positions(),
+            store.recent_trades(2000),
+            store.recent_decisions(limit=3000),
+            store.equity_curve(limit=5000),
+        ))
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/scorecard")
+def scorecard_api():
+    """Behavioural-verdict alignment router across the five pure
+    behavioural builders (trade_asymmetry, churn, capital_paralysis,
+    decision_reliability, open_attribution).
+
+    Synthesis without a new opinion: it classifies each builder's *own*
+    verdict into FLAG/OK/IMMATURE, counts where independent checks concur on
+    a theme, and forwards the builders' own headlines verbatim (single source
+    of truth, AGENTS.md invariant #10). No grade, no directive, no cap —
+    descriptive only, exactly the /api/self-review observational precedent
+    (invariants #2/#12). Unlike self-review it is NOT injected into the live
+    decision prompt; it is dashboard/chat only. Same store reads as
+    /api/self-review so the two can't drift."""
+    try:
+        from .analytics.trader_scorecard import build_trader_scorecard
+        store = get_store()
+        return jsonify(build_trader_scorecard(
             store.get_portfolio(),
             store.open_positions(),
             store.recent_trades(2000),
