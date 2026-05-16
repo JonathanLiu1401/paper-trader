@@ -250,18 +250,29 @@ There are **two independent models** in this system. Don't confuse them.
 | Used by | digital-intern's `score_pending()` → fills `ai_score`, `urgency`, `time_sensitivity` in `articles.db`. paper-trader reads these via `signals.py` | Used inside `paper_trader/backtest.py::_ml_decide` to **gate** buys when `is_trained AND _n_train >= 500` |
 | Retrain | Every 3 min (full) + every 2 min (continuous) in digital-intern daemon, plus `_inject_and_train()` once per backtest cycle | After every backtest cycle (in `run_continuous_backtests.py`) |
 
-`DecisionScorer.predict()` returns `0.0` (a no-op nudge) until trained. The gate in `_ml_decide` is:
+`DecisionScorer.predict()` returns `0.0` (a no-op nudge) until trained. The gate in
+`_ml_decide` **modulates BUY conviction only — it never cancels a trade** (an earlier
+HOLD-blocking version oscillated leveraged-ETF strategies; see the comment in
+`_ml_decide`). The current arms (`paper_trader/backtest.py::_ml_decide`, authoritative):
 
 ```python
 if _scorer.is_trained and _scorer_n >= 500:
-    if scorer_pred < -5.0:       # high-confidence loser → skip (HOLD)
-        return {"action": "HOLD", ...}
-    elif scorer_pred < 0.0:      # mild loser → 30% conviction haircut
-        conviction *= 0.7
+    if scorer_pred < -10.0:                 # strong headwind, still buys
+        conviction *= 0.6
+    elif scorer_pred < 0.0:                 # mild headwind
+        conviction *= 0.85
+    elif scorer_pred > 10.0:                # strong tailwind
+        conviction = min(conviction * 1.3, 0.95)
+    elif scorer_pred > 5.0:                 # mild tailwind
+        conviction = min(conviction * 1.15, 0.95)
+    # 0 ≤ scorer_pred ≤ 5 → unchanged
 ```
 
-So the scorer only starts gating real trades after ~500 BUY/SELL outcomes accumulate in
-`data/decision_outcomes.jsonl`.
+So the scorer only starts modulating real trades after ~500 BUY/SELL outcomes accumulate in
+`data/decision_outcomes.jsonl`. (This block previously documented a `p < -5 → HOLD` /
+`p < 0 → ×0.7` blocking gate; that was removed because blocking sabotaged SOXL/TQQQ — see
+invariant #5 and the AGENTS.md "How the DecisionScorer works" table, the authoritative
+companion reference.)
 
 ---
 
