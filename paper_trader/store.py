@@ -117,10 +117,36 @@ class Store:
             row = self.conn.execute(
                 "SELECT cash, total_value, positions_json, last_updated FROM portfolio WHERE id=1"
             ).fetchone()
+        # The shared connection (see the note above) intermittently hands back
+        # a None row or a row whose columns read back NULL even though the
+        # stored values are well-formed. get_portfolio() backs /api/state,
+        # polled every few seconds — a raw subscript / json.loads(None) here
+        # 500s the whole dashboard (28x in runner.log over 2 days). Absorb
+        # both failure modes instead of crashing; never retry under the lock.
+        if row is None:
+            # Either a transient blip or the id=1 row is genuinely gone.
+            # _init_portfolio() re-inserts only if missing and takes self._lock
+            # itself, so it must be called WITHOUT the lock held. One re-read.
+            print("[store] get_portfolio: row=None — re-initializing portfolio row",
+                  flush=True)
+            self._init_portfolio()
+            with self._lock:
+                row = self.conn.execute(
+                    "SELECT cash, total_value, positions_json, last_updated "
+                    "FROM portfolio WHERE id=1"
+                ).fetchone()
+            if row is None:
+                return {"cash": INITIAL_CASH, "total_value": INITIAL_CASH,
+                        "positions": [], "last_updated": _now()}
+        pj = row["positions_json"]
+        if not pj:
+            print("[store] get_portfolio: positions_json empty/NULL — defaulting to []",
+                  flush=True)
+            pj = "[]"
         return {
             "cash": row["cash"],
             "total_value": row["total_value"],
-            "positions": json.loads(row["positions_json"]),
+            "positions": json.loads(pj),
             "last_updated": row["last_updated"],
         }
 
@@ -282,10 +308,18 @@ class Store:
 
 
 _singleton: Store | None = None
+_singleton_lock = threading.Lock()
 
 
 def get_store() -> Store:
+    # The runner's main thread and the Flask dashboard thread both call
+    # get_store() at startup. Without serializing the create, an interleave on
+    # the `is None` check spins up two Store instances — two separate sqlite
+    # connections to the same WAL DB, one of which leaks. Double-checked lock:
+    # the fast path stays lock-free once the singleton exists.
     global _singleton
     if _singleton is None:
-        _singleton = Store()
+        with _singleton_lock:
+            if _singleton is None:
+                _singleton = Store()
     return _singleton

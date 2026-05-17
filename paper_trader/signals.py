@@ -25,10 +25,11 @@ if DIGITAL_INTERN not in sys.path:
 # fresh LOCAL DB — the "split brain" that was *detected* (/api/feed-health)
 # but never root-fixed. We now pick the candidate whose newest *live* article
 # is most recent, so the trader always reads the freshest feed regardless of
-# which copy the daemon wrote. USB order is still preferred on a tie / when
-# freshness cannot be determined (preserves the intentional USB-canonical
-# default — digital-intern CLAUDE.md §3). This is a *data-sourcing* fix, not a
-# risk limit: it changes which feed is read, never a trading decision
+# which copy the daemon wrote. LOCAL order is preferred on a tie / when
+# freshness cannot be determined: the live daemon's write path is LOCAL, so
+# trying it first is the safest default (commit 6227cd5 flipped this from the
+# old USB-first ordering — see _candidates()). This is a *data-sourcing* fix,
+# not a risk limit: it changes which feed is read, never a trading decision
 # (invariants #2/#12 untouched — same reasoning as the #13 valuation fix).
 USB_DB = Path(os.environ.get("DIGITAL_INTERN_USB", "/media/zeph/projects/digital-intern/db")) / "articles.db"
 LOCAL_DB = Path(DIGITAL_INTERN) / "data" / "articles.db"
@@ -168,13 +169,20 @@ def _reset_resolver_cache() -> None:
 
 
 def _legacy_choice() -> Path:
-    """What the existence-first (no freshness probe) resolver returns with the
-    *current* candidate ordering. Used to detect split-brain: if the freshness
-    probe chose a different path than bare existence-first would, a stale mirror
-    is present. Now that LOCAL is first in _candidates(), existence-first also
-    returns LOCAL when it exists — so a freshness-vs-legacy divergence only fires
-    when LOCAL itself is stale and the probe reaches USB."""
-    for p in _candidates():
+    """Model the *historical* pre-freshness-aware resolver, which was
+    USB-first existence order ("return the USB copy whenever it merely
+    exists()" — see the module docstring and commit 6227cd5).
+
+    This is deliberately DECOUPLED from ``_candidates()``. ``_candidates()``
+    returns the *current* resolver's tie-break order (LOCAL-first, since
+    6227cd5); but split-brain detection asks a different question — "would a
+    trader/dashboard process still running the pre-fix code be reading a stale
+    feed?" — and that pre-fix code was USB-first. Reusing ``_candidates()``
+    here made ``_legacy_choice()`` return LOCAL whenever LOCAL exists, which
+    (a) defeated split-brain detection of the classic "stale USB mirror"
+    failure and (b) *falsely* flagged split-brain when both feeds are merely
+    stale but USB happens to be the fresher one (legacy=LOCAL≠chosen=USB)."""
+    for p in (USB_DB, LOCAL_DB):
         if p.exists():
             return p
     return LOCAL_DB

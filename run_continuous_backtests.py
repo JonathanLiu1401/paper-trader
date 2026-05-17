@@ -351,17 +351,35 @@ def _train_decision_scorer(outcome_records: list[dict]) -> str:
         return "no outcome records"
     try:
         from paper_trader.ml.decision_scorer import train_scorer, DecisionScorer
-        from paper_trader.validation import (
-            split_outcomes_temporal, evaluate_scorer_oos,
-        )
+    except Exception as exc:
+        return f"scorer err: {exc}"
+
+    # The temporal holdout is a *diagnostic* refinement (an honest OOS RMSE),
+    # NOT part of the essential operation. Previously the validation import +
+    # split_outcomes_temporal sat in the same try as train_scorer, so if the
+    # validation module was unavailable or the split raised on pathological
+    # data, training was skipped entirely and the operator saw `scorer err:` —
+    # silently wedging the per-cycle retrain invariant (CLAUDE.md §6) and
+    # freezing the conviction gate (#5) for as long as the condition lasted.
+    # Mirror the already-separated OOS-eval guard below: degrade to "train on
+    # everything, no honest holdout" rather than "don't train at all".
+    oos_records: list[dict] = []
+    train_records = outcome_records
+    try:
+        from paper_trader.validation import split_outcomes_temporal
         train_records, oos_records = split_outcomes_temporal(
             outcome_records, oos_fraction=0.2
         )
+    except Exception as exc:
+        print(f"[continuous] temporal split unavailable ({exc}) — training on "
+              f"all {len(outcome_records)} records, OOS holdout skipped")
+
+    try:
         result = train_scorer(train_records)
-        val_rmse = result.get("val_rmse", float("nan"))
-        val_s = f"{val_rmse:.2f}" if val_rmse == val_rmse else "n/a"
     except Exception as exc:
         return f"scorer err: {exc}"
+    val_rmse = result.get("val_rmse", float("nan"))
+    val_s = f"{val_rmse:.2f}" if val_rmse == val_rmse else "n/a"
 
     # OOS evaluation runs AFTER train_scorer has already pickled the model to
     # SCORER_PATH. A crash here (transient pickle/IO race, validation-module
@@ -373,6 +391,7 @@ def _train_decision_scorer(outcome_records: list[dict]) -> str:
     oos_rmse_s = "n/a"
     if result.get("status") == "ok" and oos_records:
         try:
+            from paper_trader.validation import evaluate_scorer_oos
             # Re-load the freshly pickled model from disk so OOS predictions
             # use the exact serialized state (catches any save/load bugs).
             scorer = DecisionScorer()

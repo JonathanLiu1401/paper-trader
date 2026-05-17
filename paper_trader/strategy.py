@@ -859,7 +859,16 @@ def _ml_live_opinion(
         ticker_article_count: dict[str, int] = {}
         ticker_max_urgency: dict[str, float] = {}
         for a in articles:
-            raw_score = float(a.get("score") or 0.0)
+            # Live articles (signals.get_top_signals / get_urgent_articles)
+            # carry "ai_score" — NOT "score". Reading only "score" here meant
+            # raw_score was always 0.0, so EVERY article was skipped and the
+            # news-sentiment half of this advisory was silently dead (it
+            # degraded to quant-only, contradicting CLAUDE.md §15). Prefer the
+            # live key; keep "score" as a fallback for any backtest-shaped input.
+            try:
+                raw_score = float(a.get("ai_score") or a.get("score") or 0.0)
+            except (TypeError, ValueError):
+                raw_score = 0.0
             if raw_score < 1.0:
                 continue
             title = (a.get("title") or "").lower()

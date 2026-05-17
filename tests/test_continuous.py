@@ -373,3 +373,53 @@ class TestTrainDecisionScorer:
         # And the model the next cycle will load is genuinely trained.
         from paper_trader.ml.decision_scorer import DecisionScorer
         assert DecisionScorer().is_trained is True
+
+    def test_temporal_split_failure_still_trains(self, monkeypatch):
+        """A *pre-training* split failure must NOT skip training.
+
+        The temporal holdout (split_outcomes_temporal) is a diagnostic
+        refinement, not the essential operation. Before the fix it sat in the
+        same try/except as ``train_scorer``, so a split crash (or an
+        unavailable validation module) returned ``scorer err:`` and the model
+        was never pickled — silently freezing the per-cycle retrain invariant
+        (CLAUDE.md §6) and the conviction gate (#5). After the fix the split
+        failure degrades to "train on all records, no OOS" and the scorer is
+        still retrained and deployed.
+        """
+        import random as _rnd
+        import paper_trader.validation as _val
+
+        rng = _rnd.Random(17)
+        records = []
+        for i in range(80):
+            month = 1 + (i % 12)
+            day = 1 + (i // 12)
+            records.append({
+                "ticker": "NVDA" if i % 2 == 0 else "AMD",
+                "sim_date": f"2024-{month:02d}-{day:02d}",
+                "action": "BUY",
+                "ml_score": rng.uniform(0, 5),
+                "rsi": rng.uniform(20, 80),
+                "macd": rng.uniform(-1, 1),
+                "mom5": rng.uniform(-3, 3),
+                "mom20": rng.uniform(-5, 5),
+                "regime_mult": 1.0,
+                "forward_return_5d": rng.uniform(-3, 3),
+                "return_pct": 10.0,
+            })
+
+        def _boom(*_a, **_kw):
+            raise RuntimeError("simulated split crash before training")
+
+        monkeypatch.setattr(_val, "split_outcomes_temporal", _boom)
+
+        status = rcb._train_decision_scorer(records)
+        # Training proceeded despite the split crash — status is truthful.
+        assert not status.startswith("scorer err"), status
+        assert "scorer ok" in status, status
+        # All 80 records used for training (no holdout carved out).
+        assert "train_n=80" in status, status
+        assert "oos_n=0" in status, status
+        # The model the next cycle reloads is genuinely trained and pickled.
+        from paper_trader.ml.decision_scorer import DecisionScorer
+        assert DecisionScorer().is_trained is True

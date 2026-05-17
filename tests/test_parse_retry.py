@@ -87,18 +87,32 @@ def test_retry_fires_when_first_response_is_unparseable(stub_decide_inputs):
 
 
 def test_no_retry_when_first_response_is_none(stub_decide_inputs):
-    """Timeout / CLI failure: don't burn a second call on the same prompt."""
+    """Timeout / CLI failure: no JSON-nudge *retry* of the SAME prompt.
+
+    The invariant under test is narrow: a None first response must NOT trigger
+    the ``_RETRY_SUFFIX`` JSON-only retry (same prompt → same wall). The Sonnet
+    fallback added later is a DISTINCT mechanism — a different model with a
+    *condensed* prompt — so a second `_claude_call` is now expected and correct;
+    what must never appear is a third call carrying ``_RETRY_SUFFIX``. When the
+    fallback also returns None, decide() records NO_DECISION with no retry."""
     calls = []
 
-    def fake_claude(prompt, timeout_s=strategy.DECISION_TIMEOUT_S):
+    # Must accept the fallback's model= / timeout_s= kwargs — a fake that only
+    # took (prompt) silently regressed when the Sonnet fallback was added.
+    def fake_claude(prompt, **kwargs):
         calls.append(prompt)
         return None
 
     with mock.patch.object(strategy, "_claude_call", side_effect=fake_claude):
         result = strategy.decide()
 
-    assert len(calls) == 1, "must NOT retry on None response"
+    # Opus attempt + Sonnet fallback = exactly 2 calls. NOT 3 (no JSON retry).
+    assert len(calls) == 2, "expect Opus attempt + Sonnet fallback, no JSON retry"
+    assert all(strategy._RETRY_SUFFIX not in p for p in calls), (
+        "a None first response must NOT trigger the same-prompt JSON-nudge retry"
+    )
     assert result["retried"] is False
+    assert result["fallback_used"] is False    # fallback ran but returned None
     assert result["status"] == "NO_DECISION"
     # The no-response branch must record a recognizable reason string.
     fake_store = stub_decide_inputs

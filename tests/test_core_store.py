@@ -263,6 +263,70 @@ class TestUpdatePositionMarks:
         assert pos["unrealized_pl"] == 200.0
 
 
+class TestGetPortfolioResilience:
+    """get_portfolio() must never 500 the dashboard on a transient bad row.
+
+    The sqlite connection is shared (check_same_thread=False) between the
+    runner's writer thread and the Flask dashboard threads. Even with the
+    read lock in place, that connection intermittently yields a None row or a
+    row whose columns read back NULL (documented in store.py and observed as
+    28x /api/state 500s in runner.log over 2 days:
+      - TypeError: 'NoneType' object is not subscriptable   (row is None)
+      - the JSON object must be str ... not NoneType         (positions_json None)
+    get_portfolio() must absorb both instead of crashing /api/state.
+    """
+
+    def test_self_heals_when_portfolio_row_missing(self, fresh_store):
+        # Reproduces the "row is None" 500: the id=1 row is gone.
+        with fresh_store._lock:
+            fresh_store.conn.execute("DELETE FROM portfolio")
+            fresh_store.conn.commit()
+        # Must NOT raise 'NoneType object is not subscriptable'.
+        pf = fresh_store.get_portfolio()
+        assert pf["cash"] == INITIAL_CASH
+        assert pf["total_value"] == INITIAL_CASH
+        assert pf["positions"] == []
+        # The row must have been re-created so subsequent writes persist.
+        row = fresh_store.conn.execute(
+            "SELECT COUNT(*) FROM portfolio WHERE id=1"
+        ).fetchone()
+        assert row[0] == 1
+
+    def test_tolerates_null_positions_json(self, fresh_store, monkeypatch):
+        # Reproduces the "json.loads(None)" 500: the row comes back with a
+        # NULL positions_json (corrupted read off the shared connection). The
+        # NOT NULL schema constraint prevents writing this directly, so we
+        # stand in a fake connection that returns exactly that row shape.
+        class _FakeCursor:
+            def __init__(self, row):
+                self._row = row
+
+            def fetchone(self):
+                return self._row
+
+        class _FakeConn:
+            def __init__(self, row):
+                self._row = row
+
+            def execute(self, *a, **k):
+                return _FakeCursor(self._row)
+
+            def close(self):  # fixture teardown calls Store.close() -> conn.close()
+                pass
+
+        corrupt = {
+            "cash": 950.0,
+            "total_value": 980.0,
+            "positions_json": None,
+            "last_updated": "2026-05-16T00:00:00Z",
+        }
+        monkeypatch.setattr(fresh_store, "conn", _FakeConn(corrupt))
+        pf = fresh_store.get_portfolio()  # must NOT raise on json.loads(None)
+        assert pf["cash"] == 950.0
+        assert pf["total_value"] == 980.0
+        assert pf["positions"] == []
+
+
 class TestReadWriteThreadSafety:
     """Regression lock: every public read must serialize on Store._lock.
 

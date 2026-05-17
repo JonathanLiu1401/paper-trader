@@ -7165,7 +7165,10 @@ def feed_health_api():
         resolved_str = str(resolved)
 
         # The two candidates signals._db_path() chooses between, de-duped and
-        # order-preserving (USB first — the resolution order the trader uses).
+        # order-preserving. (Listing order here is presentational only — the
+        # live trader resolves by *freshness* via signals._choose(), LOCAL-first
+        # on a tie since 6227cd5; legacy_path below models the old USB-first
+        # existence resolver, which is what split-brain detection compares to.)
         seen: set[str] = set()
         cand_paths: list[str] = []
         for p in (_sig.USB_DB, _sig.LOCAL_DB):
