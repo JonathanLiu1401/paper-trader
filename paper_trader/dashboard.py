@@ -576,6 +576,26 @@ TEMPLATE = r"""
       <ul id="briefing-urgent" style="margin:0;padding:0;list-style:none;font-size:13px;"></ul>
     </div>
 
+    <!-- ─── Session Delta — what materially changed since you last looked (new 2026-05-16, agent 4) ─── -->
+    <div class="card" id="sess-card" style="margin-bottom:18px;">
+      <h2 style="display:flex;justify-content:space-between;align-items:center;">
+        <span>Since you last looked <span class="muted" style="font-size:11px;text-transform:none;letter-spacing:normal;font-weight:normal;">— material events in the window, ranked (no snapshot scanning)</span></span>
+        <span id="sess-state" style="font-size:12px;padding:3px 10px;border-radius:4px;background:#1f2126;color:#8b929d;">—</span>
+      </h2>
+      <div style="display:flex;gap:4px;font-size:11px;margin-bottom:10px;">
+        <button class="bt-filter-chip" id="sess-w-60" onclick="setSessWindow(60)">1h</button>
+        <button class="bt-filter-chip active" id="sess-w-360" onclick="setSessWindow(360)">6h</button>
+        <button class="bt-filter-chip" id="sess-w-1440" onclick="setSessWindow(1440)">24h</button>
+      </div>
+      <div class="muted" id="sess-headline" style="font-size:12px;margin-bottom:12px;">loading…</div>
+      <table id="sess-events" style="font-size:12px;">
+        <thead><tr>
+          <th style="width:62px;">when</th><th style="width:120px;">event</th><th>detail</th>
+        </tr></thead>
+        <tbody><tr><td colspan="3" class="muted">loading…</td></tr></tbody>
+      </table>
+    </div>
+
     <!-- ─── Trade Suggestions (co-pilot) ─── -->
     <div class="card" style="margin-bottom:18px;">
       <h2 style="display:flex;justify-content:space-between;align-items:center;">
@@ -3275,7 +3295,7 @@ async function refreshThesis() {
       return `<div style="background:#0d1117;border:1px solid #1f2126;border-radius:6px;padding:12px;">
         <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">
           <div><strong style="font-size:15px;color:#e0e0e0;">${c.ticker}</strong>
-            <span class="muted" style="font-size:11px;margin-left:6px;">qty ${c.qty} @ $${fmt(c.avg_cost,2)} · ${fmt(c.days_held,1)}d</span>
+            <span class="muted" style="font-size:11px;margin-left:6px;">qty ${fmt(c.qty,4)} @ $${fmt(c.avg_cost,2)} · ${fmt(c.days_held,1)}d</span>
           </div>
           <div>${verdictPill(c.verdict)}</div>
         </div>
