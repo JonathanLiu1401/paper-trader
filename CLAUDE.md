@@ -493,4 +493,43 @@ See the file for the schema; the canonical template lives at the top of `data/ru
 
 ---
 
-*Last revised: 2026-05-14*
+## 15. ML advisor gate (live trader)
+
+When the backtest ML model has demonstrated a consistent edge over the benchmark, its
+recommendation is surfaced to Opus inside the live decision prompt as an **advisory opinion**.
+This is gated, read-only, and never blocks or overrides a trade.
+
+- **Qualification:** `_ml_is_qualified()` in `paper_trader/strategy.py` queries `backtest.db`
+  read-only for the last `ML_QUALIFY_MIN_RUNS=20` *qualifying* runs
+  (`status='complete' AND vs_spy_pct IS NOT NULL AND n_trades >= 5`, ordered by `run_id` DESC).
+  The ML becomes an advisor only when the **median `vs_spy_pct`** of those 20 runs exceeds
+  `ML_QUALIFY_MEDIAN_ALPHA=0.0` (%). Fewer than 20 qualifying runs ⇒ not qualified.
+- **Gate cadence:** the qualification result is cached for `ML_QUALIFY_TTL_S=3600.0`s
+  (module-level `_ml_qualify_cache`), so the gate is re-evaluated from `backtest.db` at most
+  once per hour regardless of the 60s decision cadence.
+- **Opinion generation:** `_ml_live_opinion()` runs the same quant+news scoring shape as the
+  backtest engine — sentiment from a self-contained bullish/bearish word list, keyword→ticker
+  mapping, RSI/MACD/momentum/BB quant adjustments, SPY-20d-momentum regime multiplier, then
+  picks the single best-scoring watchlist ticker. It uses **only the live data already fetched
+  by `decide()`** (`merged` articles, `quant_sigs`, `snap`, `watch_px`) and emits a
+  BUY/HOLD action + reasoning string.
+- **Self-contained, no backtest.py import:** `_ml_live_opinion` and its vocabulary tables
+  (`_BULLISH_WORDS_LIVE`, `_BEARISH_WORDS_LIVE`, `_WORD_TO_TICKER_LIVE`, `_LEVERAGED_ETFS_LIVE`)
+  are duplicated in `strategy.py` deliberately — importing from `backtest.py` would create a
+  circular dependency. They mirror the backtest scorer closely enough for an advisory.
+- **Opus retains full autonomy:** when qualified, the opinion is appended to the prompt under
+  an `ML ADVISOR:` section that explicitly states it is advisory only. Opus sees the ML's
+  recommended action and reasoning but makes the final call. The ML cannot execute trades and
+  cannot veto Opus — it has no path to `_execute()`.
+- **Non-fatal by construction:** every part of this path (gate query, opinion generation,
+  prompt wiring) is wrapped so any failure degrades to "no ML advisor block this cycle",
+  never "no decision this cycle". A qualification-check error returns `(False, ...)` and the
+  prompt is built exactly as before.
+
+Constants and code live in `paper_trader/strategy.py`: `ML_QUALIFY_MIN_RUNS`,
+`ML_QUALIFY_MEDIAN_ALPHA`, `ML_QUALIFY_TTL_S`, `_ml_qualify_cache`, `_ml_is_qualified()`,
+`_ml_live_opinion()`, wired into `decide()` immediately before `_build_payload()`.
+
+---
+
+*Last revised: 2026-05-16*

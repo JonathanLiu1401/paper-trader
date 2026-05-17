@@ -15,6 +15,7 @@ from __future__ import annotations
 import json
 import sqlite3
 import sys
+import threading
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -260,3 +261,56 @@ class TestUpdatePositionMarks:
         pos = fresh_store.open_positions()[0]
         assert pos["current_price"] == 120.0
         assert pos["unrealized_pl"] == 200.0
+
+
+class TestReadWriteThreadSafety:
+    """Regression lock: every public read must serialize on Store._lock.
+
+    The sqlite connection is created check_same_thread=False and shared
+    between the runner's writer thread and the Flask dashboard thread(s).
+    All writes already hold self._lock; before the fix the read methods
+    executed on the shared connection WITHOUT the lock, so a dashboard read
+    whose execute() interleaved with a runner write raised
+    `sqlite3.InterfaceError: bad parameter or other API misuse` or returned
+    a corrupted/None row — the /api/state 500s observed in runner.log
+    (11x 'NoneType object is not subscriptable' + InterfaceError).
+
+    Each test deterministically proves the read now blocks while another
+    thread holds Store._lock. Pre-fix the unlocked read returned almost
+    instantly even with the lock held, so these would fail.
+    """
+
+    READ_METHODS = [
+        ("get_portfolio", ()),
+        ("recent_trades", ()),
+        ("open_positions", ()),
+        ("recent_decisions", ()),
+        ("equity_curve", ()),
+    ]
+
+    @pytest.mark.parametrize("method_name,args", READ_METHODS)
+    def test_read_serializes_on_lock(self, fresh_store, method_name, args):
+        started = threading.Event()
+        completed = threading.Event()
+
+        def worker():
+            started.set()
+            getattr(fresh_store, method_name)(*args)
+            completed.set()
+
+        with fresh_store._lock:
+            t = threading.Thread(target=worker, daemon=True)
+            t.start()
+            assert started.wait(timeout=2.0), "worker thread never started"
+            # While we hold the lock the read must NOT be able to complete.
+            assert not completed.wait(timeout=0.5), (
+                f"Store.{method_name}() completed while another thread held "
+                f"Store._lock — it is reading the shared sqlite connection "
+                f"without serializing against writers (concurrent execute() "
+                f"-> sqlite3.InterfaceError / None row)."
+            )
+        # Lock released -> the read must now finish promptly.
+        assert completed.wait(timeout=3.0), (
+            f"Store.{method_name}() did not complete after the lock released"
+        )
+        t.join(timeout=2.0)

@@ -105,10 +105,18 @@ class Store:
                 self.conn.commit()
 
     # ─── portfolio ─────────────────────────────────────────────
+    # NOTE: every read below MUST hold self._lock. The connection is created
+    # with check_same_thread=False and shared between the runner's writer
+    # thread and the Flask dashboard thread(s). All writes already serialize
+    # on self._lock; an unlocked read whose execute() interleaves with a
+    # concurrent write on the same connection raises
+    # `sqlite3.InterfaceError: bad parameter or other API misuse` or returns a
+    # corrupted/None row (the dashboard /api/state 500s in runner.log).
     def get_portfolio(self) -> dict:
-        row = self.conn.execute(
-            "SELECT cash, total_value, positions_json, last_updated FROM portfolio WHERE id=1"
-        ).fetchone()
+        with self._lock:
+            row = self.conn.execute(
+                "SELECT cash, total_value, positions_json, last_updated FROM portfolio WHERE id=1"
+            ).fetchone()
         return {
             "cash": row["cash"],
             "total_value": row["total_value"],
@@ -144,9 +152,10 @@ class Store:
         # deterministically. Without this, recent_trades(1) — used by
         # runner._cycle/send_trade_alert right after _execute records the
         # trade — could surface a stale same-microsecond row.
-        rows = self.conn.execute(
-            "SELECT * FROM trades ORDER BY timestamp DESC, id DESC LIMIT ?", (limit,)
-        ).fetchall()
+        with self._lock:
+            rows = self.conn.execute(
+                "SELECT * FROM trades ORDER BY timestamp DESC, id DESC LIMIT ?", (limit,)
+            ).fetchall()
         return [dict(r) for r in rows]
 
     # ─── positions ─────────────────────────────────────────────
@@ -212,9 +221,10 @@ class Store:
             self.conn.commit()
 
     def open_positions(self) -> list[dict]:
-        rows = self.conn.execute(
-            "SELECT * FROM positions WHERE closed_at IS NULL AND qty > 0 ORDER BY opened_at DESC"
-        ).fetchall()
+        with self._lock:
+            rows = self.conn.execute(
+                "SELECT * FROM positions WHERE closed_at IS NULL AND qty > 0 ORDER BY opened_at DESC"
+            ).fetchall()
         return [dict(r) for r in rows]
 
     def update_position_marks(self, marks: dict):
@@ -240,9 +250,10 @@ class Store:
             return cur.lastrowid
 
     def recent_decisions(self, limit: int = 20) -> list[dict]:
-        rows = self.conn.execute(
-            "SELECT * FROM decisions ORDER BY timestamp DESC, id DESC LIMIT ?", (limit,)
-        ).fetchall()
+        with self._lock:
+            rows = self.conn.execute(
+                "SELECT * FROM decisions ORDER BY timestamp DESC, id DESC LIMIT ?", (limit,)
+            ).fetchall()
         return [dict(r) for r in rows]
 
     # ─── equity curve ──────────────────────────────────────────
@@ -256,10 +267,11 @@ class Store:
 
     def equity_curve(self, limit: int = 500) -> list[dict]:
         # Most recent `limit` points, returned in ascending order.
-        rows = self.conn.execute(
-            "SELECT id, timestamp, total_value, cash, sp500_price FROM equity_curve "
-            "ORDER BY timestamp DESC, id DESC LIMIT ?", (limit,)
-        ).fetchall()
+        with self._lock:
+            rows = self.conn.execute(
+                "SELECT id, timestamp, total_value, cash, sp500_price FROM equity_curve "
+                "ORDER BY timestamp DESC, id DESC LIMIT ?", (limit,)
+            ).fetchall()
         # reversed() → ascending by (timestamp, id): same-microsecond points
         # keep insertion order instead of an arbitrary sqlite ordering.
         return [{k: r[k] for k in ("timestamp", "total_value", "cash", "sp500_price")}

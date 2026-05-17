@@ -5,8 +5,12 @@ from __future__ import annotations
 import json
 import re
 import shutil
+import sqlite3
+import statistics
 import subprocess
+import time
 from datetime import date, datetime, timezone
+from pathlib import Path
 
 from . import market, signals
 from .store import Store, get_store
@@ -19,6 +23,15 @@ RETRY_TIMEOUT_S = 45
 # Cap the raw-response excerpt we write back into decisions.reasoning. Long
 # enough to diagnose JSON / prose / truncation, short enough to keep the DB lean.
 RAW_CAPTURE_CHARS = 1000
+
+# ML advisor gate — when the backtest ML model's median alpha consistently
+# beats SPY, its (quant+news) recommendation is injected into the Opus prompt
+# as an *advisory* opinion. Opus retains full autonomy over the final call.
+ML_QUALIFY_MIN_RUNS = 20       # qualifying runs needed
+ML_QUALIFY_MEDIAN_ALPHA = 0.0  # median vs_spy_pct must beat this (%)
+ML_QUALIFY_TTL_S = 3600.0      # recheck every hour
+
+_ml_qualify_cache: tuple[bool, str, float] | None = None
 
 WATCHLIST = [
     "LITE", "LNOK", "MUU", "DRAM", "SNDU",  # current real-account interests
@@ -312,7 +325,15 @@ def _claude_call(prompt: str, timeout_s: int = DECISION_TIMEOUT_S) -> str | None
             timeout=timeout_s,
         )
         if r.returncode != 0:
-            print(f"[strategy] claude err: {r.stderr.strip()[:300]}")
+            # The claude CLI frequently exits non-zero with an EMPTY stderr and
+            # the real error written to stdout, which produced useless blank
+            # "[strategy] claude err:" lines in runner.log (the operator could
+            # not tell why decisions were being skipped). Log the returncode
+            # plus a stdout tail so the failure is actually diagnosable.
+            err = r.stderr.strip()[:300]
+            if not err:
+                err = f"(empty stderr) stdout={r.stdout.strip()[:200]!r}"
+            print(f"[strategy] claude err (rc={r.returncode}): {err}")
             return None
         return r.stdout.strip() or None
     except subprocess.TimeoutExpired:
@@ -648,6 +669,186 @@ def _execute(decision: dict, snapshot: dict, store: Store) -> tuple[str, str]:
     return "BLOCKED", f"unknown action {action}"
 
 
+def _ml_is_qualified() -> tuple[bool, str]:
+    """Return (qualified, reason). Cached ML_QUALIFY_TTL_S seconds.
+    ML is qualified when median vs_spy_pct over last ML_QUALIFY_MIN_RUNS
+    qualifying runs exceeds ML_QUALIFY_MEDIAN_ALPHA."""
+    global _ml_qualify_cache
+    now = time.time()
+    if _ml_qualify_cache and now - _ml_qualify_cache[2] < ML_QUALIFY_TTL_S:
+        return _ml_qualify_cache[0], _ml_qualify_cache[1]
+    try:
+        _db = Path(__file__).resolve().parent.parent / "backtest.db"
+        conn = sqlite3.connect(f"file:{_db}?mode=ro", uri=True, timeout=5)
+        try:
+            rows = conn.execute(
+                "SELECT vs_spy_pct FROM backtest_runs "
+                "WHERE status='complete' AND vs_spy_pct IS NOT NULL AND n_trades >= 5 "
+                "ORDER BY run_id DESC LIMIT ?",
+                (ML_QUALIFY_MIN_RUNS,)
+            ).fetchall()
+        finally:
+            conn.close()
+        n = len(rows)
+        if n < ML_QUALIFY_MIN_RUNS:
+            result = (False, f"only {n}/{ML_QUALIFY_MIN_RUNS} qualifying runs")
+        else:
+            alphas = [r[0] for r in rows]
+            median_a = statistics.median(alphas)
+            if median_a > ML_QUALIFY_MEDIAN_ALPHA:
+                result = (True, f"median alpha {median_a:+.1f}% over last {n} runs")
+            else:
+                result = (False, f"median alpha {median_a:+.1f}% ≤ threshold")
+    except Exception as e:
+        result = (False, f"qualification check error: {e}")
+    _ml_qualify_cache = (result[0], result[1], now)
+    return result[0], result[1]
+
+
+# Self-contained sentiment / ticker-mapping tables for the ML advisory opinion.
+# Deliberately NOT imported from backtest.py (circular-dependency risk) — these
+# mirror the backtest engine's scorer vocabulary closely enough for an advisory.
+_BULLISH_WORDS_LIVE = {
+    "surges", "surge", "rally", "rallies", "gains", "gain", "beats", "beat",
+    "rises", "rise", "jumps", "jump", "soars", "soar", "strong", "record",
+    "bullish", "outperforms", "boosts", "boost", "breakout",
+}
+_BEARISH_WORDS_LIVE = {
+    "falls", "fall", "drops", "drop", "plunges", "plunge", "slumps", "slump",
+    "misses", "miss", "cuts", "cut", "warns", "warn", "weak", "bearish",
+    "disappoints", "crashes", "crash", "declines", "decline",
+}
+_WORD_TO_TICKER_LIVE: dict[str, str] = {
+    "nvidia": "NVDA", "amd": "AMD", "apple": "AAPL", "microsoft": "MSFT",
+    "amazon": "AMZN", "google": "GOOGL", "alphabet": "GOOGL", "meta": "META",
+    "tesla": "TSLA", "intel": "INTC", "micron": "MU", "broadcom": "AVGO",
+    "qualcomm": "QCOM", "spy": "SPY", "qqq": "QQQ",
+    "semiconductor": "SOXL", "chip": "SOXL", "chips": "SOXL",
+    "nasdaq": "TQQQ", "ai": "TQQQ", "artificial intelligence": "TQQQ",
+    "oil": "USO", "crude": "USO", "energy": "XLE", "opec": "USO",
+    "federal reserve": "TLT", "fed rate": "TLT", "treasury": "TLT",
+    "gold": "GLD", "bitcoin": "BTC-USD", "crypto": "COIN",
+    "defense": "DFEN", "biotech": "LABU",
+}
+_LEVERAGED_ETFS_LIVE = {
+    "TQQQ", "UPRO", "SPXL", "UDOW", "URTY", "SOXL", "TECL", "FNGU",
+    "CURE", "LABU", "NAIL", "DPST", "FAS", "DFEN", "TNA", "UTSL",
+    "QLD", "SSO", "NVDU", "MSFU", "AMZU", "TSLL", "CONL", "BITU", "ETHU",
+    "SQQQ", "SPXS", "SOXS", "TECS", "FNGD",
+}
+
+
+def _ml_live_opinion(
+    articles: list[dict],
+    quant_sigs: dict[str, dict],
+    snap: dict,
+    watch_px: dict,
+) -> dict | None:
+    """Pure ML+quant advisory opinion using live data. Returns action/ticker/reasoning dict.
+    Never raises — failure returns None."""
+    try:
+        # Score tickers from articles
+        ticker_scores: dict[str, float] = {}
+        ticker_article_count: dict[str, int] = {}
+        ticker_max_urgency: dict[str, float] = {}
+        for a in articles:
+            raw_score = float(a.get("score") or 0.0)
+            if raw_score < 1.0:
+                continue
+            title = (a.get("title") or "").lower()
+            words = set(title.split())
+            bull = sum(1 for w in words if w in _BULLISH_WORDS_LIVE)
+            bear = sum(1 for w in words if w in _BEARISH_WORDS_LIVE)
+            total_sent = bull + bear
+            sentiment = ((bull - bear) / total_sent) if total_sent else 0.0
+            tickers = list(a.get("tickers") or [])
+            for keyword, sym in _WORD_TO_TICKER_LIVE.items():
+                if keyword in title and sym not in tickers:
+                    tickers.append(sym)
+            try:
+                a_urg = float(a.get("urgency", 0.0) or 0.0)
+            except (TypeError, ValueError):
+                a_urg = 0.0
+            for tk in tickers:
+                if tk not in WATCHLIST:
+                    continue
+                ticker_scores[tk] = ticker_scores.get(tk, 0.0) + raw_score * sentiment
+                ticker_article_count[tk] = ticker_article_count.get(tk, 0) + 1
+                if a_urg > ticker_max_urgency.get(tk, 0.0):
+                    ticker_max_urgency[tk] = a_urg
+
+        # Quant adjustments
+        for tk, q in quant_sigs.items():
+            if tk not in WATCHLIST:
+                continue
+            adj = 0.0
+            rsi = q.get("rsi")
+            macd = q.get("macd_signal")
+            mom5 = q.get("mom_5d")
+            mom20 = q.get("mom_20d")
+            bb = q.get("bb_position")
+            if isinstance(rsi, (int, float)):
+                if rsi < 33: adj += 1.5
+                elif rsi < 45: adj += 0.5
+                elif rsi > 67: adj -= 1.5
+                elif rsi > 55: adj -= 0.5
+            if isinstance(macd, (int, float)):
+                adj += 0.5 if macd > 0 else -0.5
+            if isinstance(mom5, (int, float)):
+                adj += min(1.0, max(-1.0, mom5 / 3.0))
+            if isinstance(mom20, (int, float)):
+                adj += min(0.5, max(-0.5, mom20 / 10.0))
+            if isinstance(bb, (int, float)):
+                adj -= bb * 0.5
+            ticker_scores[tk] = ticker_scores.get(tk, 0.0) + adj
+
+        # Market regime from SPY 20d momentum
+        spy_mom20 = quant_sigs.get("SPY", {}).get("mom_20d")
+        if isinstance(spy_mom20, (int, float)):
+            if spy_mom20 > 3.0:
+                regime, regime_mult = "bull", 1.0
+            elif spy_mom20 < -3.0:
+                regime, regime_mult = "bear", 0.3
+            else:
+                regime, regime_mult = "sideways", 0.6
+        else:
+            regime, regime_mult = "unknown", 1.0
+
+        # Pick best ticker above threshold
+        buy_ticker: str | None = None
+        best_score = 1.0
+        for tk, s in ticker_scores.items():
+            adj_s = s * regime_mult
+            px = watch_px.get(tk)
+            if adj_s > best_score and px and px > 0:
+                best_score = adj_s
+                buy_ticker = tk
+
+        if not buy_ticker:
+            return {"action": "HOLD", "ticker": "",
+                    "reasoning": f"ML+quant: no high-conviction signal; regime={regime}"}
+
+        q_buy = quant_sigs.get(buy_ticker, {})
+        news_count = ticker_article_count.get(buy_ticker, 0)
+        news_urg = ticker_max_urgency.get(buy_ticker, 0.0)
+        if buy_ticker in _LEVERAGED_ETFS_LIVE and regime in ("bull", "sideways"):
+            conviction = min(0.40, best_score / 15.0)
+        else:
+            conviction = min(0.25, best_score / 20.0)
+        return {
+            "action": "BUY",
+            "ticker": buy_ticker,
+            "reasoning": (
+                f"ML+quant: {buy_ticker} score={best_score:.2f} regime={regime} "
+                f"RSI={q_buy.get('rsi', 'N/A')} news_count={news_count} "
+                f"news_urg={news_urg:.1f} conviction={conviction:.0%}"
+            ),
+        }
+    except Exception as e:
+        print(f"[strategy] _ml_live_opinion error: {e}")
+        return None
+
+
 def decide() -> dict:
     """Run one decision cycle. Returns summary dict for logging."""
     store = get_store()
@@ -696,10 +897,30 @@ def decide() -> dict:
     except Exception as e:
         print(f"[strategy] self-review failed (non-fatal): {e}")
 
+    # ML advisor: when model consistently beats SPY, include its opinion in prompt
+    ml_opinion_block: str | None = None
+    ml_qualified, ml_qual_reason = _ml_is_qualified()
+    if ml_qualified:
+        try:
+            ml_op = _ml_live_opinion(merged, quant_sigs, snap, watch_px)
+            if ml_op:
+                ml_opinion_block = (
+                    f"ML MODEL OPINION ({ml_qual_reason}):\n"
+                    f"  Action: {ml_op['action']}"
+                    + (f" {ml_op['ticker']}" if ml_op.get("ticker") else "")
+                    + f"\n  Reasoning: {ml_op['reasoning']}\n"
+                    "This is an advisory opinion only. You retain full autonomy over the final decision."
+                )
+                print(f"[strategy] ML advisor: {ml_op['action']} {ml_op.get('ticker', '')}")
+        except Exception as e:
+            print(f"[strategy] ML advisor failed (non-fatal): {e}")
+
     payload = _build_payload(snap, merged, sents, watch_px, fut_px, sp500, market_open,
                              quant_signals=quant_sigs,
                              self_review_block=self_review_block)
     prompt = f"{SYSTEM_PROMPT}\n\n---\nCONTEXT:\n{payload}"
+    if ml_opinion_block:
+        prompt += f"\n\n---\nML ADVISOR:\n{ml_opinion_block}"
 
     raw = _claude_call(prompt)
     decision = _parse_decision(raw) if raw else None
