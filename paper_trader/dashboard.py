@@ -4093,6 +4093,50 @@ async function refreshChurn() {
   }
 }
 
+let _sessWindow = 360;
+function setSessWindow(m) {
+  _sessWindow = m;
+  [60, 360, 1440].forEach(k => {
+    const el = document.getElementById("sess-w-" + k);
+    if (el) el.classList.toggle("active", k === m);
+  });
+  refreshSessionDelta();
+}
+async function refreshSessionDelta() {
+  const r = await fetchMaybeStale("/api/session-delta?minutes=" + _sessWindow);
+  if (r.__unavailable) { markStale("sess-state", "sess-headline", "Session-delta endpoint"); return; }
+  if (r.error) { document.getElementById("sess-headline").textContent = "error: " + r.error; return; }
+  const smap = {
+    ACTIVE:  ["#0d3b4f", "#7fdbff"],
+    QUIET:   ["#1b5e20", "#a5d6a7"],
+    NO_DATA: ["#1f2126", "#8b929d"],
+  };
+  const sEl = document.getElementById("sess-state");
+  const [bg, fg] = smap[r.state] || smap.NO_DATA;
+  sEl.textContent = r.state + (r.n_events ? " · " + r.n_events : "");
+  sEl.style.background = bg; sEl.style.color = fg;
+  document.getElementById("sess-headline").textContent = r.headline || "";
+  const tb = document.querySelector("#sess-events tbody");
+  const evs = r.events || [];
+  if (!evs.length) {
+    tb.innerHTML = '<tr><td colspan="3" class="muted">nothing material in this window</td></tr>';
+    return;
+  }
+  const sevC = { HIGH: "#ff4455", MED: "#ffb74d", LOW: "#8b929d" };
+  const kindLabel = {
+    TRADE: "⇄ FILL", POSITION_CLOSED: "✓ CLOSED", EQUITY_MOVE: "$ EQUITY",
+    DRAWDOWN_LOW: "▼ DRAWDOWN", INACTION: "… IDLE",
+  };
+  tb.innerHTML = evs.map(e => {
+    const c = sevC[e.severity] || "#8b929d";
+    const when = (e.ts || "").slice(11, 16);
+    const lbl = kindLabel[e.kind] || e.kind;
+    const txt = (e.summary || "").replace(/</g, "&lt;");
+    return '<tr><td class="muted">' + when + '</td><td style="color:' + c +
+      ';white-space:nowrap;">' + lbl + '</td><td>' + txt + '</td></tr>';
+  }).join("");
+}
+
 async function refreshThesisDrift() {
   const r = await fetchMaybeStale("/api/thesis-drift");
   if (r.__unavailable) { markStale("tdrift-state", "tdrift-headline", "Thesis-drift endpoint"); return; }
@@ -4538,6 +4582,7 @@ refreshChurn();
 refreshThesisDrift();
 refreshSourceEdge();
 refreshScorecard();
+refreshSessionDelta();
 refreshGlobalStale();
 setInterval(refresh, 15_000);
 setInterval(refreshSignals, 30_000);
@@ -4574,6 +4619,7 @@ setInterval(refreshChurn, 60_000);
 setInterval(refreshThesisDrift, 60_000);
 setInterval(refreshSourceEdge, 300_000);
 setInterval(refreshScorecard, 60_000);
+setInterval(refreshSessionDelta, 60_000);
 setInterval(refreshGlobalStale, 60_000);
 showTab(INITIAL_TAB || "trader");
 </script>
