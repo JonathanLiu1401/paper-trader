@@ -168,11 +168,15 @@ def _reset_resolver_cache() -> None:
 
 
 def _legacy_choice() -> Path:
-    """What the *original* existence-first resolver would have returned. Used
-    only to detect that a running process on pre-fix code is reading a staler
-    feed than this code now resolves — i.e. a restart is required."""
-    if USB_DB.exists():
-        return USB_DB
+    """What the existence-first (no freshness probe) resolver returns with the
+    *current* candidate ordering. Used to detect split-brain: if the freshness
+    probe chose a different path than bare existence-first would, a stale mirror
+    is present. Now that LOCAL is first in _candidates(), existence-first also
+    returns LOCAL when it exists — so a freshness-vs-legacy divergence only fires
+    when LOCAL itself is stale and the probe reaches USB."""
+    for p in _candidates():
+        if p.exists():
+            return p
     return LOCAL_DB
 
 
