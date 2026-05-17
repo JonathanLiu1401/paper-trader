@@ -584,3 +584,184 @@ class TestCheckFreshnessCLI:
         rc = signals._print_freshness_report()
         assert rc == 0
         assert "OK" in capsys.readouterr().out
+
+
+class TestGetTickerSentiment:
+    """Single-ticker `get_ticker_sentiment` — a DISTINCT code path from the
+    bulk `ticker_sentiments` (its own per-row compiled regex + aggregation),
+    with ZERO prior direct coverage. The word-boundary case (AMDOCS must not
+    count as AMD) is the regression that historically bites the
+    ``(?:\\$|\\b)TKR\\b`` pattern, so it is locked here exactly as the bulk
+    variant locks "MUSE" ≠ "MU".
+    """
+
+    def test_no_connection_returns_zero_defaults(self, monkeypatch):
+        # No DB anywhere -> _connect_ro() is None -> zeroed dict, never raises.
+        monkeypatch.setattr(signals, "USB_DB", Path("/nonexistent/u.db"))
+        monkeypatch.setattr(signals, "LOCAL_DB", Path("/nonexistent/l.db"))
+        out = signals.get_ticker_sentiment("NVDA", hours=4)
+        assert out == {"ticker": "NVDA", "avg_score": 0.0,
+                       "max_score": 0.0, "n": 0, "urgent": 0}
+
+    def test_avg_max_n_exact(self, fake_articles_db):
+        _build_articles_db(fake_articles_db, [
+            {"id": 1, "url": "http://a", "title": "NVDA earnings beat",
+             "source": "x", "ai_score": 4.0, "urgency": 0,
+             "first_seen": _now_iso(), "body": ""},
+            {"id": 2, "url": "http://b", "title": "NVDA guidance raise",
+             "source": "x", "ai_score": 9.0, "urgency": 0,
+             "first_seen": _now_iso(), "body": ""},
+        ])
+        out = signals.get_ticker_sentiment("NVDA", hours=24)
+        assert out["n"] == 2
+        assert out["avg_score"] == pytest.approx(6.5)  # (4 + 9) / 2
+        assert out["max_score"] == 9.0
+        assert out["urgent"] == 0
+
+    def test_urgent_only_counts_urgency_ge_1(self, fake_articles_db):
+        _build_articles_db(fake_articles_db, [
+            {"id": 1, "url": "http://a", "title": "NVDA trading halt",
+             "source": "x", "ai_score": 8.0, "urgency": 2,
+             "first_seen": _now_iso(), "body": ""},
+            {"id": 2, "url": "http://b", "title": "NVDA quiet session",
+             "source": "x", "ai_score": 5.0, "urgency": 0,
+             "first_seen": _now_iso(), "body": ""},
+        ])
+        out = signals.get_ticker_sentiment("NVDA", hours=24)
+        assert out["n"] == 2
+        assert out["urgent"] == 1  # only the urgency>=1 row
+
+    def test_unmentioned_ticker_zero_defaults_no_crash(self, fake_articles_db):
+        _build_articles_db(fake_articles_db, [
+            {"id": 1, "url": "http://a", "title": "AAPL up on services",
+             "source": "x", "ai_score": 7.0, "urgency": 0,
+             "first_seen": _now_iso(), "body": ""},
+        ])
+        out = signals.get_ticker_sentiment("NVDA", hours=24)
+        assert out == {"ticker": "NVDA", "avg_score": 0.0,
+                       "max_score": 0.0, "n": 0, "urgent": 0}
+
+    def test_word_boundary_amdocs_is_not_amd(self, fake_articles_db):
+        # The single-ticker pattern is `(?:\$|\b)AMD\b`; "AMDOCS" must NOT match
+        # — the exact substring-leak regression the bulk path also guards.
+        _build_articles_db(fake_articles_db, [
+            {"id": 1, "url": "http://a", "title": "AMDOCS signs telco deal",
+             "source": "x", "ai_score": 9.0, "urgency": 1,
+             "first_seen": _now_iso(), "body": "AMDOCS revenue grew sharply"},
+        ])
+        out = signals.get_ticker_sentiment("AMD", hours=24)
+        assert out["n"] == 0
+        assert out["urgent"] == 0
+
+    def test_dollar_tag_in_body_matches(self, fake_articles_db):
+        _build_articles_db(fake_articles_db, [
+            {"id": 1, "url": "http://a", "title": "chip roundup",
+             "source": "x", "ai_score": 6.0, "urgency": 0,
+             "first_seen": _now_iso(), "body": "watching $AMD into the print"},
+        ])
+        out = signals.get_ticker_sentiment("AMD", hours=24)
+        assert out["n"] == 1
+        assert out["max_score"] == 6.0
+
+    def test_backtest_rows_excluded(self, fake_articles_db):
+        _build_articles_db(fake_articles_db, [
+            {"id": 1, "url": "backtest://x", "title": "NVDA synthetic",
+             "source": "backtest_run1", "ai_score": 10.0, "urgency": 0,
+             "first_seen": _now_iso(), "body": ""},
+            {"id": 2, "url": "http://real", "title": "NVDA real move",
+             "source": "reuters", "ai_score": 3.0, "urgency": 0,
+             "first_seen": _now_iso(), "body": ""},
+        ])
+        out = signals.get_ticker_sentiment("NVDA", hours=24)
+        # Only the live reuters row contributes (live-only clause, invariant #3).
+        assert out["n"] == 1
+        assert out["avg_score"] == pytest.approx(3.0)
+
+
+def _fake_score(**attrs):
+    import types
+    return types.SimpleNamespace(**attrs)
+
+
+class TestGetMlPredictions:
+    """`get_ml_predictions` bridges to digital-intern's ``ml.inference``. It
+    has four guard branches (import-fail / empty input / empty default /
+    scoring-raises) and one zip-mapping body, none previously exercised. The
+    ml import is faked through ``sys.modules`` so the test stays fully offline.
+    """
+
+    def _install(self, monkeypatch, score_articles):
+        import types
+        fake = types.ModuleType("ml.inference")
+        fake.score_articles = score_articles
+        monkeypatch.setitem(sys.modules, "ml", types.ModuleType("ml"))
+        monkeypatch.setitem(sys.modules, "ml.inference", fake)
+
+    def test_ml_import_failure_returns_empty(self, monkeypatch):
+        # A None entry makes `from ml.inference import score_articles` raise
+        # ModuleNotFoundError -> caught -> [] (caller falls back to rules).
+        monkeypatch.setitem(sys.modules, "ml", __import__("types").ModuleType("ml"))
+        monkeypatch.setitem(sys.modules, "ml.inference", None)
+        assert signals.get_ml_predictions([{"id": 1}]) == []
+
+    def test_explicit_empty_articles_short_circuits(self, monkeypatch):
+        def _no_call(arts):
+            raise AssertionError("score_articles must not run on empty input")
+        self._install(monkeypatch, _no_call)
+        assert signals.get_ml_predictions([]) == []
+
+    def test_none_articles_defaults_to_top_signals(self, monkeypatch):
+        captured = {}
+
+        def score(arts):
+            captured["arts"] = arts
+            return [_fake_score(relevance=0.9, urgency=0.4, rel_std=0.1,
+                                urg_std=0.2, needs_llm=False)]
+
+        self._install(monkeypatch, score)
+        sentinel = [{"id": 7, "title": "T", "tickers": ["NVDA"]}]
+        monkeypatch.setattr(signals, "get_top_signals", lambda *a, **k: sentinel)
+
+        out = signals.get_ml_predictions(None)
+        # None -> get_top_signals(30, hours=6, min_score=0.0) feeds the scorer.
+        assert captured["arts"] is sentinel
+        assert out == [{
+            "id": 7, "title": "T", "tickers": ["NVDA"],
+            "relevance": 0.9, "urgency": 0.4, "rel_std": 0.1,
+            "urg_std": 0.2, "needs_llm": False,
+        }]
+
+    def test_none_articles_empty_default_returns_empty(self, monkeypatch):
+        def _no_call(arts):
+            raise AssertionError("must short-circuit before scoring")
+        self._install(monkeypatch, _no_call)
+        monkeypatch.setattr(signals, "get_top_signals", lambda *a, **k: [])
+        assert signals.get_ml_predictions(None) == []
+
+    def test_score_articles_exception_returns_empty(self, monkeypatch):
+        def boom(arts):
+            raise RuntimeError("inference model not loaded")
+        self._install(monkeypatch, boom)
+        assert signals.get_ml_predictions([{"id": 1, "title": "x"}]) == []
+
+    def test_zip_truncates_to_shorter_scores(self, monkeypatch):
+        # Two articles but only ONE score -> zip yields exactly one mapped row
+        # (the second article is silently dropped — locked behaviour).
+        self._install(monkeypatch, lambda arts: [
+            _fake_score(relevance=1.0, urgency=0.0, rel_std=0.0,
+                        urg_std=0.0, needs_llm=True)
+        ])
+        arts = [{"id": 1, "title": "A", "tickers": ["X"]},
+                {"id": 2, "title": "B", "tickers": ["Y"]}]
+        out = signals.get_ml_predictions(arts)
+        assert len(out) == 1
+        assert out[0]["id"] == 1 and out[0]["needs_llm"] is True
+
+    def test_missing_tickers_key_defaults_to_empty_list(self, monkeypatch):
+        self._install(monkeypatch, lambda arts: [
+            _fake_score(relevance=0.5, urgency=0.5, rel_std=0.0,
+                        urg_std=0.0, needs_llm=False)
+        ])
+        # Article has no "tickers" key -> a.get("tickers", []) must yield [].
+        out = signals.get_ml_predictions([{"id": 3, "title": "no tickers"}])
+        assert out[0]["tickers"] == []
