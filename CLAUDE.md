@@ -431,7 +431,7 @@ See the file for the schema; the canonical template lives at the top of `data/ru
 
 | Symptom | Likely cause | Where to look |
 |---------|--------------|---------------|
-| Live trader posts `NO_DECISION` repeatedly | Claude returned malformed JSON or timed out (`DECISION_TIMEOUT_S = 120`) | tail the runner stdout; check `_parse_decision` in `strategy.py` |
+| Live trader posts `NO_DECISION` repeatedly | Claude returned malformed JSON or timed out (`DECISION_TIMEOUT_S = 180`, raised from 120 in 6227cd5) | tail the runner stdout; check `_parse_decision` in `strategy.py` |
 | Live trader stuck on a `BLOCKED` SELL | `_enforce_risk_pre_trade` rejected — qty exceeds held position, or option strike/expiry don't match an open position | `strategy.py::_enforce_risk_pre_trade` |
 | Hourly summary missing | `runner._maybe_hourly()` ran during a `_cycle` exception; `_last_hourly` doesn't advance until the report succeeds | check `[runner] hourly send failed:` in stdout |
 | `signals.py` returns `[]` | Either `articles.db` isn't where expected (USB unmounted) or filter is too strict | confirm `_db_path()` resolves, then run `signals.py` as a script — it has a `__main__` that dumps top signals |

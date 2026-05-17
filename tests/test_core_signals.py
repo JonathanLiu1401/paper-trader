@@ -430,10 +430,12 @@ def two_dbs(tmp_path, monkeypatch):
 class TestChoosePure:
     """`_choose` is the pure decision given a freshness map — no IO."""
 
-    def test_tie_prefers_usb(self, two_dbs):
+    def test_tie_prefers_local(self, two_dbs):
         usb, local = two_dbs
         ts = _iso_ago(1)
-        assert signals._choose({usb: ts, local: ts}) == usb   # strict > keeps USB on equality
+        # strict > keeps the first candidate on equality, and _candidates() is
+        # (LOCAL, USB) since 6227cd5 — LOCAL is the live daemon's write path.
+        assert signals._choose({usb: ts, local: ts}) == local
 
     def test_fresher_local_wins(self, two_dbs):
         usb, local = two_dbs
@@ -448,10 +450,11 @@ class TestChoosePure:
         assert signals._choose({local: _iso_ago(5)}) == local
         assert signals._choose({usb: _iso_ago(5)}) == usb
 
-    def test_both_unreadable_falls_back_to_usb_first(self, two_dbs):
+    def test_both_unreadable_falls_back_to_local_first(self, two_dbs):
         usb, local = two_dbs
-        # Both exist but neither yielded a timestamp → legacy USB-first order.
-        assert signals._choose({usb: None, local: None}) == usb
+        # Both exist but neither yielded a timestamp → LOCAL-first order
+        # (6227cd5: _candidates() is (LOCAL, USB); LOCAL is the daemon write path).
+        assert signals._choose({usb: None, local: None}) == local
 
     def test_neither_exists_returns_local(self, two_dbs):
         # Empty freshness map → preserve the legacy "neither → LOCAL_DB" contract.
