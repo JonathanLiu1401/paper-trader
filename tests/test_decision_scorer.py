@@ -491,6 +491,65 @@ class TestTrainScorer:
 
 # ─────────────────────── ranking semantics ───────────────────────
 
+class TestLoadCaching:
+    """Every polled dashboard endpoint builds a fresh ``DecisionScorer()``.
+    The old constructor re-read and re-unpickled ``scorer.pkl`` AND printed a
+    ``[decision_scorer] loaded n=`` line on *every* construction — 657 such
+    lines in a single runner.log, feeding the disk-full logging failures
+    (``OSError: [Errno 28]``). Repeated construction against an unchanged
+    pickle must load — and log — exactly once, while a retrain (atomic
+    ``.replace`` → new mtime/size) is still picked up.
+    """
+
+    def test_repeated_construction_loads_and_logs_once(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        import paper_trader.ml.decision_scorer as ds
+        path = tmp_path / "scorer_cache.pkl"
+        monkeypatch.setattr(ds, "SCORER_PATH", path)
+        recs = [_synthetic_outcome(sim_date=f"2025-10-{i+1:02d}")
+                for i in range(35)]
+        train_scorer(recs)                # atomically writes `path`
+        capsys.readouterr()               # discard training chatter
+
+        scorers = [DecisionScorer() for _ in range(5)]
+        out = capsys.readouterr().out
+
+        assert all(s.is_trained for s in scorers)
+        assert out.count("loaded n=") == 1, (
+            f"expected exactly one disk load, got "
+            f"{out.count('loaded n=')}:\n{out}"
+        )
+        # A cache hit reuses the already-unpickled model object instead of
+        # re-reading the file — object identity is the observable proof.
+        first = scorers[0]._model
+        assert all(s._model is first for s in scorers)
+
+    def test_pickle_rewrite_is_picked_up(self, tmp_path, monkeypatch, capsys):
+        import paper_trader.ml.decision_scorer as ds
+        path = tmp_path / "scorer_reload.pkl"
+        monkeypatch.setattr(ds, "SCORER_PATH", path)
+
+        train_scorer([_synthetic_outcome(sim_date=f"2025-11-{i+1:02d}")
+                      for i in range(35)])
+        s_old = DecisionScorer()
+        capsys.readouterr()
+
+        # Retrain with a different record count → different pickle size →
+        # the (path, mtime, size) cache key changes → a fresh load.
+        train_scorer([_synthetic_outcome(sim_date=f"2025-12-{i+1:02d}",
+                                          ticker="AMD")
+                      for i in range(45)])
+        s_new = DecisionScorer()
+        out = capsys.readouterr().out
+
+        assert out.count("loaded n=") == 1, (
+            f"a retrained pickle must be reloaded exactly once:\n{out}"
+        )
+        assert s_new._model is not s_old._model
+        assert s_new.is_trained
+
+
 class TestSectorMapping:
     def test_all_sectors_in_map(self):
         # Sanity: every declared sector should appear somewhere in SECTOR_MAP

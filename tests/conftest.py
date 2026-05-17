@@ -35,6 +35,12 @@ def _isolate_data_dir(tmp_path, monkeypatch):
 
     import paper_trader.ml.decision_scorer as ds
     monkeypatch.setattr(ds, "SCORER_PATH", data_dir / "ml" / "decision_scorer.pkl")
+    # The scorer's process-wide load cache persists across tests in a session;
+    # clear it so a prior test's model can never leak into this one (keys are
+    # path+mtime+size, so collisions are already implausible — this is belt
+    # and braces, mirroring the backtest cache resets below).
+    if hasattr(ds, "_LOAD_CACHE"):
+        ds._LOAD_CACHE.clear()
 
     import paper_trader.backtest as bt
     # raising=False so attribute renames in backtest.py don't break this whole

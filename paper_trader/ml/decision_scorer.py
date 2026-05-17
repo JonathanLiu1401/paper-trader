@@ -14,11 +14,40 @@ from __future__ import annotations
 
 import math
 import pickle
+import threading
 from pathlib import Path
 
 import numpy as np
 
 SCORER_PATH = Path(__file__).resolve().parent.parent.parent / "data" / "ml" / "decision_scorer.pkl"
+
+# Process-wide load cache. Every polled dashboard endpoint constructs a fresh
+# DecisionScorer() (paper_trader/dashboard.py builds one per request in
+# /api/scorer-predictions, /api/scorer-confidence, /api/calibration,
+# /api/disagreement, …). The old constructor re-read + re-unpickled
+# scorer.pkl AND printed a "[decision_scorer] loaded n=" line on EVERY
+# construction — 657 such lines in a single runner.log, which fed the
+# disk-full logging failures (OSError: [Errno 28]) and burned needless disk
+# I/O on every frontend poll.
+#
+# Key the cached (model, scaler, n_train) by the pickle's
+# (path, st_mtime_ns, st_size). A retrain writes atomically (tmp + .replace,
+# see train_scorer below) so a new model always changes the key and is
+# picked up on the next construction — preserving the per-cycle retrain
+# pickup the continuous loop relies on (it nulls backtest._DECISION_SCORER
+# after every retrain). Only one entry is ever kept (the current file), so
+# this is bounded regardless of how many retrain cycles run.
+_LOAD_CACHE: dict[tuple, tuple] = {}
+_LOAD_CACHE_LOCK = threading.Lock()
+
+
+def _scorer_cache_key(path: Path):
+    """(path, mtime_ns, size) signature, or None if the file is absent."""
+    try:
+        st = path.stat()
+    except OSError:
+        return None
+    return (str(path), st.st_mtime_ns, st.st_size)
 
 SECTORS = ["tech", "energy", "financials", "healthcare", "commodities", "crypto", "other"]
 
@@ -164,16 +193,33 @@ class DecisionScorer:
             self._load()
 
     def _load(self) -> None:
-        try:
-            with SCORER_PATH.open("rb") as f:
-                state = pickle.load(f)
-            self._model = state["model"]
-            self._scaler = state.get("scaler")
-            self._n_train = int(state.get("n_train", 0))
-            self._trained = True
-            print(f"[decision_scorer] loaded n={self._n_train} from {SCORER_PATH}")
-        except Exception as e:
-            print(f"[decision_scorer] load failed: {e}")
+        key = _scorer_cache_key(SCORER_PATH)
+        if key is None:
+            return
+        # Hold the lock across the unpickle so concurrent Flask request
+        # threads on a cold start (or right after a retrain) do exactly one
+        # disk read and never observe a torn cache tuple. Steady state is a
+        # single dict lookup under an uncontended lock.
+        with _LOAD_CACHE_LOCK:
+            cached = _LOAD_CACHE.get(key)
+            if cached is not None:
+                self._model, self._scaler, self._n_train = cached
+                self._trained = True
+                return
+            try:
+                with SCORER_PATH.open("rb") as f:
+                    state = pickle.load(f)
+                self._model = state["model"]
+                self._scaler = state.get("scaler")
+                self._n_train = int(state.get("n_train", 0))
+                self._trained = True
+                # Only the current file is ever relevant; clearing bounds the
+                # cache to one entry across unbounded retrain cycles.
+                _LOAD_CACHE.clear()
+                _LOAD_CACHE[key] = (self._model, self._scaler, self._n_train)
+                print(f"[decision_scorer] loaded n={self._n_train} from {SCORER_PATH}")
+            except Exception as e:
+                print(f"[decision_scorer] load failed: {e}")
 
     _predict_err_logged: bool = False
 
