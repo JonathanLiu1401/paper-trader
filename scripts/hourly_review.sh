@@ -72,10 +72,21 @@ Create or update /home/zeph/paper-trader/AGENTS.md with:
 python3 -c "import sys; sys.path.insert(0,\".\"); from paper_trader import signals, reporter, strategy; print(\"imports OK\")"
 python3 -m pytest tests/ -v 2>&1 | tail -20
 
-## Step 5 — Commit
-git add -A && git commit -m "review: bug fixes, test suite, AGENTS.md update" && git push
+## Step 5 — Commit ONLY if you made real changes
+Run: git diff --stat HEAD
 
-Completion: openclaw message send --channel discord --target channel:1496099475838603324 --message "[REVIEW] Agent 1 (paper-trader core) done — fixed: [issues], tests: [N passed], docs: updated"
+If the diff is empty, or contains ONLY whitespace/comment changes, or ONLY AGENTS.md edits with no code fixes:
+  - Do NOT commit anything
+  - Send: openclaw message send --channel discord --target channel:1496099475838603324 --message "[REVIEW] Agent 1 (paper-trader core) NO-OP — everything already correct, [N] tests pass"
+  - EXIT
+
+If you made real code fixes or added meaningful new tests:
+  - Stage only the files you actually changed (NOT git add -A — never stage config/, data/, logs/, *.json data files)
+  - git diff --staged (verify the diff is what you intend)
+  - git commit -m "fix: [specific description of what was actually broken]"
+  - git push
+  - Send: openclaw message send --channel discord --target channel:1496099475838603324 --message "[REVIEW] Agent 1 (paper-trader core) done — fixed: [specific issues], tests: [N passed]"
+
 Failure: openclaw message send --channel discord --target channel:1496099475838603324 --message "[REVIEW] Agent 1 (paper-trader core) FAILED: [reason]"' \
 > "$LOG_DIR/agent1_$TS.log" 2>&1
 ) &
@@ -122,10 +133,21 @@ Add or update ML/backtest section in /home/zeph/paper-trader/AGENTS.md:
 ## Step 4 — Verify
 python3 -m pytest tests/ -v 2>&1 | tail -20
 
-## Step 5 — Commit
-git add -A && git commit -m "review: ML+backtest bug fixes, test suite, docs update" && git push
+## Step 5 — Commit ONLY if you made real changes
+Run: git diff --stat HEAD
 
-Completion: openclaw message send --channel discord --target channel:1496099475838603324 --message "[REVIEW] Agent 2 (ML+backtests) done — fixed: [issues], tests: [N passed], docs: updated"
+If the diff is empty, or contains ONLY whitespace/comment changes, or ONLY AGENTS.md edits with no code fixes:
+  - Do NOT commit anything
+  - Send: openclaw message send --channel discord --target channel:1496099475838603324 --message "[REVIEW] Agent 2 (ML+backtests) NO-OP — everything already correct, [N] tests pass"
+  - EXIT
+
+If you made real code fixes or added meaningful new tests:
+  - Stage only the files you actually changed (NOT git add -A — never stage config/, data/, logs/, *.json data files)
+  - git diff --staged (verify the diff is what you intend)
+  - git commit -m "fix: [specific description of what was actually broken]"
+  - git push
+  - Send: openclaw message send --channel discord --target channel:1496099475838603324 --message "[REVIEW] Agent 2 (ML+backtests) done — fixed: [specific issues], tests: [N passed]"
+
 Failure: openclaw message send --channel discord --target channel:1496099475838603324 --message "[REVIEW] Agent 2 (ML+backtests) FAILED: [reason]"' \
 > "$LOG_DIR/agent2_$TS.log" 2>&1
 ) &
@@ -189,10 +211,25 @@ Create or update /home/zeph/digital-intern/AGENTS.md with:
 python3 -c "import sys; sys.path.insert(0,\".\"); from storage import article_store; from ml import features, model; print(\"imports OK\")"
 python3 -m pytest tests/ -v 2>&1 | tail -20
 
-## Step 5 — Commit
-git add -A && git commit -m "review: bug fixes, comprehensive test suite, AGENTS.md" && git push
+## Step 5 — Commit ONLY if you made real changes
+IMPORTANT: digital-intern has an auto-commit daemon. Before touching anything:
+  - Run: git status
+  - If there are uncommitted changes NOT made by you (e.g. config/sources.json, data/, logs/), do NOT stage them. Leave them exactly as-is.
 
-Completion: openclaw message send --channel discord --target channel:1496099475838603324 --message "[REVIEW] Agent 3 (digital-intern) done — fixed: [issues], tests: [N passed], docs: updated"
+Run: git diff --stat HEAD
+
+If the diff is empty, or contains ONLY whitespace/comment changes, or ONLY AGENTS.md edits with no code fixes, or you found no real bugs:
+  - Do NOT commit anything
+  - Send: openclaw message send --channel discord --target channel:1496099475838603324 --message "[REVIEW] Agent 3 (digital-intern) NO-OP — everything already correct, [N] tests pass"
+  - EXIT
+
+If you made real code fixes or added meaningful new tests that did not previously exist:
+  - Stage ONLY the specific .py and test files you changed (never git add -A, never stage *.json, config/, data/, logs/)
+  - Run: git diff --staged (verify only your intentional changes are staged)
+  - git commit -m "fix: [specific description of what was actually broken]"
+  - git push
+  - Send: openclaw message send --channel discord --target channel:1496099475838603324 --message "[REVIEW] Agent 3 (digital-intern) done — fixed: [specific issues], tests: [N passed]"
+
 Failure: openclaw message send --channel discord --target channel:1496099475838603324 --message "[REVIEW] Agent 3 (digital-intern) FAILED: [reason]"' \
 > "$LOG_DIR/agent3_$TS.log" 2>&1
 ) &
