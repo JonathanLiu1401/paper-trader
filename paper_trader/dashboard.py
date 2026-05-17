@@ -1656,7 +1656,7 @@ async function refresh() {
   const plEl = document.getElementById("pl");
   plEl.textContent = (plPct >= 0 ? "+" : "") + plPct.toFixed(2) + "%";
   plEl.className = "v " + (plPct >= 0 ? "pos" : "neg");
-  document.getElementById("sp").textContent = r.sp500 ? fmt(r.sp500) : "—";
+  const _spEl = document.getElementById("sp"); if (_spEl) _spEl.textContent = r.sp500 ? fmt(r.sp500) : "—";
   _lastEquity = r.equity || [];
   _lastTrades = r.all_trades || r.trades || [];
   drawEquityChart(_lastEquity, _lastTrades);
@@ -4666,35 +4666,42 @@ def data_feed_api():
     §5 in digital-intern). Returns zeros if the article DB isn't reachable so
     the widget can render gracefully on the live trader page.
     """
-    # Prefer the USB-mounted DB (canonical location per signals.py), fall back
-    # to the in-repo file.
+    # Prefer the LOCAL DB (the live daemon writes here), fall back to the
+    # USB-mounted copy.
     candidates = [
-        Path("/media/zeph/projects/digital-intern/db/articles.db"),
-        Path("/home/zeph/digital-intern/data/articles.db"),
+        Path("/home/zeph/digital-intern/data/articles.db"),      # LOCAL first (live daemon writes here)
+        Path("/media/zeph/projects/digital-intern/db/articles.db"),  # USB fallback
     ]
     db_path = next((p for p in candidates if p.exists()), None)
     if db_path is None:
         return jsonify({"articles_1h": 0, "articles_24h": 0, "top_sources": [],
                         "error": "articles.db not found"})
     try:
+        from datetime import datetime, timezone, timedelta
+        now = datetime.now(timezone.utc)
+        cut_1h  = (now - timedelta(hours=1)).isoformat()
+        cut_24h = (now - timedelta(hours=24)).isoformat()
+        live_clause = (
+            "url NOT LIKE 'backtest://%' "
+            "AND source NOT LIKE 'backtest_%' "
+            "AND source NOT LIKE 'opus_annotation%'"
+        )
         uri = f"file:{db_path}?mode=ro"
         conn = sqlite3.connect(uri, uri=True, timeout=3.0)
         try:
-            live_clause = (
-                "url NOT LIKE 'backtest://%' "
-                "AND source NOT LIKE 'backtest_%' "
-                "AND source NOT LIKE 'opus_annotation%'"
-            )
             n1 = conn.execute(
-                f"SELECT COUNT(*) FROM articles WHERE first_seen >= datetime('now','-1 hour') AND {live_clause}"
+                f"SELECT COUNT(*) FROM articles WHERE first_seen >= ? AND {live_clause}",
+                (cut_1h,)
             ).fetchone()[0]
             n24 = conn.execute(
-                f"SELECT COUNT(*) FROM articles WHERE first_seen >= datetime('now','-24 hours') AND {live_clause}"
+                f"SELECT COUNT(*) FROM articles WHERE first_seen >= ? AND {live_clause}",
+                (cut_24h,)
             ).fetchone()[0]
             top = conn.execute(
                 f"SELECT source, COUNT(*) FROM articles "
-                f"WHERE first_seen >= datetime('now','-1 hour') AND {live_clause} "
-                f"GROUP BY source ORDER BY 2 DESC LIMIT 5"
+                f"WHERE first_seen >= ? AND {live_clause} "
+                f"GROUP BY source ORDER BY 2 DESC LIMIT 5",
+                (cut_1h,)
             ).fetchall()
         finally:
             conn.close()
@@ -4722,6 +4729,7 @@ def backtests_api():
 
         return jsonify({
             "runs": runs,
+            "total_runs": len(runs),
             "spy_baseline": spy_baseline,
             "qqq_baseline": None,
             "last_updated": datetime.now(timezone.utc).isoformat(timespec="seconds"),
@@ -5265,7 +5273,7 @@ def sector_pulse_api():
             rsi = quant.get("RSI")
             mom_5d = quant.get("mom_5d")
             mom_20d = quant.get("mom_20d")
-            macd = quant.get("MACD")
+            macd = quant.get("macd_signal")
             vol_ratio = quant.get("vol_ratio")
             pct_from_52h = quant.get("pct_from_52h")
             nrec = news.get(t.upper(), {})
@@ -7129,6 +7137,54 @@ def feed_health_api():
             store.recent_decisions(limit=3000), feed))
     except Exception as e:
         return jsonify({"error": str(e), "verdict": "ERROR"}), 500
+
+
+@app.route("/api/session-delta")
+def session_delta_api():
+    """What materially changed since you last looked.
+
+    Every other panel is a current-state snapshot; /api/daily-recap is a
+    calendar-"today" aggregate; /api/command-center is a one-shot current
+    aggregate. None answers the operator's first question on reopening the
+    dashboard after being away — "what happened while I was gone?" — which
+    today means scanning ~19 panels. This is a ranked material-event timeline
+    over a parameterised look-back window (fills, round-trip closes with
+    realised P&L consumed verbatim from build_round_trips, equity move +
+    SPY-relative alpha, intra-window drawdown, and an idle-cycle fact),
+    reading only paper_trader.db (full history — no articles.db dependency).
+    ``?minutes=`` (look-back, default 360 = 6h, clamped [5, 10080]) or an
+    explicit ``?since=`` ISO-8601 instant. Advisory only — dashboard/chat
+    surface, never injected into the decision prompt, never gates Opus, adds
+    no caps (invariants #2/#12). Pure core:
+    analytics/session_delta.build_session_delta."""
+    try:
+        from .analytics.session_delta import build_session_delta
+
+        now = datetime.now(timezone.utc)
+        since_arg = request.args.get("since")
+        since_dt = None
+        if since_arg:
+            try:
+                since_dt = datetime.fromisoformat(
+                    since_arg.replace("Z", "+00:00"))
+                if since_dt.tzinfo is None:
+                    since_dt = since_dt.replace(tzinfo=timezone.utc)
+            except Exception:
+                since_dt = None  # fall through to the minutes default
+        if since_dt is None:
+            minutes = max(5, min(10080, int(request.args.get("minutes", 360))))
+            since_dt = now - timedelta(minutes=minutes)
+
+        store = get_store()
+        return jsonify(build_session_delta(
+            list(reversed(store.recent_trades(2000))),
+            store.recent_decisions(500),
+            store.equity_curve(1000),
+            since_dt,
+            now,
+        ))
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
 
 
 def run(host: str = "0.0.0.0", port: int = 8090):
