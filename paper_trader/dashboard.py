@@ -431,11 +431,17 @@ TEMPLATE = r"""
     .bottom-tab.active, .bottom-tab:hover { color: var(--amber); }
     .table-scroll { overflow-x: auto; -webkit-overflow-scrolling: touch; }
     .table-scroll table { min-width: 500px; }
+    /* Responsive 2-col grid that stacks on mobile */
+    .grid-2col {
+      display: grid; grid-template-columns: 1fr 1fr; gap: 18px;
+    }
     @media (max-width: 768px) {
       .topbar-nav { display: none; }
       .nav-hamburger { display: flex; }
       body { font-size: 14px; }
       button, .btn, a.btn, [role="button"] { min-height: 44px; min-width: 44px; }
+      /* Prevent any fixed-width grid column from overflowing on narrow screens */
+      .grid-2col { grid-template-columns: 1fr; }
     }
     @media (max-width: 480px) {
       body { padding-bottom: 72px; }
@@ -443,7 +449,7 @@ TEMPLATE = r"""
       .topbar { padding: 0 16px; }
       .page-content { padding: 14px; }
       .card { min-height: auto !important; padding: 14px 16px; }
-      .grid, .grid-2, .grid2 { grid-template-columns: 1fr !important; }
+      .grid, .grid-2, .grid2, .grid-2col { grid-template-columns: 1fr !important; }
       .bt-layout { grid-template-columns: 1fr !important; }
       .stat-row { gap: 12px; }
       .stat .v { font-size: 18px; }
@@ -692,7 +698,7 @@ TEMPLATE = r"""
         <span class="muted" id="th-asof" style="font-size:11px;text-transform:none;letter-spacing:normal;">—</span>
       </h2>
       <div class="muted" id="th-meta" style="font-size:11px;margin-bottom:10px;">loading…</div>
-      <div id="th-grid" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(420px,1fr));gap:12px;">
+      <div id="th-grid" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(min(420px,100%),1fr));gap:12px;">
         <div class="muted">loading…</div>
       </div>
     </div>
@@ -729,7 +735,7 @@ TEMPLATE = r"""
         <span class="muted" id="cal-asof" style="font-size:11px;text-transform:none;letter-spacing:normal;">—</span>
       </h2>
       <div class="muted" id="cal-meta" style="font-size:11px;margin-bottom:10px;">loading…</div>
-      <div style="display:grid;grid-template-columns:1fr 1fr;gap:18px;">
+      <div class="grid-2col">
         <div>
           <div style="font-size:12px;color:#dde1e7;margin-bottom:6px;text-transform:uppercase;letter-spacing:0.5px;">By Opus confidence</div>
           <table id="cal-conf-tbl" style="font-size:13px;">
