@@ -1309,10 +1309,10 @@ TEMPLATE = r"""
           </div>
           <div id="ind-controls" style="display:none;font-size:12px;color:var(--text-secondary);margin-bottom:6px;">
             Show last
-            <input id="bt-chart-limit" type="range" min="5" max="50" step="5" value="20"
+            <input id="bt-chart-limit" type="range" min="5" max="500" step="5" value="100"
               style="width:80px;cursor:pointer;accent-color:#0acdff;vertical-align:middle;"
               oninput="document.getElementById('bt-chart-limit-val').textContent=this.value; redrawChart()">
-            <span id="bt-chart-limit-val">20</span> runs · X = day offset · Y = % return from start
+            <span id="bt-chart-limit-val">100</span> runs · X = day offset · Y = % return from start
           </div>
           <!-- Main equity chart -->
           <div style="position:relative;height:380px;"><canvas id="bt-chart"></canvas></div>
@@ -2204,8 +2204,7 @@ function redrawChart() {
 // runs in the current window filter. SPY overlay uses actual per-run spy_return_pct.
 async function drawAggregateChart() {
   const vis = filteredRuns().filter(r => r.status === "complete" && r.duration_days);
-  const MAX_RUNS = 300;
-  const sampleRuns = vis.slice(-MAX_RUNS);
+  const sampleRuns = vis;
 
   // Fetch curves we don't have yet
   await ensureCurves(sampleRuns.map(r => r.run_id), null);
