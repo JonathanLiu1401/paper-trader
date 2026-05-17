@@ -12,9 +12,9 @@ from . import market, signals
 from .store import Store, get_store
 
 MODEL = "claude-opus-4-7"
-DECISION_TIMEOUT_S = 120
+DECISION_TIMEOUT_S = 180
 # Retry uses a shorter budget so a parse-failure rescue can't blow past the
-# next 60s open-market cycle. Worst case adds DECISION_TIMEOUT_S + RETRY = 165s.
+# next 60s open-market cycle. Worst case adds DECISION_TIMEOUT_S + RETRY = 225s.
 RETRY_TIMEOUT_S = 45
 # Cap the raw-response excerpt we write back into decisions.reasoning. Long
 # enough to diagnose JSON / prose / truncation, short enough to keep the DB lean.

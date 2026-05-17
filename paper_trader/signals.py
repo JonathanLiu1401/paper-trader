@@ -51,10 +51,10 @@ _STALE_WARNED: set[str] = set()
 
 
 def _candidates() -> tuple[Path, ...]:
-    """Article-DB candidates in *preference order* (USB first — the intentional
-    default when freshness is equal/indeterminate). Read from the module
+    """Article-DB candidates in *preference order* (LOCAL first — the live daemon
+    writes here; USB is fallback when LOCAL is unavailable). Read from the module
     globals at call time so tests can monkeypatch ``USB_DB`` / ``LOCAL_DB``."""
-    return (USB_DB, LOCAL_DB)
+    return (LOCAL_DB, USB_DB)
 
 
 def _age_hours(first_seen: str | None) -> float | None:
@@ -99,9 +99,8 @@ def _db_freshness() -> dict[Path, str | None]:
 def _choose(freshness: dict[Path, str | None]) -> Path:
     """Pure chooser: the candidate with the newest live article.
 
-    Iterates in preference order with a strict ``>``, so USB wins a tie and is
-    also the fallback when no freshness value is determinable. Preserves the
-    legacy "neither exists → LOCAL_DB" contract."""
+    Iterates in preference order with a strict ``>``, so LOCAL wins a tie and is
+    also the fallback when no freshness value is determinable."""
     existing = [p for p in _candidates() if p in freshness]
     if not existing:
         return LOCAL_DB
