@@ -659,7 +659,35 @@ both share `(value − 1000)/1000·100` (50.0 at $1500, −2.5 at $975,
 exact) but the partial path must **not** write `spy_return_pct`/
 `vs_spy_pct`/`status`/`completed_at`, and `vs_spy = total − spy` lives
 **only** in `finalize_run` (pinned via a +50% run under SPY +80% →
-`−30.0` to lock the subtraction *direction*). Exact-value, not ranges).
+`−30.0` to lock the subtraction *direction*). Exact-value, not ranges),
+`test_ml_backtest_store_detail_sell.py` (2026-05-16 pass, 9th
+consecutive no-new-bug review — two more zero-coverage seams found by
+grepping every backtest symbol against `tests/`: **`BacktestStore.
+run_detail`** — the read view behind `/api/backtests/<run_id>`; its
+siblings `all_runs`/`run_curves` were locked the prior pass but
+`run_detail` was not, despite real logic — missing-run → `None` (not
+`{}`/raise, so the endpoint 404s not 500s), the `(sim_date ASC, id
+ASC)` ordering on **both** child tables locked via an out-of-order
+insert with a same-day pair (a `sim_date DESC` *or* `id DESC` tiebreak
+regression scrambles the dashboard's trade/decision tables and fails
+the exact-sequence assertion), corrupt-`equity_curve_json` → `[]`
+degradation (a raise here 500s the endpoint), valid-curve round-trip;
+**`backtest._sell`** the `SimPortfolio` mutator (distinct from
+`strategy._sell`) — every backtest SELL / stop-loss / take-profit exit
+routes through it yet it had **zero** direct unit coverage (only
+transitive via `_enforce_risk_exits`/`_execute_decision`, which clamp
+qty *before* calling it, so its own over-sell clamp and the
+`pos["qty"] <= 1e-6` deletion boundary were never asserted in
+isolation): no-position → `0.0` + no mutation, partial sell leaves
+`avg_cost` untouched & credits cash == proceeds exactly (no rounding in
+`_sell`), over-sell clamps to held qty & closes the row, the `1e-6`
+epsilon boundary pinned both sides (residual 1e-7 → deleted, 1e-5 →
+kept). The continuous-loop "old results are not overwritten without
+version/timestamp" property is **not** re-tested here — it is already
+locked by `test_store_runid_partial_seams.py`'s `upsert_run`
+INSERT-vs-UPDATE seam above (a 2nd call for the same run_id changes
+**only** `status`, preserving `seed`/`start_date`/`end_date`/
+`start_value`/`started_at`)).
 
 > A non-network collection error from an *untracked, out-of-scope* test
 > file (e.g. one a parallel review agent left mid-flight that imports a
