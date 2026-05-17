@@ -639,7 +639,27 @@ tracker: fresh/same-day-honored/corrupt-degrades, and the load-bearing
 (`yesterday calls=21 → _inc_quota → on-disk {today, 1}`, **not** 22 —
 verified by reading the JSON file directly, never via `_quota()` whose
 broad `except` would mask a bad write). Fully offline via the conftest
-`AV_QUOTA_PATH`/`AV_CACHE_DIR` redirect; exact-value, not ranges).
+`AV_QUOTA_PATH`/`AV_CACHE_DIR` redirect; exact-value, not ranges),
+`test_store_runid_partial_seams.py` (2026-05-16 pass — three
+load-bearing seams with **zero** prior direct coverage, found by
+grepping every backtest/continuous symbol against `tests/`:
+**`_next_run_id`** the continuous-loop monotonic id allocator —
+COALESCE guard on an empty table (→ 1, never `int(None)+1`) and
+`MAX(run_id)+1` **not** `COUNT(*)+1` on a *non-contiguous* table (runs
+3,9 → 10) so a post-`_trim_history` sparse table can't make the next
+`upsert_run` overwrite a survivor; **`BacktestStore.upsert_run`
+INSERT-vs-UPDATE branch** — a 2nd call for the same run_id with
+deliberately different seed/window changes **only** `status` and
+preserves the original `seed`/`start_date`/`end_date`/`start_value`/
+`started_at` (still one row — UPDATE, not a 2nd INSERT): the
+store-layer "completed historical run is not overwritten" guarantee,
+asserted for the first time though `upsert_run` is a setup helper in 12
+files; **`update_partial_progress` vs `finalize_run` arithmetic** —
+both share `(value − 1000)/1000·100` (50.0 at $1500, −2.5 at $975,
+exact) but the partial path must **not** write `spy_return_pct`/
+`vs_spy_pct`/`status`/`completed_at`, and `vs_spy = total − spy` lives
+**only** in `finalize_run` (pinned via a +50% run under SPY +80% →
+`−30.0` to lock the subtraction *direction*). Exact-value, not ranges).
 
 > A non-network collection error from an *untracked, out-of-scope* test
 > file (e.g. one a parallel review agent left mid-flight that imports a
