@@ -16,6 +16,8 @@ from . import market, signals
 from .store import Store, get_store
 
 MODEL = "claude-opus-4-7"
+FALLBACK_MODEL = "claude-sonnet-4-6"
+FALLBACK_TIMEOUT_S = 60
 DECISION_TIMEOUT_S = 180
 # Retry uses a shorter budget so a parse-failure rescue can't blow past the
 # next 60s open-market cycle. Worst case adds DECISION_TIMEOUT_S + RETRY = 225s.
@@ -32,6 +34,13 @@ ML_QUALIFY_MEDIAN_ALPHA = 0.0  # median vs_spy_pct must beat this (%)
 ML_QUALIFY_TTL_S = 3600.0      # recheck every hour
 
 _ml_qualify_cache: tuple[bool, str, float] | None = None
+
+# Tracks the most recent claude subprocess so a new _claude_call can kill a
+# lingering one from a prior cycle. Overlapping calls compete for the same API
+# quota and cause *both* to time out. Process-local — does not guard against a
+# second orphaned runner process, but covers stacked calls within one process
+# (decision → retry → Sonnet fallback, or this cycle's call vs. the next).
+_active_claude_proc: subprocess.Popen | None = None
 
 WATCHLIST = [
     "LITE", "LNOK", "MUU", "DRAM", "SNDU",  # current real-account interests
@@ -311,36 +320,59 @@ def _format_quant_signals(sigs: dict[str, dict]) -> str:
     )
 
 
-def _claude_call(prompt: str, timeout_s: int = DECISION_TIMEOUT_S) -> str | None:
+def _claude_call(prompt: str, timeout_s: int = DECISION_TIMEOUT_S,
+                 model: str = MODEL) -> str | None:
+    global _active_claude_proc
     if not shutil.which("claude"):
         print("[strategy] claude CLI not found")
         return None
+    # A claude call still alive from a prior cycle competes for the same API
+    # quota as this one and makes *both* time out. Kill the stale one first.
+    if _active_claude_proc is not None and _active_claude_proc.poll() is None:
+        print("[strategy] killing stale claude subprocess before new call")
+        try:
+            _active_claude_proc.kill()
+            _active_claude_proc.wait(timeout=5)
+        except Exception as e:
+            print(f"[strategy] failed killing stale claude proc: {e}")
+    _active_claude_proc = None
     try:
-        r = subprocess.run(
-            ["claude", "--model", MODEL, "--print",
+        proc = subprocess.Popen(
+            ["claude", "--model", model, "--print",
              "--permission-mode", "bypassPermissions"],
-            input=prompt,
-            capture_output=True,
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
             text=True,
-            timeout=timeout_s,
         )
-        if r.returncode != 0:
+        _active_claude_proc = proc
+        try:
+            stdout, stderr = proc.communicate(input=prompt, timeout=timeout_s)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            try:
+                proc.wait(timeout=5)
+            except Exception:
+                pass
+            print(f"[strategy] claude timeout after {timeout_s}s")
+            return None
+        finally:
+            _active_claude_proc = None
+        if proc.returncode != 0:
             # The claude CLI frequently exits non-zero with an EMPTY stderr and
             # the real error written to stdout, which produced useless blank
             # "[strategy] claude err:" lines in runner.log (the operator could
             # not tell why decisions were being skipped). Log the returncode
             # plus a stdout tail so the failure is actually diagnosable.
-            err = r.stderr.strip()[:300]
+            err = (stderr or "").strip()[:300]
             if not err:
-                err = f"(empty stderr) stdout={r.stdout.strip()[:200]!r}"
-            print(f"[strategy] claude err (rc={r.returncode}): {err}")
+                err = f"(empty stderr) stdout={(stdout or '').strip()[:200]!r}"
+            print(f"[strategy] claude err (rc={proc.returncode}): {err}")
             return None
-        return r.stdout.strip() or None
-    except subprocess.TimeoutExpired:
-        print(f"[strategy] claude timeout after {timeout_s}s")
-        return None
+        return (stdout or "").strip() or None
     except Exception as e:
         print(f"[strategy] claude exception: {e}")
+        _active_claude_proc = None
         return None
 
 
@@ -490,9 +522,26 @@ def _build_payload(snapshot: dict, top_signals: list[dict], sentiments: list[dic
     sig_lines = []
     for s in top_signals[:10]:
         sig_lines.append(
-            f"  [{s['ai_score']:.1f}] urg={s['urgency']} {s['title'][:140]}"
+            f"  [{s['ai_score']:.1f}] urg={s['urgency']} {s['title'][:120]}"
             + (f"  tickers={','.join(s['tickers'][:5])}" if s['tickers'] else "")
         )
+
+    # Cap the quant block to keep the prompt lean: only tickers that are
+    # (a) held, (b) mentioned in the top signals, or (c) top-5 watchlist
+    # priority (list order is the priority signal — first entries are the
+    # current real-account interests). Drops the long tail of curated
+    # tickers that aren't actionable this cycle. Mirrors the existing n>0
+    # sentiment filter below — shrink the rendered string, not the fetch.
+    if quant_signals:
+        held = {p["ticker"] for p in snapshot["positions"]}
+        mentioned = {
+            t for s in top_signals[:10] for t in (s.get("tickers") or [])
+        }
+        priority = set(WATCHLIST[:5])
+        keep = held | mentioned | priority
+        quant_signals = {
+            tk: q for tk, q in quant_signals.items() if tk in keep
+        }
 
     sent_lines = [
         f"  {r['ticker']:>6}: avg={r['avg_score']:.1f} n={r['n']} urgent={r['urgent']}"
@@ -536,6 +585,64 @@ TOP SCORED SIGNALS (last 2h, ai_score >= 4.0):
 {chr(10).join(sig_lines) if sig_lines else '  (no high-score signals)'}
 
 NO RISK LIMITS — full autonomy. Size by conviction.
+
+Return JSON only."""
+
+
+def _build_fallback_payload(snap: dict, merged: list[dict],
+                            quant_sigs: dict[str, dict]) -> str:
+    """Condensed (~200-word) context for the Sonnet fallback when Opus times
+    out: cash + total value + top 3 positions, top 5 article headlines with
+    ai_score, and RSI/MACD for up to 3 held positions. Deliberately omits
+    summaries, watchlist prices, futures, sentiment and self-review so Sonnet
+    can answer well inside the short fallback timeout."""
+    positions = snap.get("positions", [])
+    top_pos = sorted(
+        positions,
+        key=lambda p: abs(p.get("market_value") or 0.0),
+        reverse=True,
+    )[:3]
+    pos_lines = []
+    for p in top_pos:
+        if p["type"] in ("call", "put"):
+            tk = f"{p['ticker']} {p['type'].upper()} {p['strike']} {p['expiry']}"
+        else:
+            tk = p["ticker"]
+        pos_lines.append(
+            f"  {tk}: qty={p['qty']} value=${(p.get('market_value') or 0.0):.2f}"
+        )
+
+    art_lines = []
+    for a in merged[:5]:
+        try:
+            score = float(a.get("ai_score") or 0.0)
+        except (TypeError, ValueError):
+            score = 0.0
+        art_lines.append(f"  [{score:.1f}] {(a.get('title') or '')[:120]}")
+
+    held = {p["ticker"] for p in positions}
+    quant_lines = []
+    for tk in sorted(held):
+        q = quant_sigs.get(tk)
+        if not q:
+            continue
+        quant_lines.append(
+            f"  {tk}: RSI={q.get('rsi', '?')} MACD={q.get('MACD', '?')}"
+        )
+        if len(quant_lines) >= 3:
+            break
+
+    return f"""PORTFOLIO:
+  cash: ${snap.get('cash', 0.0):.2f}
+  total value: ${snap.get('total_value', 0.0):.2f}
+  top positions:
+{chr(10).join(pos_lines) if pos_lines else '  (none)'}
+
+TOP SIGNALS (title + ai_score):
+{chr(10).join(art_lines) if art_lines else '  (no high-score signals)'}
+
+QUANT (held positions — RSI + MACD direction):
+{chr(10).join(quant_lines) if quant_lines else '  (none held / no signals)'}
 
 Return JSON only."""
 
@@ -925,11 +1032,27 @@ def decide() -> dict:
     raw = _claude_call(prompt)
     decision = _parse_decision(raw) if raw else None
     retried = False
+    fallback_used = False
+
+    # True timeout (raw is None, so _should_retry_parse is False): Opus blew
+    # past its budget. Retrying the full prompt on Opus would just stall again,
+    # so fall back to a faster model with a condensed prompt instead of
+    # recording a NO_DECISION.
+    if raw is None:
+        print("[strategy] Opus timeout — trying Sonnet fallback")
+        fb_payload = _build_fallback_payload(snap, merged, quant_sigs)
+        fb_prompt = f"{SYSTEM_PROMPT}\n\n---\nCONTEXT (condensed):\n{fb_payload}"
+        raw = _claude_call(fb_prompt, timeout_s=FALLBACK_TIMEOUT_S,
+                           model=FALLBACK_MODEL)
+        if raw:
+            fallback_used = True
+            print("[strategy] Sonnet fallback returned response")
+            decision = _parse_decision(raw)
 
     # Conditional one-shot retry: Claude returned text but it wasn't parseable.
     # A None response (timeout / empty stdout) won't be rescued by a retry —
     # same prompt, same failure — so we skip retrying in that case.
-    if not decision and _should_retry_parse(raw):
+    if not decision and not fallback_used and _should_retry_parse(raw):
         retried = True
         print("[strategy] parse failed; retrying with JSON-only nudge")
         retry_raw = _claude_call(prompt + _RETRY_SUFFIX, timeout_s=RETRY_TIMEOUT_S)
@@ -953,6 +1076,7 @@ def decide() -> dict:
         "status": "NO_DECISION",
         "detail": "",
         "retried": retried,
+        "fallback_used": fallback_used,
     }
 
     if not decision:
@@ -976,11 +1100,17 @@ def decide() -> dict:
     summary["detail"] = detail
 
     action_label = f"{decision.get('action','?')} {decision.get('ticker','')}".strip()
+    if fallback_used:
+        # Make it visible in the DB / dashboard that this decision came from
+        # the Sonnet fallback (condensed context), not the full Opus pass.
+        decision = {**decision,
+                    "reasoning": f"{decision.get('reasoning', '')} [sonnet-fallback]"}
     store.record_decision(
         market_open,
         len(merged),
         f"{action_label} → {status}",
-        json.dumps({"decision": decision, "auto_exits": auto_exits, "detail": detail}),
+        json.dumps({"decision": decision, "auto_exits": auto_exits,
+                    "detail": detail, "fallback_used": fallback_used}),
         snap["total_value"],
         snap["cash"],
     )

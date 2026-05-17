@@ -6430,7 +6430,29 @@ def decision_health_api():
     try:
         from .analytics.decision_health import build_decision_health
         decisions = get_store().recent_decisions(limit=2000)
-        return jsonify(build_decision_health(decisions))
+        rep = build_decision_health(decisions)
+        # Surface a rolling-24h NO_DECISION rate as a top-level convenience
+        # field so monitoring/alerting uses the *current* parse-failure rate,
+        # not the all-time `action_mix` % that legacy failures permanently
+        # inflate. The 24h window is already computed in build_decision_health
+        # (windows.24h); we just hoist it. `_enough` mirrors the verdict
+        # logic's >=10-sample gate so a fresh restart (few/no 24h decisions)
+        # doesn't silently clear the alert via a tiny, noisy sample.
+        try:
+            w24 = (rep.get("windows") or {}).get("24h") or {}
+            total24 = int(w24.get("total") or 0)
+            nd24 = int(w24.get("no_decision") or 0)
+            rep["no_decision_rate_24h"] = float(w24.get("parse_fail_pct") or 0.0)
+            rep["no_decision_n_24h"] = nd24
+            rep["n_decisions_24h"] = total24
+            # True only when there is enough recent signal to trust the rate.
+            rep["no_decision_24h_significant"] = total24 >= 10
+        except Exception:
+            rep["no_decision_rate_24h"] = None
+            rep["no_decision_n_24h"] = None
+            rep["n_decisions_24h"] = None
+            rep["no_decision_24h_significant"] = False
+        return jsonify(rep)
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
